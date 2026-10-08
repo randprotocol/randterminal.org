@@ -1,0 +1,50 @@
+# Line coverage of the Rust test suite (the api workspace), measured with cargo-llvm-cov (LLVM
+# source-based coverage) and uploaded to Codecov, which draws the badge in README.md. The web
+# app's vitest suite is not measured here.
+#
+# Needs two secrets: `CIRCUITS_TOKEN` (read access to the private circuits submodule) and
+# `CODECOV_TOKEN`. Until they exist the job fails at checkout / at the upload step. Every `uses:`
+# is pinned by commit sha with its tag in the trailing comment.
+name: coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: true
+          token: ${{ secrets.CIRCUITS_TOKEN }}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable (branch head, 2026-10-05)
+      - name: llvm-tools for the pinned toolchain
+        run: rustup component add llvm-tools-preview
+      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+        with:
+          tool: cargo-llvm-cov
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: api
+      - name: Coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: api/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
