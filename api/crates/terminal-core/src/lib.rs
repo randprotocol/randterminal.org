@@ -6,3 +6,4 @@ pub mod sbpf_disasm;
 pub mod evm_analysis;
 pub mod source_map;
 pub mod sbpf_analysis;
+pub mod image;
