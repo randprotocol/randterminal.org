@@ -99,7 +99,7 @@ fn encode_arg(ty: &str, arg: &str) -> Result<[u8; 32], String> {
         return Err(format!("{ty}: not supported by the terminal's encoder"));
     };
     let bits: usize = if bits.is_empty() { 256 } else { bits.parse().map_err(|_| format!("{ty}: not supported"))? };
-    if bits == 0 || bits > 256 || bits % 8 != 0 { return Err(format!("{ty}: not supported")); }
+    if bits == 0 || bits > 256 || !bits.is_multiple_of(8) { return Err(format!("{ty}: not supported")); }
     let (neg, mag) = match arg.strip_prefix('-') { Some(m) if signed => (true, m), Some(_) => return Err(format!("{ty} cannot be negative")), None => (false, arg) };
     let be = parse_u256(mag)?.to_be_bytes();
     // |v| < 2^limit, or ≤ 2^limit for a negative signed value. Big-endian byte arrays compare

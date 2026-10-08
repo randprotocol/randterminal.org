@@ -94,8 +94,8 @@ pub fn write(dir: &Path, exec: &Execution) -> io::Result<u32> {
     for (i, e) in exec.events.iter().enumerate() {
         let clk = i as u32;
         debug_assert_eq!(e.clk, clk);
-        if clk % REG_CKPT == 0 { write_reg_ckpt(&mut rck, &regs)?; }
-        if clk % MEM_CKPT == 0 { write_mem_ckpt(&mut mck, &mem, &mut idx, &mut mck_off)?; }
+        if clk.is_multiple_of(REG_CKPT) { write_reg_ckpt(&mut rck, &regs)?; }
+        if clk.is_multiple_of(MEM_CKPT) { write_mem_ckpt(&mut mck, &mem, &mut idx, &mut mck_off)?; }
         let rdw = e.accesses.iter().find(|a| a.space == SPACE_REG && a.is_write);
         let (rd, rd_val, writes_rd) = match rdw { Some(a) => (a.addr as u8, a.value, true), None => (e.dec.rd as u8, 0, false) };
         let mut flags = 0u8;
@@ -123,8 +123,8 @@ pub fn write(dir: &Path, exec: &Execution) -> io::Result<u32> {
     // too when total is a multiple of the interval (including total == 0). The loop only emits
     // checkpoints for clk < total.
     let total = exec.events.len() as u32;
-    if total % REG_CKPT == 0 { write_reg_ckpt(&mut rck, &regs)?; }
-    if total % MEM_CKPT == 0 { write_mem_ckpt(&mut mck, &mem, &mut idx, &mut mck_off)?; }
+    if total.is_multiple_of(REG_CKPT) { write_reg_ckpt(&mut rck, &regs)?; }
+    if total.is_multiple_of(MEM_CKPT) { write_mem_ckpt(&mut mck, &mem, &mut idx, &mut mck_off)?; }
     cycles.flush()?; regw.flush()?; memw.flush()?; rck.flush()?; mck.flush()?;
     let mut idxf = BufWriter::new(File::create(dir.join("memckpt.idx"))?);
     for o in idx { idxf.write_all(&o.to_le_bytes())?; }
@@ -153,7 +153,7 @@ fn u32_at(b: &[u8], i: usize) -> u32 { u32::from_le_bytes([b[i], b[i + 1], b[i +
 fn read_log(f: &File, from: u64, to: u64) -> io::Result<Vec<(u32, u32, u32)>> {
     let mut buf = vec![0u8; ((to - from) * LOG_BYTES) as usize];
     f.read_exact_at(&mut buf, from * LOG_BYTES)?;
-    Ok(buf.chunks_exact(12).map(|c| (u32_at(c, 0), u32_at(c, 4), u32_at(c, 8))).collect())
+    Ok(buf.as_chunks::<12>().0.iter().map(|c| (u32_at(c, 0), u32_at(c, 4), u32_at(c, 8))).collect())
 }
 
 /// The first record index whose clk is ≥ `clk` (binary search over positional reads).
@@ -174,7 +174,7 @@ impl Trace {
         let cycles = File::open(dir.join("cycles.bin"))?;
         let total = (cycles.metadata()?.len() / REC_BYTES) as u32;
         let idx_bytes = std::fs::read(dir.join("memckpt.idx"))?;
-        let memckpt_idx = idx_bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+        let memckpt_idx = idx_bytes.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
         Ok(Trace {
             dir: dir.to_path_buf(), total, cycles,
             regwrites: File::open(dir.join("regwrites.bin"))?,
@@ -197,7 +197,7 @@ impl Trace {
         let n = count.min(self.total - from) as u64;
         let mut buf = vec![0u8; (n * REC_BYTES) as usize];
         self.cycles.read_exact_at(&mut buf, from as u64 * REC_BYTES)?;
-        Ok(buf.chunks_exact(REC_BYTES as usize).map(|c| {
+        Ok(buf.as_chunks::<{ REC_BYTES as usize }>().0.iter().map(|c| {
             let flags = c[17];
             CycleView {
                 clk: u32_at(c, 0), pc: u32_at(c, 4), next_pc: u32_at(c, 8), word: u32_at(c, 12),
@@ -239,7 +239,7 @@ impl Trace {
         self.memckpt.read_exact_at(&mut buf, off + 4)?;
         let end = addr.saturating_add(words);
         let mut out = vec![0u32; words as usize];
-        for c in buf.chunks_exact(8) {
+        for c in buf.as_chunks::<8>().0 {
             let a = u32_at(c, 0);
             if a >= addr && a < end { out[(a - addr) as usize] = u32_at(c, 4); }
         }

@@ -9,7 +9,7 @@ fn spl_token_analyses() {
     let a = analyse(&elf).unwrap();
     let c = &a.compile;
     assert_eq!(c.elf_bytes, elf.len());
-    assert!(c.text_bytes > 100_000 && c.text_bytes % 8 == 0);
+    assert!(c.text_bytes > 100_000 && c.text_bytes.is_multiple_of(8));
     assert!(c.functions.len() > 20, "{}", c.functions.len());
     assert!(c.instructions > 10_000);
     // SPL Token also calls two syscalls outside the guest runtime's twelve (4 call sites); each is
