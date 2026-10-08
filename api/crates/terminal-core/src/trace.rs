@@ -51,6 +51,19 @@ fn all_accesses(e: &rand_zkvm::emulator::CycleEvent) -> impl Iterator<Item = &Me
 
 fn put(w: &mut impl Write, v: u32) -> io::Result<()> { w.write_all(&v.to_le_bytes()) }
 
+fn write_reg_ckpt(w: &mut impl Write, regs: &[u32; 32]) -> io::Result<()> {
+    for &r in regs { put(w, r)?; }
+    Ok(())
+}
+
+fn write_mem_ckpt(w: &mut impl Write, mem: &BTreeMap<u32, u32>, idx: &mut Vec<u64>, off: &mut u64) -> io::Result<()> {
+    idx.push(*off);
+    put(w, mem.len() as u32)?;
+    for (&a, &v) in mem { put(w, a)?; put(w, v)?; }
+    *off += 4 + 8 * mem.len() as u64;
+    Ok(())
+}
+
 pub fn write(dir: &Path, exec: &Execution) -> io::Result<u32> {
     std::fs::create_dir_all(dir)?;
     let mut cycles = BufWriter::new(File::create(dir.join("cycles.bin"))?);
@@ -66,13 +79,8 @@ pub fn write(dir: &Path, exec: &Execution) -> io::Result<u32> {
     for (i, e) in exec.events.iter().enumerate() {
         let clk = i as u32;
         debug_assert_eq!(e.clk, clk);
-        if clk % REG_CKPT == 0 { for r in regs { put(&mut rck, r)?; } }
-        if clk % MEM_CKPT == 0 {
-            idx.push(mck_off);
-            put(&mut mck, mem.len() as u32)?;
-            for (&a, &v) in &mem { put(&mut mck, a)?; put(&mut mck, v)?; }
-            mck_off += 4 + 8 * mem.len() as u64;
-        }
+        if clk % REG_CKPT == 0 { write_reg_ckpt(&mut rck, &regs)?; }
+        if clk % MEM_CKPT == 0 { write_mem_ckpt(&mut mck, &mem, &mut idx, &mut mck_off)?; }
         let rdw = e.accesses.iter().find(|a| a.space == SPACE_REG && a.is_write);
         let (rd, rd_val, writes_rd) = match rdw { Some(a) => (a.addr as u8, a.value, true), None => (e.dec.rd as u8, 0, false) };
         let mut flags = 0u8;
@@ -96,12 +104,19 @@ pub fn write(dir: &Path, exec: &Execution) -> io::Result<u32> {
             }
         }
     }
+    // `regs_at(total)` / `memory_at(total, ..)` are legal, so a checkpoint is owed at clk == total
+    // too when total is a multiple of the interval (including total == 0). The loop only emits
+    // checkpoints for clk < total.
+    let total = exec.events.len() as u32;
+    if total % REG_CKPT == 0 { write_reg_ckpt(&mut rck, &regs)?; }
+    if total % MEM_CKPT == 0 { write_mem_ckpt(&mut mck, &mem, &mut idx, &mut mck_off)?; }
     cycles.flush()?; regw.flush()?; memw.flush()?; rck.flush()?; mck.flush()?;
     let mut idxf = BufWriter::new(File::create(dir.join("memckpt.idx"))?);
     for o in idx { idxf.write_all(&o.to_le_bytes())?; }
     idxf.flush()?;
+    // Written last: its presence is the completion marker `Trace::open` checks.
     std::fs::write(dir.join("syscalls.json"), serde_json::to_vec(&syscalls)?)?;
-    Ok(exec.events.len() as u32)
+    Ok(total)
 }
 
 pub struct Trace {
@@ -115,6 +130,7 @@ pub struct Trace {
     memckpt_idx: Vec<u64>,
 }
 
+fn corrupt(msg: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, msg.to_string()) }
 fn bad(msg: String) -> io::Error { io::Error::new(io::ErrorKind::InvalidInput, msg) }
 fn u32_at(b: &[u8], i: usize) -> u32 { u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) }
 
@@ -139,6 +155,7 @@ fn lower_bound(f: &File, n: u64, clk: u32) -> io::Result<u64> {
 
 impl Trace {
     pub fn open(dir: &Path) -> io::Result<Trace> {
+        if !dir.join("syscalls.json").exists() { return Err(corrupt("incomplete trace")); }
         let cycles = File::open(dir.join("cycles.bin"))?;
         let total = (cycles.metadata()?.len() / REC_BYTES) as u32;
         let idx_bytes = std::fs::read(dir.join("memckpt.idx"))?;
@@ -199,7 +216,7 @@ impl Trace {
         if words > MAX_WINDOW { return Err(bad(format!("window {words} exceeds {MAX_WINDOW}"))); }
         if clk > self.total { return Err(bad(format!("clk {clk} > total {}", self.total))); }
         let ck = (clk / MEM_CKPT) as usize;
-        let off = *self.memckpt_idx.get(ck).ok_or_else(|| bad("missing memory checkpoint".into()))?;
+        let off = *self.memckpt_idx.get(ck).ok_or_else(|| corrupt("missing memory checkpoint"))?;
         let mut nb = [0u8; 4];
         self.memckpt.read_exact_at(&mut nb, off)?;
         let n = u32::from_le_bytes(nb) as usize;
