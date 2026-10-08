@@ -1819,6 +1819,7 @@ dependencies = [
  "futures-util",
  "hex",
  "http-body-util",
+ "rand-guest",
  "rand_zkvm",
  "serde",
  "serde_json",

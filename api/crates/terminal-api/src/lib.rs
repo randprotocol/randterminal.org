@@ -1,6 +1,7 @@
 //! Rand Terminal API (axum).
 pub mod error;
 pub mod handlers;
+pub mod jobs;
 pub mod ratelimit;
 pub mod routes;
 pub mod state;
