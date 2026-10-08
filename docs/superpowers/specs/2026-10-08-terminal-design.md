@@ -167,7 +167,10 @@ In-process. Options: `stage` (two by default, one selectable for teaching), `cha
 
 The sandbox runs `rand-guest build <shim-dir> --lang c --out image.bin` with the
 pinned clang; stdout gives words, `hc`, program id. `rand-guest check` reports fit
-against the cap. The job keeps `guest.elf` and `image.bin`.
+against the cap. The job keeps `guest.elf` and `image.bin`. An image the checker rejects
+(over the cap, a forbidden instruction) is still written and `rand-guest` exits 1: the stage
+takes it and the image view shows `fits: false` with the findings; only a build that wrote no
+image fails.
 
 **Source map.** Production builds carry no debug info and the flag set is pinned for
 `hc` reproducibility, so the build stage runs a second, side build of the same crate
@@ -230,7 +233,9 @@ keccak/sha max heights), syscall counts by kind, and `hot_pcs` (top 32 pcs by hi
 Run endpoints: `GET /runs/:rid` (summary), `GET /runs/:rid/cycles?from&count` (≤ 4 096
 records, JSON), `GET /runs/:rid/state?at=N` (registers at N, the cycle record, the
 instruction's source-map entry), `GET /runs/:rid/memory?at=N&addr=A&words=W` (W ≤ 256),
-`GET /runs/:rid/syscalls`.
+`GET /runs/:rid/syscalls`, `GET /runs/:rid/next_src?from=N&dir=1|-1` (the debugger's "next
+source op": the first cycle after/before N, within 2^20, whose mapped source op differs from
+N's → `{clk, src_pc}`; 404 none, 409 no pc-level source map).
 
 Reference workloads: ERC-20 `transfer` 66 235 cycles (tier 18), `approve` 48 119
 (tier 16); SPL Token `transfer` 765 851 cycles (tier 20). All of these emulate in well
@@ -293,14 +298,19 @@ Base `/api/v1`. JSON everywhere; errors are `{error, message, details?}`.
 | GET | `/jobs/:id/compile` `/transpile` `/image` | stage views (§4) |
 | GET | `/jobs/:id/files/:name` | raw artifacts: `contract.c`, `image.bin`, `program.so`, `runtime.hex` |
 | POST | `/jobs/:id/runs` | the call (§4.4) → `{rid}` 201; runs synchronously up to the cap |
-| GET | `/runs/:rid` `/cycles` `/state` `/memory` `/syscalls` | §4.4 |
-| GET | `/health` | `{ok, sandbox_image, circuits_rev}` |
+| GET | `/runs/:rid` `/cycles` `/state` `/memory` `/syscalls` `/next_src` | §4.4 |
+| GET | `/health` | `{ok, sandbox, sandbox_image, circuits_rev}`; `sandbox`: the docker daemon answers (`docker version`, cached 30 s) |
 
 Limits: source files ≤ 512 KB total, `.so` ≤ 2 MB, one job per POST, 10 jobs per
-minute per IP and 60 runs per minute per IP (randscan's limiter pattern), 2 concurrent
-sandbox builds globally (`TERMINAL_MAX_CONCURRENT_BUILDS`). Jobs and runs expire one
+minute per IP and 60 runs per minute per IP (randscan's limiter pattern), 6 000 reads
+under `/runs/` per minute per IP (the debugger's own bucket, `TERMINAL_RUNS_GET_RPM`;
+nginx gives `/api/v1/runs/` its own zone too), 600 other requests per minute, 2 concurrent
+sandbox builds globally (`TERMINAL_MAX_CONCURRENT_BUILDS`). At most 3 unfinished jobs per
+client (`TERMINAL_MAX_ACTIVE_JOBS_PER_IP`, 429 `too_many_jobs`) and 32 in all
+(`TERMINAL_MAX_QUEUED_JOBS`, 503). A job keeps its newest 8 runs. Jobs and runs expire one
 hour after last access; a disk cap (`TERMINAL_DATA_CAP_GB`, default 20) evicts
-least-recently-used jobs first.
+least-recently-used jobs first, and while usage (the last sweep's measurement plus what
+finished jobs and runs added) is over it, new jobs and runs get 503 and a sweep starts.
 
 ## 7. Sandbox
 
@@ -310,8 +320,15 @@ bind-mounted as the only writable path:
 ```
 docker run --rm --network none --memory 4g --memory-swap 4g --cpus 2 --pids-limit 512 \
   --read-only --tmpfs /tmp:size=1g --security-opt no-new-privileges --cap-drop ALL \
-  --user 10001:10001 -v <job>/<stage>:/work terminal-sandbox:<tag> <entrypoint>
+  --user 10001:10001 -v <job>/<stage>/sandbox:/work terminal-sandbox:<tag> <entrypoint>
 ```
+
+`<tag>` is what `sandbox/tag.sh` prints, `terminal-sandbox:<circuits rev>-<sha256 of every
+file under sandbox/, first 8 hex>`; production sets `TERMINAL_SANDBOX_IMAGE` to it. The
+entrypoint runs under `umask 000` and ends with `chmod -R a+rwX` over its mount, so the api
+user (not uid 10001) can open up and delete whatever a step leaves; the api skips entries it
+does not own when opening a tree. A docker CLI that cannot reach the daemon (or image) fails
+the stage as `internal`, "the build sandbox is unavailable".
 
 Timeouts: solc 30 s, build-sbf 300 s, rand-guest build 180 s (SPL Token's 22 k-line C
 is the sizing case); on timeout the container is killed and the stage fails with
