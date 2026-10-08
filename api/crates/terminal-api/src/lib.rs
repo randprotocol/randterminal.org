@@ -63,7 +63,7 @@ impl ApiConfig {
             max_program_words: num(var("TERMINAL_MAX_PROGRAM_WORDS"), d.max_program_words),
             max_builds: num(var("TERMINAL_MAX_CONCURRENT_BUILDS"), d.max_builds),
             max_runs: num(var("TERMINAL_MAX_CONCURRENT_RUNS"), d.max_runs),
-            data_cap_bytes: num::<u64>(var("TERMINAL_DATA_CAP_GB"), 20) << 30,
+            data_cap_bytes: num::<u64>(var("TERMINAL_DATA_CAP_GB"), 20).saturating_mul(1 << 30),
             job_ttl_secs: d.job_ttl_secs,
             trust_proxy: var("TRUST_PROXY").map(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")).unwrap_or(false),
             jobs_rpm: num(var("TERMINAL_JOBS_RPM"), d.jobs_rpm),

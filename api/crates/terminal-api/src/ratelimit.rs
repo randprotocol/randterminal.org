@@ -35,10 +35,12 @@ impl RateLimiter {
 
 pub fn unix_now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
 
-/// The client address: the first `X-Forwarded-For` hop when behind nginx (`trust_proxy`), else the peer.
+/// The client address: the LAST `X-Forwarded-For` hop when behind nginx (`trust_proxy`), else the peer.
+/// nginx appends the real client address to whatever the client sent, so the last hop is the only
+/// one a client cannot forge.
 pub fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, trust_proxy: bool) -> String {
     if trust_proxy {
-        if let Some(ip) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.split(',').next()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { return ip; }
+        if let Some(ip) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.rsplit(',').next()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { return ip; }
     }
     peer.map(|p| p.ip().to_string()).unwrap_or_else(|| "unknown".into())
 }
