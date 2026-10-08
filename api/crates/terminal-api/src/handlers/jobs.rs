@@ -28,24 +28,31 @@ fn event_name(e: &JobEvent) -> &'static str {
 
 fn done_event() -> Event { Event::default().event("done").data("{}") }
 
+/// An event carrying `v` as JSON; `None` when it cannot be serialized (the stream then ends).
+fn json_event<T: serde::Serialize>(name: &str, v: &T) -> Option<Event> { Event::default().event(name).json_data(v).ok() }
+
 /// `job` snapshot, then `stage`/`console` events, then `done`; the stream ends after `done`.
 pub async fn events(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     // Subscribe before reading the snapshot, so no change falls between the two.
     let rx = s.store.subscribe(&id);
     let view = s.store.view(&id)?;
-    let finished = view.finished;
-    let head = stream::once(async move { Ok(Event::default().event("job").json_data(&view).unwrap()) });
-    let tail = stream::unfold(if finished { None } else { rx }, |rx| async move {
+    // A job with no live channel (finished, or from before a restart) gets the snapshot and `done`.
+    let live = !view.finished && rx.is_some();
+    let head = stream::once(async move { Ok(json_event("job", &view).unwrap_or_else(done_event)) });
+    let tail = stream::unfold((if live { rx } else { None }, s, id), |(rx, s, id)| async move {
         let mut rx = rx?;
-        loop {
-            match rx.recv().await {
-                Ok(JobEvent::Done) | Err(RecvError::Closed) => return Some((Ok(done_event()), None)),
-                Ok(e) => return Some((Ok(Event::default().event(event_name(&e)).json_data(&e).unwrap()), Some(rx))),
-                Err(RecvError::Lagged(_)) => continue,
-            }
+        let ev = match rx.recv().await {
+            Ok(JobEvent::Done) | Err(RecvError::Closed) => return Some((Ok(done_event()), (None, s, id))),
+            Ok(e) => json_event(event_name(&e), &e),
+            // Events were missed: replace them with a fresh snapshot.
+            Err(RecvError::Lagged(_)) => s.store.view(&id).ok().and_then(|v| json_event("job", &v)),
+        };
+        match ev {
+            Some(ev) => Some((Ok(ev), (Some(rx), s, id))),
+            None => Some((Ok(done_event()), (None, s, id))),
         }
     });
-    // A job with no live channel (finished, or from before a restart) gets the snapshot and `done`.
-    let body = if finished { head.chain(stream::once(async { Ok(done_event()) })).boxed() } else { head.chain(tail).boxed() };
+    let done = stream::once(async { Ok(done_event()) });
+    let body = if live { head.chain(tail).boxed() } else { head.chain(done).boxed() };
     Ok(Sse::new(body).keep_alive(KeepAlive::default()))
 }

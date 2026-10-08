@@ -51,6 +51,8 @@ async fn events_stream_stage_changes_and_ends_with_done() {
     assert!(text.starts_with("event: job\n"), "{text}");
     assert!(text.contains("event: stage\n"));
     assert!(text.contains("\"status\":\"done\""));
+    assert!(text.contains("event: console\n"), "{text}");
+    assert!(text.contains("\"type\":\"stage\""), "{text}");
     assert!(text.trim_end().ends_with("event: done\ndata: {}"), "{text}");
 }
 
@@ -84,4 +86,65 @@ async fn bad_jobs_and_the_job_rate_limit() {
     }
     let (st, _, _) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
     assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn events_on_an_unknown_job_404_and_are_never_gzipped() {
+    let (app, _s, _d) = test_app(fake_runner());
+    let (st, _, _) = call(&app, json_req("GET", &format!("/api/v1/jobs/{}/events", "0".repeat(32)), None)).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let (_, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+    let id = v["id"].as_str().unwrap();
+    let mut req = json_req("GET", &format!("/api/v1/jobs/{id}/events"), None);
+    req.headers_mut().insert("accept-encoding", "gzip".parse().unwrap());
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert!(res.headers().get("content-encoding").is_none(), "{:?}", res.headers());
+}
+
+fn panicking_runner() -> std::sync::Arc<dyn terminal_sandbox::Runner> {
+    std::sync::Arc::new(terminal_sandbox::FakeRunner::new(|_: &terminal_sandbox::RunSpec| -> terminal_sandbox::RunOutput { panic!("runner exploded") }))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panicking_pipeline_still_finishes_the_job_and_ends_the_stream() {
+    let (app, _s, _d) = test_app(panicking_runner());
+    let (_, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+    let id = v["id"].as_str().unwrap();
+    let res = app.clone().oneshot(json_req("GET", &format!("/api/v1/jobs/{id}/events"), None)).await.unwrap();
+    let body = tokio::time::timeout(std::time::Duration::from_secs(30), res.into_body().collect()).await.unwrap().unwrap().to_bytes();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.trim_end().ends_with("event: done\ndata: {}"), "{text}");
+    let job = wait_job(&app, id).await;
+    assert_eq!(job["compile"]["status"], "failed", "{job}");
+    assert_eq!(job["compile"]["error"]["kind"], "internal");
+    assert_eq!(job["compile"]["error"]["message"], "the pipeline stopped unexpectedly");
+    assert_eq!(job["transpile"]["status"], "queued");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_left_unfinished_by_a_restart_is_failed_and_streams_snapshot_then_done() {
+    let (app, state, d) = test_app(slow_runner());
+    let (_, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+    let id = v["id"].as_str().unwrap().to_string();
+    // Freeze the on-disk state of an in-flight job (compile running), as a killed process leaves it.
+    let path = state.store.dir(&id).unwrap().join("job.json");
+    wait_job(&app, &id).await;
+    let mut j: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    j["finished"] = false.into();
+    j["compile"] = serde_json::json!({"status": "running", "started": 1});
+    j["transpile"] = serde_json::json!({"status": "queued"});
+    j["build"] = serde_json::json!({"status": "queued"});
+    std::fs::write(&path, j.to_string()).unwrap();
+    // A second process over the same data directory.
+    let cfg = terminal_api::ApiConfig { data_dir: d.path().into(), ..Default::default() };
+    let state2 = terminal_api::state::AppState::new(cfg, fake_runner());
+    let app2 = terminal_api::routes::create_router(state2);
+    let job = wait_job(&app2, &id).await;
+    assert_eq!(job["compile"]["status"], "failed", "{job}");
+    assert_eq!(job["compile"]["error"]["message"], "interrupted by a restart");
+    assert_eq!(job["compile"]["error"]["kind"], "internal");
+    let res = app2.clone().oneshot(json_req("GET", &format!("/api/v1/jobs/{id}/events"), None)).await.unwrap();
+    let text = String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned();
+    assert_eq!(text.matches("event: ").count(), 2, "{text}");
+    assert!(text.starts_with("event: job\n") && text.trim_end().ends_with("event: done\ndata: {}"), "{text}");
 }

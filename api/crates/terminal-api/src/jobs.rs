@@ -57,6 +57,7 @@ impl JobStore {
             .or_else(|_| std::env::current_dir().map(|c| c.join(&config.data_dir)))
             .unwrap_or_else(|_| config.data_dir.clone())
             .join("jobs");
+        mark_interrupted(&root);
         Arc::new(Self {
             root, builds: Arc::new(Semaphore::new(config.max_builds.max(1))), config, runner,
             chans: Mutex::new(HashMap::new()), access: Mutex::new(HashMap::new()), running: Mutex::new(HashSet::new()),
@@ -124,7 +125,7 @@ impl JobStore {
         self.chans.lock().unwrap().insert(id.clone(), tx);
         self.touch(&id);
         let me = self.clone();
-        tokio::spawn(async move { Pipeline { store: me, dir, view }.run().await });
+        tokio::spawn(async move { Pipeline { store: me, dir, view, completed: false }.run().await });
         Ok(id)
     }
 
@@ -220,6 +221,20 @@ fn dir_size(p: &Path) -> u64 {
 
 /// Writes `v` as JSON through a fresh temporary file (created with O_EXCL, so never through a
 /// pre-existing link) renamed over `p`.
+/// Jobs a previous process left unfinished can never finish: fail them so clients see an end.
+fn mark_interrupted(root: &Path) {
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    for e in rd.flatten() {
+        let p = e.path().join("job.json");
+        if !is_regular(&p) { continue; }
+        let Ok(bytes) = std::fs::read(&p) else { continue };
+        let Ok(mut view) = serde_json::from_slice::<JobView>(&bytes) else { continue };
+        if view.finished { continue; }
+        fail_interrupted(&mut view, "interrupted by a restart");
+        let _ = write_json(&p, &view);
+    }
+}
+
 pub fn write_json<T: Serialize>(p: &Path, v: &T) -> std::io::Result<()> {
     let tmp = p.with_extension("tmp");
     let _ = std::fs::remove_file(&tmp);
@@ -260,7 +275,37 @@ fn take_output(sandbox: &Path, name: &str, cap: u64, kind: &str) -> Result<Optio
     Ok(Some(buf))
 }
 
-struct Pipeline { store: Arc<JobStore>, dir: PathBuf, view: JobView }
+struct Pipeline { store: Arc<JobStore>, dir: PathBuf, view: JobView, completed: bool }
+
+/// Fails the stage that was running (else the first one still queued) and finishes the job.
+fn fail_interrupted(view: &mut JobView, message: &str) {
+    let now = unix_now();
+    let st = if view.compile.status == StageStatus::Running { &mut view.compile }
+        else if view.transpile.status == StageStatus::Running { &mut view.transpile }
+        else if view.build.status == StageStatus::Running { &mut view.build }
+        else if view.compile.status == StageStatus::Queued { &mut view.compile }
+        else if view.transpile.status == StageStatus::Queued { &mut view.transpile }
+        else { &mut view.build };
+    st.status = StageStatus::Failed;
+    st.ended = Some(now);
+    st.error = Some(stage_err("internal", message));
+    view.finished = true;
+}
+
+impl Drop for Pipeline {
+    /// A pipeline that panicked or was dropped before `run` finished still ends its job.
+    fn drop(&mut self) {
+        if self.completed { return; }
+        fail_interrupted(&mut self.view, "the pipeline stopped unexpectedly");
+        self.save();
+        self.store.running.lock().unwrap().remove(&self.view.id);
+        let snapshot = self.view.clone();
+        for (stage, st) in [(StageName::Compile, &snapshot.compile), (StageName::Transpile, &snapshot.transpile), (StageName::Build, &snapshot.build)] {
+            if st.status == StageStatus::Failed { self.emit(JobEvent::Stage { stage, state: st.clone() }); }
+        }
+        self.emit(JobEvent::Done);
+    }
+}
 
 /// What the compile stage hands the transpile stage.
 enum Compiled { Evm(Vec<u8>), Sbpf(Box<sbpf_analysis::Analysis>) }
@@ -322,6 +367,7 @@ impl Pipeline {
         self.view.finished = true;
         self.save();
         self.store.running.lock().unwrap().remove(&self.view.id);
+        self.completed = true;
         self.emit(JobEvent::Done);
     }
 
