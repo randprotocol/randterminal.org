@@ -1,1 +1,2 @@
-export default function Page() { return <main className="p-6 text-text-soft">Rand Terminal</main>; }
+import { Shell } from '@/components/Shell';
+export default function Page() { return <Shell />; }
