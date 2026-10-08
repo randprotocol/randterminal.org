@@ -1,0 +1,3 @@
+JetBrainsMono-Variable.woff2  JetBrains Mono v2.304, SIL OFL 1.1 (JetBrainsMono-OFL.txt), copied from
+                              randbridge.org/web/app/fonts (itself from clients/ui/fonts). Inter comes
+                              through next/font/google and is self-hosted at build time.

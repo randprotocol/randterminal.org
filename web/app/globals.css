@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+/* Rand Terminal — the wallet's ink/bone palette (clients/design/tokens.json) with
+   randprotocol.org's cobalt as the one accent. Dark by default; light under data-theme="light"
+   or a light OS when data-theme="system". Stage colours are the only other hues, and each is
+   paired with a label, never colour alone. */
+:root {
+  color-scheme: dark;
+  --bg: #0E1220; --bg-soft: #121726; --surface: #161C2C; --surface-2: #1E2538;
+  --border: #2B3350; --border-soft: #20283D;
+  --text: #ECE9E2; --text-soft: #ABAFBF; --text-mute: #8C91A5; --text-strong: #FFFDF8;
+  --accent: #5B8DEF; --accent-2: #8FB0FF; --on-accent: #0E1220;
+  --positive: #3DDC97; --negative: #FF7A59; --warning: #F5C451;
+  --hl: rgba(91, 141, 239, .16);
+  --r-sm: 8px; --r-md: 12px; --r-lg: 16px;
+  --font: var(--font-inter, "Inter"), ui-sans-serif, system-ui, sans-serif;
+  --mono: var(--font-jetbrains, "JetBrains Mono"), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #F2F3F7; --bg-soft: #E9EBF1; --surface: #FFFFFF; --surface-2: #F1F2F6;
+  --border: #D9DCE6; --border-soft: #E6E8EF;
+  --text: #121521; --text-soft: #474C5E; --text-mute: #62677A; --text-strong: #07090F;
+  --accent: #2F5FCC; --accent-2: #244CA3; --on-accent: #FFFFFF;
+  --positive: #0B7A51; --negative: #C2410C; --warning: #8F6200;
+  --hl: rgba(47, 95, 204, .12);
+}
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    color-scheme: light;
+    --bg: #F2F3F7; --bg-soft: #E9EBF1; --surface: #FFFFFF; --surface-2: #F1F2F6;
+    --border: #D9DCE6; --border-soft: #E6E8EF;
+    --text: #121521; --text-soft: #474C5E; --text-mute: #62677A; --text-strong: #07090F;
+    --accent: #2F5FCC; --accent-2: #244CA3; --on-accent: #FFFFFF;
+    --positive: #0B7A51; --negative: #C2410C; --warning: #8F6200;
+    --hl: rgba(47, 95, 204, .12);
+  }
+}
+@theme inline {
+  --color-bg: var(--bg); --color-bg-soft: var(--bg-soft); --color-surface: var(--surface); --color-surface-2: var(--surface-2);
+  --color-border: var(--border); --color-border-soft: var(--border-soft);
+  --color-text: var(--text); --color-text-soft: var(--text-soft); --color-text-mute: var(--text-mute); --color-text-strong: var(--text-strong);
+  --color-accent: var(--accent); --color-accent-2: var(--accent-2); --color-on-accent: var(--on-accent);
+  --color-positive: var(--positive); --color-negative: var(--negative); --color-warning: var(--warning); --color-hl: var(--hl);
+  --font-sans: var(--font); --font-mono: var(--mono);
+  --radius-sm: var(--r-sm); --radius-md: var(--r-md); --radius-lg: var(--r-lg);
+}
+@layer base {
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+  code, pre, .mono { font-family: var(--mono); font-variant-ligatures: none; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
