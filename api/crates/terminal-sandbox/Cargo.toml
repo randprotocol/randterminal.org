@@ -9,8 +9,6 @@ authors.workspace = true
 tokio = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
-serde = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
