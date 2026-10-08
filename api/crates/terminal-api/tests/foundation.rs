@@ -292,3 +292,53 @@ async fn extractor_rejections_are_json() {
         assert!(!v["message"].as_str().unwrap().is_empty(), "{v}");
     }
 }
+
+/// M3: /health says whether the build sandbox (the docker daemon) answers; `ok` is the process.
+#[tokio::test]
+async fn health_reports_the_sandbox() {
+    struct Down;
+    #[async_trait::async_trait]
+    impl terminal_sandbox::Runner for Down {
+        async fn run(
+            &self,
+            _: terminal_sandbox::RunSpec,
+        ) -> Result<terminal_sandbox::RunOutput, terminal_sandbox::SandboxError> {
+            unreachable!()
+        }
+        async fn available(&self) -> bool {
+            false
+        }
+    }
+    let (s, _, v) = call(
+        &app(ApiConfig::default()),
+        json_req("GET", "/api/v1/health", None),
+    )
+    .await;
+    assert_eq!(
+        (s, &v["ok"], &v["sandbox"]),
+        (
+            StatusCode::OK,
+            &serde_json::json!(true),
+            &serde_json::json!(true)
+        ),
+        "{v}"
+    );
+    let d = tempfile::tempdir().unwrap();
+    let down = create_router(AppState::new(
+        ApiConfig {
+            data_dir: d.path().into(),
+            ..ApiConfig::default()
+        },
+        std::sync::Arc::new(Down),
+    ));
+    let (s, _, v) = call(&down, json_req("GET", "/api/v1/health", None)).await;
+    assert_eq!(
+        (s, &v["ok"], &v["sandbox"]),
+        (
+            StatusCode::OK,
+            &serde_json::json!(true),
+            &serde_json::json!(false)
+        ),
+        "{v}"
+    );
+}

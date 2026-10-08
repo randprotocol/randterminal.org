@@ -218,3 +218,45 @@ async fn fake_runner_calls_the_closure() {
         "hi"
     );
 }
+
+#[test]
+fn docker_failures_are_told_apart_from_tool_failures() {
+    use terminal_sandbox::{docker_unavailable, RunOutput};
+    let out = |status, stderr: &str| RunOutput {
+        status,
+        stderr: stderr.into(),
+        ..Default::default()
+    };
+    assert!(docker_unavailable(&out(
+        125,
+        "docker: Error response from daemon: No such image: x"
+    )));
+    assert!(docker_unavailable(&out(
+        1,
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock."
+    )));
+    assert!(docker_unavailable(&out(
+        125,
+        "docker: failed to connect to the docker API at unix:///x"
+    )));
+    assert!(
+        !docker_unavailable(&out(125, "error[E0425]: cannot find value")),
+        "a tool's own 125"
+    );
+    assert!(!docker_unavailable(&out(
+        1,
+        "Error: the image is rejected by the checker"
+    )));
+}
+
+#[tokio::test]
+async fn availability_is_the_docker_version_probe() {
+    use terminal_sandbox::Runner;
+    let mut r = DockerRunner::new("x");
+    r.program = "false".into();
+    assert!(!r.available().await);
+    r.program = "true".into();
+    assert!(r.available().await);
+    r.program = "/nonexistent/docker".into();
+    assert!(!r.available().await);
+}

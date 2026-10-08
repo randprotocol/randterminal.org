@@ -50,7 +50,23 @@ pub enum SandboxError {
 #[async_trait]
 pub trait Runner: Send + Sync {
     async fn run(&self, spec: RunSpec) -> Result<RunOutput, SandboxError>;
+    /// Whether the sandbox can run steps at all (for /health); cheap, bounded.
+    async fn available(&self) -> bool {
+        true
+    }
 }
+
+/// True when a step's output says the docker CLI never reached a working daemon (or image):
+/// the daemon is down or unreachable, or `docker run` itself failed (exit 125, a docker message).
+pub fn docker_unavailable(out: &RunOutput) -> bool {
+    let e = out.stderr.as_str();
+    e.contains("Cannot connect to the Docker daemon")
+        || e.contains("failed to connect to the docker API")
+        || (out.status == 125 && e.trim_start().starts_with("docker:"))
+}
+
+/// How long the `docker version` probe may take.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn timeout_for(tool: &Tool) -> Duration {
     match tool {
@@ -259,6 +275,17 @@ impl Runner for DockerRunner {
             stderr: finish(&err_buf),
             timed_out,
         })
+    }
+
+    async fn available(&self) -> bool {
+        let probe = Command::new(&self.program)
+            .args(["version", "--format", "{{.Server.Version}}"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status();
+        matches!(tokio::time::timeout(PROBE_TIMEOUT, probe).await, Ok(Ok(s)) if s.success())
     }
 }
 

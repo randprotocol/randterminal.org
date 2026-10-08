@@ -17,12 +17,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use terminal_core::views::*;
 use terminal_core::{evm_analysis, image, sbpf_analysis, stages};
-use terminal_sandbox::{timeout_for, RunOutput, RunSpec, Runner, Tool};
+use terminal_sandbox::{docker_unavailable, timeout_for, RunOutput, RunSpec, Runner, Tool};
 use tokio::sync::{broadcast, Semaphore};
 
 pub const MAX_TEXT_BYTES: usize = 512 * 1024;
 pub const MAX_ELF_BYTES: usize = 2 * 1024 * 1024;
 const CONSOLE_KEEP: usize = 64 * 1024;
+const SANDBOX_DOWN: &str = "the build sandbox is unavailable";
 
 /// Size caps on what the host takes back from a sandbox step.
 const MAX_SOLC_OUTPUT: u64 = 32 << 20;
@@ -735,7 +736,19 @@ impl Pipeline {
                 timeout: timeout_for(&tool),
             })
             .await
-            .map_err(|e| stage_err("internal", e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("sandbox: {e}");
+                stage_err("internal", SANDBOX_DOWN)
+            })?;
+        // Docker's own complaint (socket paths, daemon state) is for the operator's log, not the console.
+        if docker_unavailable(&out) {
+            tracing::error!(
+                "sandbox unavailable: exit {}: {}",
+                out.status,
+                out.stderr.trim()
+            );
+            return Err(stage_err("internal", SANDBOX_DOWN));
+        }
         self.console(stage, &out);
         if out.timed_out {
             return Err(stage_err(

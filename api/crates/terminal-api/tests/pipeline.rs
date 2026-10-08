@@ -584,3 +584,28 @@ async fn a_build_without_an_image_fails() {
     assert_eq!(e.kind, "build");
     assert!(e.message.contains("exited 101"), "{}", e.message);
 }
+
+/// M3: when the docker CLI cannot reach the daemon the stage reads as an infrastructure
+/// failure, not a compile error, and docker's own message stays out of the job console.
+#[tokio::test]
+async fn an_unreachable_docker_daemon_is_an_internal_error() {
+    for (status, stderr) in [
+        (125, "docker: failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running"),
+        (1, "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"),
+        (125, "docker: Error response from daemon: No such image: terminal-sandbox:x"),
+    ] {
+        let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(
+            move |_: &terminal_sandbox::RunSpec| terminal_sandbox::RunOutput {
+                status,
+                stderr: stderr.into(),
+                ..Default::default()
+            },
+        ));
+        let (s, _d) = store_with(runner);
+        let id = s.create(sol("contract ERC20 {}")).unwrap();
+        let v = wait_finished(&s, &id).await;
+        let e = v.compile.error.clone().unwrap_or_else(|| panic!("{v:?}"));
+        assert_eq!((e.kind.as_str(), e.message.as_str()), ("internal", "the build sandbox is unavailable"), "{stderr}");
+        assert!(v.console.iter().all(|l| !l.text.contains("docker")), "{v:?}");
+    }
+}

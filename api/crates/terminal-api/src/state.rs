@@ -1,5 +1,6 @@
 use crate::{jobs::JobStore, ratelimit::RateLimiter, ApiConfig};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use terminal_core::views::SampleView;
 use terminal_sandbox::{FakeRunner, RunOutput, RunSpec, Runner};
 use tokio::sync::Semaphore;
@@ -11,6 +12,30 @@ pub struct AppState {
     pub store: Arc<JobStore>,
     pub runs: Arc<Semaphore>,
     pub samples: Arc<Vec<SampleView>>,
+    pub sandbox: Arc<SandboxProbe>,
+}
+
+/// How long a sandbox availability answer is reused by /health.
+pub const PROBE_TTL: Duration = Duration::from_secs(30);
+
+/// `Runner::available`, cached for [`PROBE_TTL`] so /health stays cheap.
+pub struct SandboxProbe {
+    runner: Arc<dyn Runner>,
+    last: tokio::sync::Mutex<Option<(Instant, bool)>>,
+}
+
+impl SandboxProbe {
+    pub async fn available(&self) -> bool {
+        let mut last = self.last.lock().await;
+        if let Some((at, ok)) = *last {
+            if at.elapsed() < PROBE_TTL {
+                return ok;
+            }
+        }
+        let ok = self.runner.available().await;
+        *last = Some((Instant::now(), ok));
+        ok
+    }
 }
 
 impl AppState {
@@ -24,6 +49,10 @@ impl AppState {
         );
         Self {
             samples,
+            sandbox: Arc::new(SandboxProbe {
+                runner: runner.clone(),
+                last: tokio::sync::Mutex::new(None),
+            }),
             store: JobStore::new(config.clone(), runner),
             runs: Arc::new(Semaphore::new(config.max_runs.max(1))),
             limiter: Arc::new(RateLimiter::new()),
