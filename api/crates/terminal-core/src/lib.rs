@@ -2,3 +2,4 @@
 //! crates, and the DTOs the API serves. No HTTP, no Docker here.
 pub mod rv_disasm;
 pub mod views;
+pub mod sbpf_disasm;
