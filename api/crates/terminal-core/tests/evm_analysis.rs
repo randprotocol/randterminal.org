@@ -86,83 +86,106 @@ fn markers_parse_lines_one_based() {
     assert_eq!(evm_markers(c), vec![OpLine { pc: 0, line: 2 }, OpLine { pc: 2, line: 3 }, OpLine { pc: 4, line: 4 }]);
 }
 
-fn edges_of(code: &[u8]) -> (Vec<evm2rv::blocks::Block>, Vec<(usize, usize, String)>) {
-    let bs = evm2rv::blocks::blocks(code);
-    let g = terminal_core::evm_analysis::graph(&bs);
-    let es = g.edges.iter().map(|e| (e.from, e.to, e.kind.clone())).collect();
-    (bs, es)
+type Starts = Vec<(usize, usize)>;
+type Es = Vec<(usize, usize, String)>;
+fn edges_at(code: &[u8], stage: u8) -> (Starts, Es, String) {
+    let (v, c) = transpile(code, 20, stage).unwrap();
+    let starts = v.graph.nodes.iter().map(|n| n.start).collect();
+    let es = v.graph.edges.iter().map(|e| (e.from, e.to, e.kind.clone())).collect();
+    (starts_pairs(starts), es, c)
 }
+fn starts_pairs(s: Vec<usize>) -> Vec<(usize, usize)> { s.into_iter().enumerate().collect() }
+fn idx(starts: &[(usize, usize)], pc: usize) -> usize { starts.iter().find(|s| s.1 == pc).unwrap().0 }
 
 #[test]
 fn push_jump_to_a_jumpdest_is_a_jump_edge() {
     // PUSH1 4; JUMP; INVALID; JUMPDEST; STOP
-    let (bs, es) = edges_of(&[0x60, 0x04, 0x56, 0xfe, 0x5b, 0x00]);
-    let to = bs.iter().position(|b| b.start == 4).unwrap();
-    assert!(es.contains(&(0, to, "jump".to_string())), "{es:?}");
+    for stage in [1, 2] {
+        let (st, es, _) = edges_at(&[0x60, 0x04, 0x56, 0xfe, 0x5b, 0x00], stage);
+        assert!(es.contains(&(0, idx(&st, 4), "jump".to_string())), "stage {stage}: {es:?}");
+    }
 }
 
 #[test]
 fn push_jumpi_has_taken_and_not_taken_edges() {
-    // PUSH1 1; PUSH1 8; JUMPI; STOP; JUMPDEST; STOP  (JUMPI at 4, STOP at 5, JUMPDEST at 6)
-    let code = [0x60, 0x01, 0x60, 0x06, 0x57, 0x00, 0x5b, 0x00];
-    let (bs, es) = edges_of(&code);
-    let jd = bs.iter().position(|b| b.start == 6).unwrap();
-    let ft = bs.iter().position(|b| b.start == 5).unwrap();
-    assert!(es.contains(&(0, jd, "taken".to_string())), "{es:?}");
-    assert!(es.contains(&(0, ft, "not-taken".to_string())), "{es:?}");
+    // PUSH1 1; PUSH1 6; JUMPI; STOP; JUMPDEST; STOP
+    for stage in [1, 2] {
+        let (st, es, _) = edges_at(&[0x60, 0x01, 0x60, 0x06, 0x57, 0x00, 0x5b, 0x00], stage);
+        assert!(es.contains(&(0, idx(&st, 6), "taken".to_string())), "{es:?}");
+        assert!(es.contains(&(0, idx(&st, 5), "not-taken".to_string())), "{es:?}");
+    }
 }
 
 #[test]
 fn push_to_a_non_jumpdest_gets_no_edge() {
-    // PUSH1 3; JUMP; INVALID; STOP  (3 is not a JUMPDEST)
-    let (_, es) = edges_of(&[0x60, 0x03, 0x56, 0xfe, 0x00]);
-    assert!(es.iter().all(|e| e.2 != "jump" && e.2 != "taken"), "{es:?}");
+    for stage in [1, 2] {
+        let (_, es, _) = edges_at(&[0x60, 0x03, 0x56, 0xfe, 0x00], stage);
+        assert!(es.iter().all(|e| e.2 != "jump" && e.2 != "taken"), "{es:?}");
+    }
 }
 
 #[test]
 fn dynamic_jump_gets_no_edge() {
-    // CALLDATASIZE; JUMP; JUMPDEST; STOP
-    let (_, es) = edges_of(&[0x36, 0x56, 0x5b, 0x00]);
+    let (_, es, _) = edges_at(&[0x36, 0x56, 0x5b, 0x00], 2); // CALLDATASIZE; JUMP; JUMPDEST; STOP
     assert!(es.iter().all(|e| e.2 != "jump"), "{es:?}");
 }
 
 #[test]
-fn erc20_jump_edges_match_the_gotos_in_the_c() {
-    use std::collections::BTreeSet;
-    let code = fixtures::erc20_code();
-    let (view, c) = transpile(&code, 13, 2).unwrap();
-    let g = &view.graph;
-    let n = g.nodes.len();
-    assert!(g.edges.iter().all(|e| e.to < n && e.from < n));
-    let ours: BTreeSet<(usize, usize)> = g.edges.iter().filter(|e| e.kind == "jump" || e.kind == "taken")
-        .map(|e| (g.nodes[e.from].start, g.nodes[e.to].start)).collect();
-    assert!(!ours.is_empty());
-    // The C: each block opens with `/* [0xSTART, ...` and its resolved jumps are `goto L_<n>;`.
-    let mut theirs = BTreeSet::new();
-    let mut cur = None;
-    for line in c.lines() {
-        if let Some(rest) = line.trim_start().strip_prefix("/* [0x").or_else(|| line.split("/* [0x").nth(1)) {
-            if let Some(h) = rest.split(',').next() { cur = usize::from_str_radix(h, 16).ok(); }
-            continue;
-        }
-        if line.contains("case ") { continue; }
-        if let Some(from) = cur {
-            let mut rest = line;
-            while let Some(i) = rest.find("goto L_") {
-                let t: String = rest[i + 7..].chars().take_while(|ch| ch.is_ascii_digit()).collect();
-                theirs.insert((from, t.parse::<usize>().unwrap()));
-                rest = &rest[i + 7..];
-            }
-        }
-    }
-    // evm_entry's `goto L_0` precedes any block header, so cur is None there.
-    assert_eq!(ours, theirs);
+fn a_destination_moved_by_swap_resolves_at_stage_two_only() {
+    // PUSH1 7; PUSH1 1; SWAP1; JUMP; INVALID; JUMPDEST; STOP
+    let code = [0x60, 0x07, 0x60, 0x01, 0x90, 0x56, 0xfe, 0x5b, 0x00];
+    let (st, es, _) = edges_at(&code, 2);
+    assert!(es.contains(&(0, idx(&st, 7), "jump".to_string())), "{es:?}");
+    let (_, es1, _) = edges_at(&code, 1);
+    assert!(es1.iter().all(|e| e.2 != "jump"), "{es1:?}");
 }
 
 #[test]
-fn a_destination_moved_by_swap_still_resolves() {
-    // PUSH1 7; PUSH1 1; SWAP1; JUMP; INVALID; JUMPDEST; STOP  (stage two folds this to a goto)
-    let (bs, es) = edges_of(&[0x60, 0x07, 0x60, 0x01, 0x90, 0x56, 0xfe, 0x5b, 0x00]);
-    let to = bs.iter().position(|b| b.start == 7).unwrap();
-    assert!(es.contains(&(0, to, "jump".to_string())), "{es:?}");
+fn a_chainid_constant_destination_gets_its_edge_at_stage_two() {
+    // CHAINID; JUMP; INVALID...; JUMPDEST at pc 20; chain id 20
+    let mut code = vec![0x46, 0x56];
+    code.resize(20, 0xfe);
+    code.extend([0x5b, 0x00]);
+    let (st, es, c) = edges_at(&code, 2);
+    assert!(c.contains("goto L_20;"), "{c}");
+    assert!(es.contains(&(0, idx(&st, 20), "jump".to_string())), "{es:?}");
+}
+
+fn gotos_by_block(c: &str) -> std::collections::BTreeSet<(usize, usize)> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut cur = None;
+    for line in c.lines() {
+        if let Some(rest) = line.split("/* [0x").nth(1) {
+            cur = rest.split(',').next().and_then(|h| usize::from_str_radix(h, 16).ok());
+            continue;
+        }
+        if line.trim_start().starts_with("case ") { continue; }
+        if let Some(from) = cur {
+            let mut rest = line;
+            while let Some(i) = rest.find("goto L_") {
+                rest = &rest[i + 7..];
+                let t: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                out.insert((from, t.parse().unwrap()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn erc20_jump_edges_equal_the_gotos_in_the_c_at_both_stages() {
+    let code = fixtures::erc20_code();
+    let mut counts = vec![];
+    for stage in [1, 2] {
+        let (view, c) = transpile(&code, 13, stage).unwrap();
+        let g = &view.graph;
+        let n = g.nodes.len();
+        assert!(g.edges.iter().all(|e| e.to < n && e.from < n));
+        let ours: std::collections::BTreeSet<(usize, usize)> = g.edges.iter().filter(|e| e.kind == "jump" || e.kind == "taken")
+            .map(|e| (g.nodes[e.from].start, g.nodes[e.to].start)).collect();
+        assert!(!ours.is_empty());
+        assert_eq!(ours, gotos_by_block(&c), "stage {stage}");
+        counts.push(ours.len());
+    }
+    assert!(counts[0] <= counts[1], "{counts:?}");
 }
