@@ -1,7 +1,8 @@
 #[path = "fixtures.rs"]
 mod fixtures;
 use evm_core::u256::U256;
-use rand_zkvm::evm::{abi_call, erc20_transfer, mapping_slot, mapping_slot2, ALICE, BOB};
+use evm_core::interp::Halt;
+use rand_zkvm::evm::{abi_call, erc20_transfer, mapping_slot, mapping_slot2, slot_index, ALICE, BOB};
 use terminal_core::evm_call::{build, encode_calldata, erc20_transfer_form, parse_u256, u256_hex, TraceHost};
 use terminal_core::views::{EvmCallForm, StorageSeed};
 
@@ -116,4 +117,116 @@ fn seeds_become_storage() {
     let (call, steps) = build(&code, &form).unwrap();
     assert_eq!(call.touched, vec![U256::from_u32(2)]);
     assert!(steps.is_empty(), "a seeded slot needs no discovery");
+}
+
+#[test]
+fn bare_uint_and_int_are_canonicalised() {
+    let one = vec!["1".to_string()];
+    assert_eq!(encode_calldata("f(uint)", &one).unwrap(), encode_calldata("f(uint256)", &one).unwrap());
+    assert_eq!(encode_calldata("f(int)", &one).unwrap(), encode_calldata("f(int256)", &one).unwrap());
+    assert_eq!(
+        encode_calldata("transfer(address, uint)", &[u256_hex(&BOB), "250".into()]).unwrap(),
+        abi_call("transfer(address,uint256)", &[BOB, U256::from_u32(250)])
+    );
+}
+
+#[test]
+fn signed_bounds() {
+    let enc = |ty: &str, v: &str| encode_calldata(&format!("f({ty})"), &[v.to_string()]);
+    assert!(enc("int8", "-128").is_ok());
+    assert!(enc("int8", "-129").is_err());
+    assert!(enc("int8", "127").is_ok());
+    assert!(enc("int8", "128").is_err());
+    let two_255 = "57896044618658097711785492504343953926634992332820282019728792003956564819968";
+    let min = enc("int256", &format!("-{two_255}")).unwrap();
+    assert_eq!(min[4], 0x80);
+    assert!(min[5..].iter().all(|&b| b == 0), "-2^255 is 0x80 00…00");
+    assert!(enc("int256", two_255).is_err());
+}
+
+fn empty_form(storage: Vec<StorageSeed>) -> EvmCallForm {
+    EvmCallForm { function: "f()".into(), args: vec![], caller: u256_hex(&ALICE), address: None, value: "0".into(), gas_limit: 100_000, storage }
+}
+
+#[test]
+fn a_seed_given_twice_is_an_error() {
+    let seed = StorageSeed::Slot { slot: "2".into(), value: "7".into() };
+    let e = build(&[0x00], &empty_form(vec![seed.clone(), seed])).err().expect("duplicate seed");
+    assert!(e.contains("twice"), "{e}");
+}
+
+#[test]
+fn seeds_sharing_a_leaf_index_are_an_error() {
+    // Birthday search for two small slots with the same 32-bit leaf index (~2^16 hashes).
+    let mut seen = std::collections::HashMap::new();
+    let (a, b) = (0u32..).find_map(|n| seen.insert(slot_index(&U256::from_u32(n)), n).map(|m| (m, n))).unwrap();
+    let seeds = vec![
+        StorageSeed::Slot { slot: a.to_string(), value: "1".into() },
+        StorageSeed::Slot { slot: b.to_string(), value: "1".into() },
+    ];
+    let e = build(&[0x00], &empty_form(seeds)).err().expect("leaf collision");
+    assert!(e.contains("leaf position"), "{e}");
+}
+
+#[test]
+fn guessed_constants_the_call_does_not_read_are_pruned() {
+    let code = vec![0x60, 0x05, 0x54, 0x50, 0x00]; // PUSH1 5 SLOAD POP STOP
+    let (call, steps) = build(&code, &empty_form(vec![])).unwrap();
+    let guessed: Vec<String> = (0u32..=5).map(|s| u256_hex(&U256::from_u32(s))).collect();
+    assert_eq!(steps.iter().map(|s| s.slot.clone()).collect::<Vec<_>>(), guessed, "slots 0..=5 are tried in order");
+    assert_eq!(call.touched, vec![U256::from_u32(5)], "0..=4 were guesses the call never reads");
+}
+
+#[test]
+fn every_discovered_erc20_witness_is_needed() {
+    let (call, _) = build(&fixtures::erc20_code(), &erc20_transfer_form()).unwrap();
+    for i in 0..call.touched.len() {
+        let mut fewer = build(&fixtures::erc20_code(), &erc20_transfer_form()).unwrap().0;
+        fewer.touched.remove(i);
+        assert_eq!(fewer.expected().1.halt, Halt::NoWitness, "witness {i} is read");
+    }
+}
+
+#[test]
+fn an_unidentifiable_slot_is_named_as_such() {
+    // SLOAD of slot 100: not a mapping hash, not a constant below 16. Discovery guesses 0..15,
+    // hits the cap, and must say it could not identify the slot rather than "reads more than 16".
+    let code = vec![0x60, 100, 0x54, 0x50, 0x00];
+    let e = build(&code, &empty_form(vec![])).err().expect("slot 100 is out of reach");
+    assert!(e.contains("could not identify"), "{e}");
+    assert!(!e.contains("more than"), "{e}");
+}
+
+#[test]
+fn many_mapping_reads_say_more_than_16() {
+    // 17 distinct mapping reads keccak256(i ‖ 0), i = 0..=16: every witness comes from a hash.
+    let mut code = Vec::new();
+    for i in 0u8..=16 {
+        // PUSH1 i PUSH1 0 MSTORE  PUSH1 0 PUSH1 32 MSTORE  PUSH1 64 PUSH1 0 SHA3  SLOAD POP
+        code.extend_from_slice(&[0x60, i, 0x60, 0, 0x52, 0x60, 0, 0x60, 32, 0x52, 0x60, 64, 0x60, 0, 0x20, 0x54, 0x50]);
+    }
+    code.push(0x00);
+    let mut form = empty_form(vec![]);
+    form.gas_limit = 1_000_000;
+    let e = build(&code, &form).err().expect("17 mapping slots");
+    assert!(e.contains("more than 16"), "{e}");
+}
+
+#[test]
+fn gas_limit_above_u32_is_an_error() {
+    let mut form = empty_form(vec![]);
+    form.gas_limit = u32::MAX as u64 + 1;
+    let e = build(&[0x00], &form).err().expect("gas limit");
+    assert!(e.contains(&u32::MAX.to_string()), "{e}");
+}
+
+#[test]
+fn caller_and_address_must_fit_160_bits() {
+    let wide = format!("0x{}", "1".repeat(42));
+    let mut form = empty_form(vec![]);
+    form.caller = wide.clone();
+    assert!(build(&[0x00], &form).err().expect("caller").contains("20 bytes"));
+    let mut form = empty_form(vec![]);
+    form.address = Some(wide);
+    assert!(build(&[0x00], &form).err().expect("address").contains("20 bytes"));
 }

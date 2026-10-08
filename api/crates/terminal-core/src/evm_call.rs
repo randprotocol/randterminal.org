@@ -20,8 +20,6 @@ use std::collections::BTreeSet;
 
 /// `evm_core::storage::MAX_WITNESSES`: the most witnesses one guest input carries.
 pub const MAX_WITNESSES: usize = evm_core::storage::MAX_WITNESSES;
-/// Dry runs discovery may spend before giving up.
-pub const MAX_RUNS: usize = 32;
 /// Constant slots `0..CONSTANT_SLOTS` are tried when no mapping hash explains a missing witness.
 const CONSTANT_SLOTS: u32 = 16;
 
@@ -55,11 +53,25 @@ pub fn parse_u256(s: &str) -> Result<U256, String> {
     Ok(U256::from_be_bytes(&be))
 }
 
+/// A `0x`-hex address of at most 20 significant bytes. Leading zeros are padding, so a 32-byte
+/// word holding a right-aligned address (what [`u256_hex`] prints) is accepted.
+fn parse_address(arg: &str) -> Result<U256, String> {
+    let arg = arg.trim();
+    let h = arg.strip_prefix("0x").ok_or_else(|| format!("address must be 0x-hex: {arg}"))?;
+    if h.trim_start_matches('0').len() > 40 { return Err(format!("address wider than 20 bytes: {arg}")); }
+    parse_u256(arg)
+}
+
+/// The canonical spelling the selector is hashed over: `uint` and `int` are `uint256`/`int256`.
+fn canonical_type(ty: &str) -> String {
+    match ty { "uint" => "uint256".into(), "int" => "int256".into(), t => t.into() }
+}
+
 fn split_params(sig: &str) -> Result<(&str, Vec<String>), String> {
     let open = sig.find('(').ok_or_else(|| format!("{sig}: not a signature"))?;
     let inner = sig[open + 1..].strip_suffix(')').ok_or_else(|| format!("{sig}: not a signature"))?;
     if inner.contains('(') { return Err(format!("{sig}: tuple parameters are not supported")); }
-    let params = if inner.is_empty() { vec![] } else { inner.split(',').map(|p| p.trim().to_string()).collect() };
+    let params = if inner.is_empty() { vec![] } else { inner.split(',').map(|p| canonical_type(p.trim())).collect() };
     Ok((&sig[..open], params))
 }
 
@@ -72,10 +84,7 @@ fn encode_arg(ty: &str, arg: &str) -> Result<[u8; 32], String> {
         return match arg { "true" | "1" => Ok(U256::ONE.to_be_bytes()), "false" | "0" => Ok([0; 32]), _ => Err(format!("bool: {arg}")) };
     }
     if ty == "address" {
-        let h = arg.strip_prefix("0x").ok_or_else(|| format!("address must be 0x-hex: {arg}"))?;
-        // Leading zeros are padding: a 32-byte word holding a right-aligned address is accepted.
-        if h.trim_start_matches('0').len() > 40 { return Err(format!("address wider than 20 bytes: {arg}")); }
-        return Ok(parse_u256(arg)?.to_be_bytes());
+        return Ok(parse_address(arg)?.to_be_bytes());
     }
     if let Some(n) = ty.strip_prefix("bytes") {
         let n: usize = n.parse().map_err(|_| format!("{ty}: not supported by the terminal's encoder"))?;
@@ -186,24 +195,34 @@ fn seed_tree(seeds: &[StorageSeed]) -> Result<(SparseTree, Vec<U256>), String> {
 
 /// The call the form describes, with `touched` discovered, and the discovery steps taken.
 pub fn build(code: &[u8], form: &EvmCallForm) -> Result<(EvmCall, Vec<DiscoveryStep>), String> {
+    if form.gas_limit > u32::MAX as u64 {
+        return Err(format!("gas limit {} is above {}, the most the guest's one gas word carries", form.gas_limit, u32::MAX));
+    }
     let calldata = encode_calldata(&form.function, &form.args)?;
     let (tree, seeded) = seed_tree(&form.storage)?;
     if seeded.len() > MAX_WITNESSES { return Err(format!("{} seeded slots; the guest takes at most {MAX_WITNESSES}", seeded.len())); }
     let mut call = EvmCall {
         code: code.to_vec(), calldata,
-        address: form.address.as_deref().map(parse_u256).transpose()?.unwrap_or(TOKEN),
-        caller: parse_u256(&form.caller)?, callvalue: parse_u256(&form.value)?,
-        gas_limit: form.gas_limit.min(u32::MAX as u64), tree, touched: seeded,
+        address: form.address.as_deref().map(parse_address).transpose()?.unwrap_or(TOKEN),
+        caller: parse_address(&form.caller)?, callvalue: parse_u256(&form.value)?,
+        gas_limit: form.gas_limit, tree, touched: seeded,
     };
     let mut steps = Vec::new();
     let mut tried_constants: BTreeSet<u32> = BTreeSet::new();
-    for run in 0..MAX_RUNS {
+    // Every run either returns or adds one witness, and the cap returns at MAX_WITNESSES, so this
+    // loop runs at most MAX_WITNESSES + 1 times.
+    for run in 0.. {
         let (o, hashes) = dry_run(&call);
         if o.halt != Halt::NoWitness {
             prune(&mut call, &o);
             return Ok((call, steps));
         }
         if call.touched.len() >= MAX_WITNESSES {
+            // Constant guesses fill the cap one by one, so once any were made the honest message
+            // is that the slot was never identified, not that the call reads too much.
+            if !tried_constants.is_empty() {
+                return Err(format!("{UNIDENTIFIED} within the {MAX_WITNESSES}-witness limit"));
+            }
             return Err(format!("the call reads more than {MAX_WITNESSES} storage slots, the most one guest input can carry"));
         }
         let usable = |s: &U256, touched: &[U256]| !touched.contains(s) && !collides(touched, s);
@@ -213,13 +232,15 @@ pub fn build(code: &[u8], form: &EvmCallForm) -> Result<(EvmCall, Vec<DiscoveryS
             Some(U256::from_u32(c))
         });
         let Some(slot) = next else {
-            return Err("could not find the storage slot the call reads (it is neither a constant below 16 nor a mapping entry)".into());
+            return Err(UNIDENTIFIED.into());
         };
         call.touched.push(slot);
         steps.push(DiscoveryStep { run, slot: u256_hex(&slot), gas_used: o.gas_used });
     }
-    Err(format!("witness discovery gave up after {MAX_RUNS} runs"))
+    unreachable!("the witness cap ends discovery")
 }
+
+const UNIDENTIFIED: &str = "could not identify the storage slot the call reads (it is neither a constant below 16 nor a mapping entry)";
 
 /// Remove every witness the call does not need — discovered or seeded — keeping one only when the
 /// call's halt or gas changes without it. A seeded slot that is never read stays in the pre-state
