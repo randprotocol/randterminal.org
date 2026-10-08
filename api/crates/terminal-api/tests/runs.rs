@@ -261,3 +261,85 @@ async fn busy_slots_are_503() {
     .await;
     assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// I4: "next source op" is one request. `next_src` scans the trace from `from` in `dir` for the
+/// first cycle whose source pc is mapped and differs from the one at `from`.
+#[tokio::test(flavor = "multi_thread")]
+async fn next_src_finds_the_next_mapped_source_op() {
+    let (app, state, _d) = test_app(fake_runner());
+    let id = finished_erc20(&app).await;
+    let (_, _, sum) = call(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/v1/jobs/{id}/runs"),
+            Some(evm_run(&evm_call::erc20_transfer_form())),
+        ),
+    )
+    .await;
+    let rid = sum["rid"].as_str().unwrap().to_string();
+    let total = sum["cycles"].as_u64().unwrap() as usize;
+    let url = |q: &str| format!("/api/v1/runs/{rid}/next_src?{q}");
+    // The fake sandbox has no -g build: no map, so nothing to search.
+    let (st, _, e) = call(&app, json_req("GET", &url("from=0&dir=1"), None)).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{e}");
+
+    // Map exactly one pc (cycle 100's) to C line 20, the source op at pc 7; every other pc to
+    // line 1, which no source op precedes.
+    let (_, _, page) = call(
+        &app,
+        json_req(
+            "GET",
+            &format!("/api/v1/runs/{rid}/cycles?from=0&count=4096"),
+            None,
+        ),
+    )
+    .await;
+    let pcs: Vec<u64> = page["cycles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["pc"].as_u64().unwrap())
+        .collect();
+    let x = pcs[100];
+    let jdir = state.store.dir(&id).unwrap();
+    std::fs::write(
+        jdir.join("build/source_map.json"),
+        json!({ "pc_to_c": [[0, 1], [x, 20], [x + 4, 1]], "c_to_src": [[20, 7]] }).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        jdir.join("transpile/op_map.json"),
+        json!([{ "pc": 7, "line": 20 }]).to_string(),
+    )
+    .unwrap();
+
+    let first = pcs.iter().position(|&p| p == x).unwrap();
+    let (st, _, v) = call(&app, json_req("GET", &url("from=0&dir=1"), None)).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["clk"].as_u64().unwrap() as usize, v["src_pc"].as_u64()),
+        (first, Some(7))
+    );
+    // From a cycle at source op 7, the next *different* mapped op: there is none.
+    let (st, _, _) = call(
+        &app,
+        json_req("GET", &url(&format!("from={first}&dir=1")), None),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    // Backwards from the next unmapped cycle lands on the nearest earlier cycle at pc x.
+    let after = (first + 1..).find(|&c| pcs[c] != x).unwrap();
+    let (st, _, v) = call(
+        &app,
+        json_req("GET", &url(&format!("from={after}&dir=-1")), None),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["clk"].as_u64().unwrap() as usize, after - 1);
+    for bad in ["from=0&dir=2", &format!("from={total}&dir=1"), "dir=1"] {
+        let (st, _, e) = call(&app, json_req("GET", &url(bad), None)).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{bad}: {e}");
+        assert!(e["error"].is_string(), "{bad}: {e}");
+    }
+}

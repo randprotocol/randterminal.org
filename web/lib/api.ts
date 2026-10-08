@@ -30,6 +30,7 @@ export const api = {
   run: (rid: string) => req<RunSummary>(`/runs/${rid}`),
   cycles: (rid: string, from: number, count: number) => req<CyclePage>(`/runs/${rid}/cycles?${q({ from, count })}`),
   state: (rid: string, at: number) => req<StateView>(`/runs/${rid}/state?${q({ at })}`),
+  nextSrc: (rid: string, from: number, dir: 1 | -1) => req<{ clk: number; src_pc: number }>(`/runs/${rid}/next_src?${q({ from, dir })}`),
   memory: (rid: string, at: number, addr: number, words: number) => req<MemoryView>(`/runs/${rid}/memory?${q({ at, addr, words })}`),
   syscalls: (rid: string) => req<SyscallView[]>(`/runs/${rid}/syscalls`),
 };

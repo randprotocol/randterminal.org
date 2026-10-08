@@ -4,6 +4,8 @@ import { api } from '@/lib/api';
 import { byteAddr, hex32, hexAddr, memAccess } from '@/lib/format';
 import type { StateView } from '@/lib/types';
 
+const QUIET_MS = 60;
+
 export function MemoryPanel({ rid, state }: { rid: string; state: StateView }) {
   const c = state.cycle;
   const touched = c.mem_read || c.mem_write;
@@ -17,10 +19,14 @@ export function MemoryPanel({ rid, state }: { rid: string; state: StateView }) {
   const [got, setGot] = useState<{ key: string; words: number[] } | null>(null);
   const [err, setErr] = useState<{ key: string; message: string } | null>(null);
   const [retry, setRetry] = useState(0);
+  // Trailing debounce: while the reader scrubs (a new position within QUIET_MS) no window is
+  // fetched; the position the reader stops on always is. Keeps the debugger inside its rate limit.
   useEffect(() => {
     let live = true;
-    api.memory(rid, state.clk, base, 64).then((m) => { if (live) setGot({ key, words: m.words }); }).catch((e) => { if (live) setErr({ key, message: e instanceof Error ? e.message : String(e) }); });
-    return () => { live = false; };
+    const t = setTimeout(() => {
+      api.memory(rid, state.clk, base, 64).then((m) => { if (live) { setErr(null); setGot({ key, words: m.words }); } }).catch((e) => { if (live) setErr({ key, message: e instanceof Error ? e.message : String(e) }); });
+    }, QUIET_MS);
+    return () => { live = false; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, retry]);
   const words = got?.key === key ? got.words : null;

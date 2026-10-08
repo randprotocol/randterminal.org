@@ -204,3 +204,91 @@ fn limiter_windows() {
         }
     );
 }
+
+/// I4: the debugger's GETs under /runs/ have their own (larger) bucket: stepping cannot starve
+/// the rest of the api, and the api bucket cannot starve the debugger.
+#[tokio::test]
+async fn run_reads_have_their_own_bucket() {
+    let a = app(ApiConfig {
+        runs_get_rpm: 2,
+        api_rpm: 1,
+        trust_proxy: true,
+        ..ApiConfig::default()
+    });
+    let state = "/api/v1/runs/00000000000000000000000000000000/state?at=0";
+    for _ in 0..2 {
+        assert_ne!(
+            call(&a, req_from("GET", state, "10.0.0.1")).await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    assert_eq!(
+        call(&a, req_from("GET", state, "10.0.0.1")).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        call(&a, req_from("GET", "/api/v1/health", "10.0.0.1"))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(ApiConfig::default().runs_get_rpm, 6000);
+}
+
+/// M4: axum's own extractor rejections (bad JSON, bad query, body too large) answer in the
+/// api's {error, message} shape like every other error.
+#[tokio::test]
+async fn extractor_rejections_are_json() {
+    let a = app(ApiConfig::default());
+    let raw = |method: &str, uri: &str, ct: Option<&str>, body: Vec<u8>| {
+        let mut b = axum::http::Request::builder().method(method).uri(uri);
+        if let Some(ct) = ct {
+            b = b.header("content-type", ct);
+        }
+        b.body(axum::body::Body::from(body)).unwrap()
+    };
+    let json = Some("application/json");
+    for (req, code, tag) in [
+        (
+            raw("POST", "/api/v1/jobs", json, b"{not json".to_vec()),
+            400,
+            "bad_request",
+        ),
+        (
+            raw(
+                "POST",
+                "/api/v1/jobs",
+                json,
+                br#"{"lang": "cobol", "files": []}"#.to_vec(),
+            ),
+            422,
+            "unprocessable",
+        ),
+        (
+            raw("POST", "/api/v1/jobs", None, b"{}".to_vec()),
+            415,
+            "unsupported_media_type",
+        ),
+        (
+            raw("POST", "/api/v1/jobs", json, vec![b' '; (4 << 20) + 1]),
+            413,
+            "payload_too_large",
+        ),
+        (
+            raw(
+                "GET",
+                "/api/v1/runs/00000000000000000000000000000000/state?at=x",
+                None,
+                vec![],
+            ),
+            400,
+            "bad_request",
+        ),
+    ] {
+        let (s, h, v) = call(&a, req).await;
+        assert_eq!(s.as_u16(), code, "{v}");
+        assert_eq!(h.get("content-type").unwrap(), "application/json", "{v}");
+        assert_eq!(v["error"], tag, "{v}");
+        assert!(!v["message"].as_str().unwrap().is_empty(), "{v}");
+    }
+}

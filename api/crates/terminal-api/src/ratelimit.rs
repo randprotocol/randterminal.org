@@ -1,5 +1,5 @@
-//! Fixed-window rate limiting per client IP, in memory, in three buckets: job submissions,
-//! run submissions, and everything else.
+//! Fixed-window rate limiting per client IP, in memory, in four buckets: job submissions,
+//! run submissions, reads under /runs/ (the debugger), and everything else.
 use crate::{error::AppError, state::AppState};
 use axum::{
     extract::{ConnectInfo, Request, State},
@@ -93,18 +93,26 @@ pub fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, trust_proxy: boo
         .unwrap_or_else(|| "unknown".into())
 }
 
-pub async fn limit(State(state): State<AppState>, req: Request, next: Next) -> Response {
+/// The client address `limit` resolved, for handlers that count per client (the job queue).
+#[derive(Clone, Debug)]
+pub struct ClientIp(pub String);
+
+pub async fn limit(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     let peer = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0);
     let ip = client_ip(req.headers(), peer, state.config.trust_proxy);
     let path = req.uri().path();
-    let (bucket, rpm) = match (req.method() == Method::POST, path) {
-        (true, p) if p.ends_with("/jobs") => ("jobs", state.config.jobs_rpm),
-        (true, p) if p.ends_with("/runs") => ("runs", state.config.runs_rpm),
+    // Nested under /api/v1, the path may arrive with or without the prefix.
+    let run_read = path.starts_with("/runs/") || path.starts_with("/api/v1/runs/");
+    let (bucket, rpm) = match (req.method(), path) {
+        (&Method::POST, p) if p.ends_with("/jobs") => ("jobs", state.config.jobs_rpm),
+        (&Method::POST, p) if p.ends_with("/runs") => ("runs", state.config.runs_rpm),
+        (&Method::GET, _) if run_read => ("runs_get", state.config.runs_get_rpm),
         _ => ("api", state.config.api_rpm),
     };
+    req.extensions_mut().insert(ClientIp(ip.clone()));
     match state
         .limiter
         .check(&format!("{bucket}:{ip}"), rpm, unix_now())

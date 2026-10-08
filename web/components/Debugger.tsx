@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
-import { changedRegs, syscallFrom } from '@/lib/replay';
+import { changedRegs, nextSourceOp, syscallFrom } from '@/lib/replay';
 import { Timeline } from './Timeline';
 import { Registers } from './Registers';
 import { Listing } from './Listing';
@@ -10,7 +10,6 @@ import { SyscallLog } from './SyscallLog';
 import type { CompileView, ImageView, RunSummary, StateView, SyscallView, TranspileView } from '@/lib/types';
 
 const THROTTLE_MS = 60;
-const OP_SCAN = 64;
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function Debugger({ run, image, transpile, compile }: { run: RunSummary; image: ImageView; transpile: TranspileView | null; compile: CompileView | null }) {
@@ -24,7 +23,6 @@ export function Debugger({ run, image, transpile, compile }: { run: RunSummary; 
   const [syscalls, setSyscalls] = useState<SyscallView[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const gen = useRef(0);      // bumped by every seek: a search that finishes after the reader moved must not seek
-  const noMap = useRef(false);
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => { root.current?.focus({ preventScroll: true }); }, []);
@@ -49,22 +47,15 @@ export function Debugger({ run, image, transpile, compile }: { run: RunSummary; 
     const c = syscallFrom(syscalls, clk, dir);
     if (c == null) setNote(dir === 1 ? 'no further syscall' : 'no earlier syscall'); else seek(c);
   }, [syscalls, clk, seek]);
+  // The server scans the trace (up to 2^20 cycles) for the next cycle at a different mapped source op.
+  const hasMap = image.source_map != null;
   const nextOp = useCallback(async () => {
-    if (!state) { setNote('loading…'); return; }
-    if (noMap.current) { setNote('no source map for this build'); return; }
     const mine = ++gen.current;
-    setNote('searching…');
-    try {
-      let sawMapped = state.src_pc != null;
-      for (let c = clk + 1, n = 0; c < total && n < OP_SCAN; c++, n++) {
-        const s = await api.state(run.rid, c);
-        if (mine !== gen.current) return;
-        if (s.src_pc != null) { sawMapped = true; if (s.src_pc !== state.src_pc) { seek(c); return; } }
-      }
-      if (!sawMapped) { noMap.current = true; setNote('no source map for this build'); }
-      else setNote(`the next source op is more than ${OP_SCAN} cycles away; use the timeline`);
-    } catch (e) { if (mine === gen.current) setNote(`could not search: ${msg(e)}`); }
-  }, [state, clk, total, run.rid, seek]);
+    if (hasMap) setNote('searching…');
+    const r = await nextSourceOp((from, dir) => api.nextSrc(run.rid, from, dir), clk, hasMap);
+    if (mine !== gen.current) return;
+    if ('seek' in r) seek(r.seek); else setNote(r.note);
+  }, [hasMap, clk, run.rid, seek]);
 
   // Scoped to the debugger so typing in the editor or any field never steps the run.
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -80,7 +71,7 @@ export function Debugger({ run, image, transpile, compile }: { run: RunSummary; 
 
   const btn = 'h-8 rounded-sm px-2 text-xs text-text-soft hover:bg-surface';
   return (
-    <div ref={root} tabIndex={0} onKeyDown={onKeyDown} aria-label="debugger" className="grid h-full grid-rows-[auto_auto_1fr] outline-none">
+    <div ref={root} tabIndex={0} onKeyDown={onKeyDown} aria-label="debugger" className="grid h-full grid-rows-[auto_auto_1fr] outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent">
       <Timeline total={total} clk={clk} syscalls={syscalls ?? []} onSeek={seek} />
       <div className="flex flex-wrap items-center gap-1 px-4 pb-2" role="toolbar" aria-label="step controls">
         <button className={btn} onClick={() => seek(0)} title="start">⏮</button>

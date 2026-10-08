@@ -1,4 +1,4 @@
-use crate::{handlers, ratelimit, state::AppState};
+use crate::{error, handlers, ratelimit, state::AppState};
 use axum::{
     extract::DefaultBodyLimit,
     middleware,
@@ -30,6 +30,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/runs/:rid", get(handlers::runs::summary))
         .route("/runs/:rid/cycles", get(handlers::runs::cycles))
         .route("/runs/:rid/state", get(handlers::runs::state))
+        .route("/runs/:rid/next_src", get(handlers::runs::next_src))
         .route("/runs/:rid/memory", get(handlers::runs::memory))
         .route("/runs/:rid/syscalls", get(handlers::runs::syscalls))
         .fallback(handlers::not_found)
@@ -41,6 +42,7 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/v1", api)
         .fallback(handlers::not_found)
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(middleware::map_response(error::json_rejections))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(

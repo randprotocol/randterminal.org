@@ -32,6 +32,12 @@ pub struct ApiConfig {
     pub jobs_rpm: u32,
     pub runs_rpm: u32,
     pub api_rpm: u32,
+    /// GETs under /runs/ (the debugger steps with state + memory per position).
+    pub runs_get_rpm: u32,
+    /// Unfinished jobs one client may have at once.
+    pub max_active_jobs_per_ip: usize,
+    /// Unfinished jobs across all clients (queued for or in the sandbox).
+    pub max_queued_jobs: usize,
 }
 
 impl Default for ApiConfig {
@@ -50,6 +56,9 @@ impl Default for ApiConfig {
             jobs_rpm: 10,
             runs_rpm: 60,
             api_rpm: 600,
+            runs_get_rpm: 6000,
+            max_active_jobs_per_ip: 3,
+            max_queued_jobs: 32,
         }
     }
 }
@@ -93,6 +102,12 @@ impl ApiConfig {
             jobs_rpm: num(var("TERMINAL_JOBS_RPM"), d.jobs_rpm),
             runs_rpm: num(var("TERMINAL_RUNS_RPM"), d.runs_rpm),
             api_rpm: num(var("TERMINAL_API_RPM"), d.api_rpm),
+            runs_get_rpm: num(var("TERMINAL_RUNS_GET_RPM"), d.runs_get_rpm),
+            max_active_jobs_per_ip: num(
+                var("TERMINAL_MAX_ACTIVE_JOBS_PER_IP"),
+                d.max_active_jobs_per_ip,
+            ),
+            max_queued_jobs: num(var("TERMINAL_MAX_QUEUED_JOBS"), d.max_queued_jobs),
         }
     }
 }

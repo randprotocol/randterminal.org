@@ -67,3 +67,35 @@ impl IntoResponse for AppError {
 }
 
 pub type ApiResult<T> = Result<T, AppError>;
+
+/// Gives axum's own extractor rejections (malformed JSON, a bad query string, a body over the
+/// limit, a missing content type) the api's `{error, message}` shape; they are plain text by
+/// default. Responses that are already JSON pass through untouched.
+pub async fn json_rejections(res: Response) -> Response {
+    let status = res.status();
+    let tag = match status {
+        StatusCode::BAD_REQUEST => "bad_request",
+        StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => "unsupported_media_type",
+        StatusCode::UNPROCESSABLE_ENTITY => "unprocessable",
+        _ => return res,
+    };
+    let json = res
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/json"));
+    if json {
+        return res;
+    }
+    let text = axum::body::to_bytes(res.into_body(), 64 << 10)
+        .await
+        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+        .unwrap_or_default();
+    let message = if text.is_empty() {
+        status.canonical_reason().unwrap_or("error").to_lowercase()
+    } else {
+        text
+    };
+    (status, Json(json!({ "error": tag, "message": message }))).into_response()
+}
