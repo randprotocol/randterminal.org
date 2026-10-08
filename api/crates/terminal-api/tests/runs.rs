@@ -11,7 +11,7 @@ async fn finished_erc20(app: &axum::Router) -> String {
     id
 }
 
-fn evm_run(form: &terminal_core::views::EvmCallForm) -> Value { json!({ "call": { "lang": "evm", "function": form.function, "args": form.args, "caller": form.caller, "storage": form.storage } }) }
+fn evm_run(form: &terminal_core::views::EvmCallForm) -> Value { json!({ "call": { "lang": "evm", "function": form.function, "args": form.args, "caller": form.caller, "storage": form.storage, "gas_limit": form.gas_limit } }) }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn erc20_transfer_runs_and_matches_the_host_interpreter() {
@@ -67,7 +67,11 @@ async fn a_trap_is_a_summary_without_a_trace() {
     let rid = sum["rid"].as_str().unwrap();
     let (st, _, e) = call(&app, json_req("GET", &format!("/api/v1/runs/{rid}/cycles?from=0&count=1"), None)).await;
     assert_eq!(st, StatusCode::CONFLICT);
-    assert!(e["message"].as_str().unwrap().contains("trapped"));
+    assert_eq!(e["message"], "the run ran out of cycles at 1000; there is no trace");
+    for ep in ["state?at=0", "memory?at=0&addr=0&words=1", "syscalls"] {
+        let (st, _, _) = call(&app, json_req("GET", &format!("/api/v1/runs/{rid}/{ep}"), None)).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{ep}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -107,4 +111,24 @@ async fn spl_transfer_runs_on_the_translated_image() {
     assert_eq!(sum["outputs"], json!(want));
     assert_eq!(sum["tier"], 20);
     assert_eq!(sum["public_words"], 27_151);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gas_limit_above_the_cap_is_400() {
+    let (app, _s, _d) = test_app(fake_runner());
+    let id = finished_erc20(&app).await;
+    let mut form = evm_call::erc20_transfer_form();
+    form.gas_limit = 30_000_001;
+    let (st, _, e) = call(&app, json_req("POST", &format!("/api/v1/jobs/{id}/runs"), Some(evm_run(&form)))).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    assert!(e["message"].as_str().unwrap().contains("30000000"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn busy_slots_are_503() {
+    let (app, state, _d) = test_app(fake_runner());
+    let id = finished_erc20(&app).await;
+    let _held: Vec<_> = (0..state.config.max_runs).map(|_| state.runs.clone().try_acquire_owned().unwrap()).collect();
+    let (st, _, _) = call(&app, json_req("POST", &format!("/api/v1/jobs/{id}/runs"), Some(evm_run(&evm_call::erc20_transfer_form())))).await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
 }
