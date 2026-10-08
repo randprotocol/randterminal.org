@@ -3,13 +3,21 @@ import { useMemo, useState } from 'react';
 import { AnalysePanel } from './AnalysePanel';
 import { BlockGraph } from './BlockGraph';
 import { CViewer } from './CViewer';
-import type { CompileView, OpLine, TranspileView } from '@/lib/types';
+import type { CompileView, Graph, OpLine, TranspileView } from '@/lib/types';
 
 /** The C lines an op owns: from its marker to the line before the next marker. */
 export function linesOf(opMap: OpLine[], pc: number, total: number): [number, number] | null {
   const i = opMap.findIndex((o) => o.pc === pc);
   if (i < 0) return null;
   return [opMap[i]!.line, (opMap[i + 1]?.line ?? total + 1) - 1];
+}
+/** `linesOf` for a source pc that may not be a marker: sBPF markers are per block (`L_<pc>:`), so a
+ *  slot inside a block owns the lines of the block's marker. A pc in no block owns nothing. */
+export function linesFor(opMap: OpLine[], graph: Graph, pc: number, total: number): [number, number] | null {
+  const exact = linesOf(opMap, pc, total);
+  if (exact) return exact;
+  const block = graph.nodes.filter((n) => n.start <= pc && pc <= n.end).sort((a, b) => b.start - a.start)[0];
+  return block ? linesOf(opMap, block.start, total) : null;
 }
 /** The op whose C contains `line`: the last marker at or before it. */
 export function opAt(opMap: OpLine[], line: number): number | null {
@@ -21,7 +29,7 @@ export function opAt(opMap: OpLine[], line: number): number | null {
 export function TranspilePanel({ view, compile, selected, onSelect }: { view: TranspileView; compile: CompileView | null; selected: number | null; onSelect: (pc: number) => void }) {
   const [tab, setTab] = useState<'blocks' | 'listing'>('blocks');
   const total = view.stats.c_lines;
-  const hl = useMemo(() => (selected == null ? null : linesOf(view.op_map, selected, total)), [selected, view.op_map, total]);
+  const hl = useMemo(() => (selected == null ? null : linesFor(view.op_map, view.graph, selected, total)), [selected, view.op_map, view.graph, total]);
   const evm = compile?.lang === 'evm';
   const pcLabel = (pc: number) => (evm ? `0x${pc.toString(16).padStart(4, '0')}` : `${pc}`);
   return (
@@ -31,7 +39,7 @@ export function TranspilePanel({ view, compile, selected, onSelect }: { view: Tr
       <div className="grid min-h-0 grid-cols-2 border-t border-border-soft">
         <div className="flex min-h-0 flex-col border-r border-border-soft">
           <div className="flex gap-1 p-2" role="tablist">{(['blocks', 'listing'] as const).map((t) => <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={`h-8 rounded-sm px-3 text-xs ${tab === t ? 'bg-surface-2 text-text-strong' : 'text-text-soft'}`}>{t === 'blocks' ? 'Block graph' : evm ? 'Opcodes' : 'Instructions'}</button>)}</div>
-          <div className="min-h-0 flex-1">{tab === 'blocks' ? <BlockGraph graph={view.graph} selected={selected} onSelect={onSelect} pcLabel={pcLabel} /> : compile && <AnalysePanel view={compile} selected={selected} onSelect={onSelect} />}</div>
+          <div className="min-h-0 flex-1 overflow-hidden">{tab === 'blocks' ? <BlockGraph graph={view.graph} selected={selected} onSelect={onSelect} pcLabel={pcLabel} /> : compile && <AnalysePanel view={compile} selected={selected} onSelect={onSelect} />}</div>
         </div>
         <CViewer source={view.c_source} highlight={hl} onLine={(l) => { const pc = opAt(view.op_map, l); if (pc != null) onSelect(pc); }} />
       </div>

@@ -11,20 +11,13 @@ export function layout(g: Graph, o: { nodeW?: number; nodeH?: number; gapX?: num
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const edges = g.edges.filter((e) => ids.has(e.from) && ids.has(e.to));
   const forward = edges.filter((e) => byId.get(e.to)!.start > byId.get(e.from)!.start);
-  // Longest path over forward edges, processed in pc order (forward edges only go up in pc, so this is topological).
+  // Longest path over forward edges, in pc order (forward edges only go up in pc, so that is topological).
+  // A node with no forward predecessor (the entry, each function entry, an unreachable block) is a root at rank 0.
+  const preds = new Map<number, number[]>();
+  for (const e of forward) preds.set(e.to, [...(preds.get(e.to) ?? []), e.from]);
   const rank = new Map<number, number>();
   const order = [...nodes].sort((a, b) => a.start - b.start);
-  const reachable = new Set<number>();
-  if (order.length) { rank.set(order[0]!.id, 0); reachable.add(order[0]!.id); }
-  for (const n of order) {
-    if (!reachable.has(n.id)) continue;
-    for (const e of forward.filter((e) => e.from === n.id)) {
-      rank.set(e.to, Math.max(rank.get(e.to) ?? 0, rank.get(n.id)! + 1));
-      reachable.add(e.to);
-    }
-  }
-  let maxRank = Math.max(0, ...rank.values());
-  for (const n of order) if (!reachable.has(n.id)) rank.set(n.id, ++maxRank);
+  for (const n of order) rank.set(n.id, Math.max(-1, ...(preds.get(n.id) ?? []).map((p) => rank.get(p) ?? -1)) + 1);
   const rows = new Map<number, GraphNode[]>();
   for (const n of order) { const r = rank.get(n.id)!; rows.set(r, [...(rows.get(r) ?? []), n]); }
   const placed: Placed[] = [];
@@ -40,5 +33,5 @@ export function layout(g: Graph, o: { nodeW?: number; nodeH?: number; gapX?: num
     return { ...e, points: pts };
   });
   const height = (Math.max(0, ...placed.map((p) => p.y)) + H);
-  return { nodes: placed, edges: routed, width, height, truncated };
+  return { nodes: placed, edges: routed, width, height, truncated, shown: nodes.length };
 }

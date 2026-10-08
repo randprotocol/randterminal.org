@@ -5,7 +5,7 @@ import { VirtualList } from './VirtualList';
 export function CViewer({ source, highlight, onLine }: { source: string; highlight: [number, number] | null; onLine: (line: number) => void }) {
   const lines = useMemo(() => source.split('\n'), [source]);
   return (
-    <VirtualList className="h-full mono text-xs" rows={lines.length} scrollTo={highlight ? highlight[0] - 1 : null} render={(i) => {
+    <VirtualList className="h-full mono text-xs" rows={lines.length} scrollTo={highlight ? highlight[0] - 1 : null} scrollToEnd={highlight ? highlight[1] - 1 : null} render={(i) => {
       const n = i + 1;
       const on = highlight && n >= highlight[0] && n <= highlight[1];
       return (

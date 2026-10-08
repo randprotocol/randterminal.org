@@ -12,9 +12,21 @@ export function cLineAt(map: [number, number][] | undefined, pc: number): number
   return best;
 }
 
-export function ImagePanel({ jobId, view, focusPc }: { jobId: string; view: ImageView; focusPc?: number | null }) {
+/** Index of the last disasm row whose pc is at or below `pc` (rows are sorted by pc); null before the first. */
+export function rowAt(disasm: { pc: number }[], pc: number): number | null {
+  let lo = 0, hi = disasm.length - 1, best: number | null = null;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (disasm[m]!.pc <= pc) { best = m; lo = m + 1; } else hi = m - 1; }
+  return best;
+}
+export function parseHexPc(q: string): number | null {
+  const m = /^\s*(?:0x)?([0-9a-f]{1,8})\s*$/i.exec(q);
+  return m ? parseInt(m[1]!, 16) : null;
+}
+const copy = (t: string) => { try { void navigator.clipboard.writeText(t).catch(() => {}); } catch { /* clipboard unavailable */ } };
+
+export function ImagePanel({ jobId, view }: { jobId: string; view: ImageView }) {
   const [q, setQ] = useState('');
-  const target = useMemo(() => { const pc = focusPc ?? (q ? parseInt(q.replace(/^0x/, ''), 16) : NaN); return Number.isFinite(pc) ? Math.floor((pc - view.base_pc) / 4) : null; }, [q, focusPc, view.base_pc]);
+  const target = useMemo(() => { const pc = parseHexPc(q); return pc == null ? null : rowAt(view.disasm, pc); }, [q, view.disasm]);
   const pct = Math.min(100, (view.words / view.cap_words) * 100);
   return (
     <div className="grid h-full grid-rows-[auto_1fr]">
@@ -24,8 +36,8 @@ export function ImagePanel({ jobId, view, focusPc }: { jobId: string; view: Imag
           <a href={api.fileUrl(jobId, 'image.bin')} className="ml-auto text-xs text-accent">download image.bin</a></div>
         <div className="h-1.5 w-full rounded-full bg-surface-2"><div className={`h-1.5 rounded-full ${view.fits ? 'bg-accent' : 'bg-negative'}`} style={{ width: `${pct}%` }} /></div>
         <p className="mono text-xs text-text-soft">text {groupDigits(view.text_words)} · data {groupDigits(view.data_words)} · prologue {view.prologue_words} · base pc {hexAddr(view.base_pc)}</p>
-        <p className="text-xs"><span className="text-text-mute">hc</span> <span className="mono" title={view.hc}>{short(view.hc, 16)}</span> <button className="text-accent" onClick={() => navigator.clipboard.writeText(view.hc)}>copy</button> <span className="text-text-mute">· the zkVM's commitment to this exact program</span></p>
-        <p className="text-xs"><span className="text-text-mute">program id</span> <span className="mono" title={view.program_id}>{short(view.program_id, 16)}</span> <button className="text-accent" onClick={() => navigator.clipboard.writeText(view.program_id)}>copy</button> <span className="text-text-mute">· how the chain names it</span></p>
+        <p className="text-xs"><span className="text-text-mute">hc</span> <span className="mono" title={view.hc}>{short(view.hc, 16)}</span> <button className="text-accent" onClick={() => copy(view.hc)}>copy</button> <span className="text-text-mute">· the zkVM's commitment to this exact program</span></p>
+        <p className="text-xs"><span className="text-text-mute">program id</span> <span className="mono" title={view.program_id}>{short(view.program_id, 16)}</span> <button className="text-accent" onClick={() => copy(view.program_id)}>copy</button> <span className="text-text-mute">· how the chain names it</span></p>
         {view.findings.map((f, i) => <p key={i} className="mono text-xs text-warning">{hexAddr(f.addr)} {f.rule}: {f.what}</p>)}
         {view.source_map_note && <p className="text-xs text-text-mute">{view.source_map_note}</p>}
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="jump to pc (hex)" aria-label="jump to pc" className="mono h-8 w-48 rounded-sm border border-border bg-surface px-2 text-xs" />

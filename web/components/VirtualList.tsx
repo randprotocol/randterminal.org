@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { visibleRange } from '@/lib/virtual';
 
-export function VirtualList({ rows, rowHeight = 20, render, scrollTo, className = '' }: { rows: number; rowHeight?: number; render: (i: number) => React.ReactNode; scrollTo?: number | null; className?: string }) {
+export function VirtualList({ rows, rowHeight = 20, render, scrollTo, scrollToEnd, className = '' }: { rows: number; rowHeight?: number; render: (i: number) => React.ReactNode; scrollTo?: number | null; scrollToEnd?: number | null; className?: string }) {
   const el = useRef<HTMLDivElement>(null);
   const [top, setTop] = useState(0);
   const [vh, setVh] = useState(600);
@@ -10,9 +10,10 @@ export function VirtualList({ rows, rowHeight = 20, render, scrollTo, className 
   useEffect(() => {
     const e = el.current;
     if (e == null || scrollTo == null) return;
-    const y = scrollTo * rowHeight;
-    if (y < e.scrollTop || y > e.scrollTop + e.clientHeight - rowHeight) e.scrollTop = Math.max(0, y - e.clientHeight / 3);
-  }, [scrollTo, rowHeight]);
+    // Scroll only when no row of [scrollTo, scrollToEnd] is in view.
+    const y = scrollTo * rowHeight, yEnd = ((scrollToEnd ?? scrollTo) + 1) * rowHeight;
+    if (yEnd <= e.scrollTop || y >= e.scrollTop + e.clientHeight) e.scrollTop = Math.max(0, y - e.clientHeight / 3);
+  }, [scrollTo, scrollToEnd, rowHeight]);
   const [a, b] = visibleRange(top, vh, rowHeight, rows);
   return (
     <div ref={el} onScroll={(e) => setTop(e.currentTarget.scrollTop)} className={`relative overflow-auto ${className}`}>

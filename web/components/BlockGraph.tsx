@@ -8,8 +8,8 @@ export function BlockGraph({ graph, selected, onSelect, pcLabel }: { graph: Grap
   const W = 120, H = 36;
   const sel = selected == null ? null : graph.nodes.find((n) => selected >= n.start && selected <= n.end)?.id;
   return (
-    <div className="overflow-auto p-3">
-      {l.truncated && <p className="pb-2 text-xs text-text-mute">Showing the first 400 of {graph.nodes.length} blocks.</p>}
+    <div className="h-full overflow-auto p-3">
+      {l.truncated && <p className="pb-2 text-xs text-text-mute">Showing the first {l.shown} of {graph.nodes.length} blocks.</p>}
       <svg width={l.width + 40} height={l.height + 20} role="img" aria-label={`control-flow graph, ${graph.nodes.length} blocks`}>
         <defs><marker id="arr" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L6,3L0,6z" fill="var(--text-mute)" /></marker></defs>
         {l.edges.map((e, i) => {

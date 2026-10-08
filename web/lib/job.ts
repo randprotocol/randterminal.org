@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { api, subscribeJob } from './api';
-import type { ConsoleLine, FileIn, JobStreamEvent, JobView, Lang, NewJob, StageStatus } from './types';
+import type { ConsoleLine, FileIn, JobStreamEvent, JobView, Lang, NewJob, StageState, StageStatus } from './types';
 
 export type Stage = 'compile' | 'analyse' | 'transpile' | 'image' | 'run';
 export const STAGES: { id: Stage; n: number; title: string }[] = [
@@ -22,7 +22,12 @@ export function reduce(s: JobState, e: JobStreamEvent): JobState {
     case 'console': return { ...s, console: [...s.console, e.line] };
     case 'done': return s.job ? { ...s, job: { ...s.job, finished: true } } : s;
     // The stream is gone for good: surface it and free Run (a live job is marked finished).
-    case 'error': return { ...s, error: e.message, job: s.job ? { ...s.job, finished: true } : s.job };
+    case 'error': {
+      if (!s.job) return { ...s, error: e.message };
+      const j = s.job;
+      const dead = (st: StageState): StageState => st.status === 'done' || st.status === 'failed' ? st : { ...st, status: 'failed', error: { kind: 'connection', message: e.message, diagnostics: [] } };
+      return { ...s, error: e.message, job: { ...j, compile: dead(j.compile), transpile: dead(j.transpile), build: dead(j.build), finished: true } };
+    }
   }
 }
 

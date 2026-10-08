@@ -16,7 +16,7 @@ export function CompilePanel({ view }: { view: CompileView }) {
         <div>
           <div className="mb-2 flex gap-1" role="tablist">
             {(['runtime', 'creation'] as const).map((w) => <button key={w} role="tab" aria-selected={which === w} onClick={() => setWhich(w)} className={`h-8 rounded-sm px-3 text-xs ${which === w ? 'bg-surface-2 text-text-strong' : 'text-text-soft'}`}>{w}</button>)}
-            <button onClick={() => navigator.clipboard.writeText(hex)} className="ml-auto h-8 rounded-sm px-3 text-xs text-text-soft hover:bg-surface">Copy</button>
+            <button onClick={() => { try { void navigator.clipboard.writeText(hex).catch(() => {}); } catch { /* clipboard unavailable */ } }} className="ml-auto h-8 rounded-sm px-3 text-xs text-text-soft hover:bg-surface">Copy</button>
           </div>
           <pre className="mono max-h-64 overflow-auto rounded-sm bg-bg-soft p-3 text-xs break-all whitespace-pre-wrap">{hex || '(empty)'}</pre>
           <p className="mt-1 text-xs text-text-mute">The transpiler takes the runtime code: what the chain stores, not the constructor that deploys it.</p>

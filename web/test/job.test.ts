@@ -43,4 +43,12 @@ describe('stream loss', () => {
     expect(s.error).toBe('lost connection to the job stream');
     expect(s.job!.finished).toBe(true);
   });
+  it('an error event fails the stages that had not finished', () => {
+    const j = { ...job, compile: { status: 'done' as const }, transpile: { status: 'running' as const }, build: q };
+    const s = reduce(reduce(empty, { type: 'job', job: j }), { type: 'error', message: 'lost' });
+    expect(s.job!.compile.status).toBe('done');
+    expect(s.job!.transpile.status).toBe('failed');
+    expect(s.job!.build.status).toBe('failed');
+    expect(s.job!.build.error?.message).toBe('lost');
+  });
 });

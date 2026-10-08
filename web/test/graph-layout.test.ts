@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { layout } from '@/lib/graph-layout';
-import { linesOf, opAt } from '@/components/TranspilePanel';
+import { linesFor, linesOf, opAt } from '@/components/TranspilePanel';
 import { rowsOf } from '@/components/AnalysePanel';
 import type { CompileView, Graph } from '@/lib/types';
 
@@ -22,9 +22,17 @@ describe('layout', () => {
     expect(l.edges).toHaveLength(5);
     expect(l.truncated).toBe(false);
   });
-  it('places unreachable nodes after the reachable ones', () => {
+  it('roots every node without a forward predecessor at rank 0, side by side', () => {
     const l = layout({ nodes: [node(0, 0), node(1, 5)], edges: [] });
-    expect(l.nodes.find((n) => n.id === 1)!.y).toBeGreaterThan(0);
+    const [a, b] = [l.nodes.find((n) => n.id === 0)!, l.nodes.find((n) => n.id === 1)!];
+    expect(b.y).toBe(a.y);
+    expect(b.x).toBeGreaterThan(a.x);
+  });
+  it('keeps a multi-root graph short', () => {
+    const nodes = Array.from({ length: 100 }, (_, i) => node(i, i * 10));
+    const l = layout({ nodes, edges: [{ from: 0, to: 1, kind: 'fallthrough' }] }, { nodeH: 40, gapY: 30 });
+    expect(l.height).toBe(110);
+    expect(l.shown).toBe(100);
   });
   it('caps the node count', () => {
     const nodes = Array.from({ length: 1000 }, (_, i) => node(i, i));
@@ -44,6 +52,16 @@ describe('op ↔ C lines', () => {
   const m = [{ pc: 0, line: 105 }, { pc: 2, line: 106 }, { pc: 4, line: 107 }];
   it('owns lines up to the next marker', () => { expect(linesOf(m, 2, 200)).toEqual([106, 106]); expect(linesOf(m, 4, 200)).toEqual([107, 200]); expect(linesOf(m, 9, 200)).toBeNull(); });
   it('finds the owner of a line', () => { expect(opAt(m, 104)).toBeNull(); expect(opAt(m, 106)).toBe(2); expect(opAt(m, 150)).toBe(4); });
+});
+
+describe('block-granular op map (sBPF)', () => {
+  const m = [{ pc: 10, line: 50 }, { pc: 14, line: 60 }];
+  const g: Graph = { nodes: [{ id: 0, label: '10', start: 10, end: 13, term: '' }, { id: 1, label: '14', start: 14, end: 15, term: '' }], edges: [] };
+  it('a non-leader slot owns the lines of its block', () => {
+    expect(linesFor(m, g, 12, 100)).toEqual([50, 59]);
+    expect(linesFor(m, g, 15, 100)).toEqual([60, 100]);
+  });
+  it('a slot outside every block owns nothing', () => { expect(linesFor(m, g, 99, 100)).toBeNull(); });
 });
 
 describe('rowsOf', () => {
