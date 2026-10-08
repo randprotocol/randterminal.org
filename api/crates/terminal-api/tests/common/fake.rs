@@ -82,3 +82,11 @@ impl Runner for CountingRunner {
         Ok(out)
     }
 }
+
+/// The fake runner, with solc sleeping 400 ms so a job is observably in flight.
+pub fn slow_runner() -> Arc<dyn Runner> {
+    Arc::new(FakeRunner::new(|spec: &RunSpec| {
+        if spec.tool == Tool::Solc { std::thread::sleep(std::time::Duration::from_millis(400)); }
+        fake_answer(spec)
+    }))
+}

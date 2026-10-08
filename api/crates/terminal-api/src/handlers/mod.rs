@@ -1,3 +1,4 @@
+pub mod jobs;
 use crate::{error::AppError, state::AppState, CIRCUITS_REV};
 use axum::{extract::State, Json};
 use serde_json::{json, Value};
