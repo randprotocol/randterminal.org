@@ -3,7 +3,8 @@ import { useEffect, useRef } from 'react';
 import { EditorView, basicSetup } from 'codemirror';
 import { EditorState, Compartment } from '@codemirror/state';
 import { keymap } from '@codemirror/view';
-import { linter, setDiagnostics, type Diagnostic as CmDiagnostic } from '@codemirror/lint';
+import { Prec } from '@codemirror/state';
+import { lintGutter, setDiagnostics, type Diagnostic as CmDiagnostic } from '@codemirror/lint';
 import { rust } from '@codemirror/lang-rust';
 import { solidity } from '@replit/codemirror-lang-solidity';
 import type { Diagnostic } from '@/lib/types';
@@ -31,9 +32,11 @@ export function Editor({ value, onChange, language, diagnostics, onRun, readOnly
       state: EditorState.create({
         doc: value,
         extensions: [
-          basicSetup, theme, linter(() => []),
+          basicSetup, theme, lintGutter(),
           lang.current.of(language === 'solidity' ? solidity : language === 'rust' ? rust() : []),
-          keymap.of([{ key: 'Mod-Enter', run: () => { cb.current.onRun(); return true; } }]),
+          // Highest precedence: the default keymap binds Mod-Enter to insertBlankLine. Returning true makes
+          // CodeMirror preventDefault, so Shell's window handler skips the event: exactly one run fires.
+          Prec.highest(keymap.of([{ key: 'Mod-Enter', run: () => { cb.current.onRun(); return true; } }])),
           EditorView.updateListener.of((u) => { if (u.docChanged) cb.current.onChange(u.state.doc.toString()); }),
           EditorState.readOnly.of(readOnly),
         ],
@@ -59,7 +62,7 @@ export function Editor({ value, onChange, language, diagnostics, onRun, readOnly
       return { from, to: line.to > from ? line.to : from, severity: d.severity === 'error' ? 'error' : d.severity === 'warning' ? 'warning' : 'info', message: d.message };
     });
     v.dispatch(setDiagnostics(v.state, marks));
-  }, [diagnostics]);
+  }, [diagnostics, language, readOnly]);
 
   return <div ref={host} className="h-full overflow-hidden" aria-label="source editor" />;
 }

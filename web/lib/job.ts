@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { api, subscribeJob } from './api';
 import type { ConsoleLine, FileIn, JobStreamEvent, JobView, Lang, NewJob, StageStatus } from './types';
 
@@ -47,20 +47,47 @@ function reducer(s: JobState, a: Action): JobState {
   return reduce(s, a);
 }
 
+export interface JobDeps {
+  createJob: (req: NewJob) => Promise<string>;
+  subscribe: (id: string, onEvent: (e: JobStreamEvent) => void) => () => void;
+}
+
+/** The submit/subscribe lifecycle, free of React: only the newest submit may subscribe, and a
+ *  superseded or disposed subscription's events are dropped. */
+export function createJobController(dispatch: (a: Action) => void, deps: JobDeps) {
+  let seq = 0;
+  let unsub: (() => void) | null = null;
+  const close = () => { unsub?.(); unsub = null; };
+  return {
+    async submit(req: NewJob) {
+      const mine = ++seq;
+      close();
+      dispatch({ type: 'reset' });
+      try {
+        const id = await deps.createJob(req);
+        if (mine !== seq) return;
+        unsub = deps.subscribe(id, (e) => { if (mine === seq) dispatch(e); });
+      } catch (e) {
+        if (mine === seq) dispatch({ type: 'error', message: e instanceof Error ? e.message : String(e) });
+      }
+    },
+    reset() { seq++; close(); dispatch({ type: 'reset' }); },
+    dispose() { seq++; close(); },
+  };
+}
+
 export function useJob() {
   const [state, dispatch] = useReducer(reducer, initial);
-  const unsub = useRef<(() => void) | null>(null);
-  useEffect(() => () => unsub.current?.(), []);
-  const submit = useCallback(async (req: NewJob) => {
-    unsub.current?.();
-    dispatch({ type: 'reset' });
-    try {
-      const id = await api.createJob(req);
-      unsub.current = subscribeJob(id, dispatch);
-    } catch (e) {
-      dispatch({ type: 'error', message: e instanceof Error ? e.message : String(e) });
-    }
+  const [creating, setCreating] = useState(false);
+  const ctl = useRef<ReturnType<typeof createJobController> | null>(null);
+  useEffect(() => {
+    ctl.current = createJobController(dispatch, { createJob: api.createJob, subscribe: subscribeJob });
+    return () => { ctl.current?.dispose(); ctl.current = null; };
   }, []);
-  const reset = useCallback(() => { unsub.current?.(); dispatch({ type: 'reset' }); }, []);
-  return { state, submit, reset };
+  const submit = useCallback(async (req: NewJob) => {
+    setCreating(true);
+    try { await ctl.current?.submit(req); } finally { setCreating(false); }
+  }, []);
+  const reset = useCallback(() => { ctl.current?.reset(); setCreating(false); }, []);
+  return { state, creating, submit, reset };
 }
