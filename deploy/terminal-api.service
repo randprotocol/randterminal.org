@@ -1,0 +1,25 @@
+[Unit]
+Description=Rand Terminal API
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+User=terminal
+EnvironmentFile=/etc/terminal/api.env
+ExecStart=/opt/terminal/bin/terminal-api
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# The api writes job stage dirs under TERMINAL_DATA and bind-mounts them into `docker run`.
+# The Docker socket (/run/docker.sock, group docker) needs no ReadWritePaths entry: ProtectSystem=strict
+# remounts the tree read-only, but connect(2) on a socket node is not blocked by a read-only mount, and
+# listing the socket here would pin a stale bind mount after `systemctl restart docker`.
+# NoNewPrivileges does not affect group access, and the unit runs as `terminal`, which is in `docker`.
+ReadWritePaths=/var/lib/terminal
+
+[Install]
+WantedBy=multi-user.target

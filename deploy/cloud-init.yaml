@@ -1,0 +1,31 @@
+#cloud-config
+# First boot of the randterminal.org droplet: web, a `terminal` user that owns the app and may run
+# containers, Docker for the sandbox, Node 22 and Rust 1.98.1 to build on the box.
+package_update: true
+packages: [nginx, ufw, rsync, build-essential, clang, pkg-config, libssl-dev, git, docker.io, certbot, python3-certbot-nginx, fail2ban, unattended-upgrades]
+users:
+  - default
+  - name: terminal
+    shell: /bin/bash
+    groups: [docker]
+write_files:
+  - path: /etc/sudoers.d/terminal
+    permissions: '0440'
+    content: |
+      terminal ALL=(root) NOPASSWD: /usr/bin/systemctl restart terminal-api terminal-web
+runcmd:
+  - ufw default deny incoming
+  - ufw allow 22/tcp
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw --force enable
+  - mkdir -p /opt/terminal/src /var/lib/terminal /etc/terminal /home/terminal/.ssh
+  - cp /root/.ssh/authorized_keys /home/terminal/.ssh/authorized_keys
+  - chown -R terminal:terminal /home/terminal/.ssh /opt/terminal /var/lib/terminal
+  - chmod 700 /home/terminal/.ssh && chmod 600 /home/terminal/.ssh/authorized_keys
+  - visudo -cf /etc/sudoers.d/terminal || rm -f /etc/sudoers.d/terminal
+  - sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/; s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+  - systemctl reload ssh
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - apt-get install -y nodejs
+  - su - terminal -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.98.1 --profile minimal"
