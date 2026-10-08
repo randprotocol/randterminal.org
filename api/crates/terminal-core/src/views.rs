@@ -15,7 +15,7 @@ pub enum StageStatus { Queued, Running, Done, Failed }
 #[serde(rename_all = "snake_case")]
 pub enum StageName { Compile, Transpile, Build }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobOptions {
     /// The contract to transpile when the Solidity file defines several.
     #[serde(default)] pub contract: Option<String>,
@@ -23,6 +23,11 @@ pub struct JobOptions {
     #[serde(default = "default_chain_id")] pub chain_id: u64,
     /// `1` or `2`; two is the default and what ships.
     #[serde(default = "default_stage")] pub stage: u8,
+}
+impl Default for JobOptions {
+    fn default() -> Self {
+        Self { contract: None, chain_id: default_chain_id(), stage: default_stage() }
+    }
 }
 pub fn default_chain_id() -> u64 { 20 }
 pub fn default_stage() -> u8 { 2 }
