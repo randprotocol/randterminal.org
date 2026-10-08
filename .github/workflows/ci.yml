@@ -27,7 +27,7 @@ jobs:
     defaults: { run: { working-directory: api } }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with: { submodules: true, token: "${{ secrets.CIRCUITS_TOKEN }}" }
+        with: { submodules: true, token: "${{ secrets.CIRCUITS_TOKEN }}", persist-credentials: false }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable (branch head, 2026-10-05)
       - name: components for the pinned toolchain
         run: rustup component add rustfmt clippy
@@ -43,6 +43,7 @@ jobs:
     defaults: { run: { working-directory: web } }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '22', cache: npm, cache-dependency-path: web/package-lock.json }
       - run: npx --yes npm@11 ci
@@ -57,10 +58,14 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with: { submodules: true, token: "${{ secrets.CIRCUITS_TOKEN }}" }
+        with: { submodules: true, token: "${{ secrets.CIRCUITS_TOKEN }}", persist-credentials: false }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable (branch head, 2026-10-05)
       - name: build the image (its own hc checks run inside)
-        run: echo "TAG=$(sandbox/build.sh | tail -1)" >> "$GITHUB_ENV"
+        run: |
+          out=$(sandbox/build.sh)
+          tag=$(printf '%s\n' "$out" | tail -n 1)
+          case "$tag" in terminal-sandbox:*) ;; *) echo "build.sh did not end with an image tag: $tag" >&2; exit 1;; esac
+          echo "TAG=$tag" >> "$GITHUB_ENV"
       - name: gated sandbox tests
         working-directory: api
         run: TERMINAL_SANDBOX=$TAG cargo test -p terminal-sandbox --test image -- --test-threads=1

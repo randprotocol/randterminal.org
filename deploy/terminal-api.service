@@ -10,6 +10,8 @@ ExecStart=/opt/terminal/bin/terminal-api
 Restart=always
 RestartSec=5
 Environment=RUST_LOG=info
+# ProtectHome hides ~/.docker; keep the docker CLI's config where the unit can read it.
+Environment=DOCKER_CONFIG=/var/lib/terminal/.docker
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
