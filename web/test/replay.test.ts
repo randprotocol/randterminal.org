@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { abiSignature, changedRegs, evmFormFromAbi, gasError, nextMatching, PageCache, REG_NAMES, syscallFrom } from '@/lib/replay';
 import type { CycleView } from '@/lib/types';
 
-const cyc = (clk: number, extra: Partial<CycleView> = {}): CycleView => ({ clk, pc: 0x10000 + 4 * clk, next_pc: 0, word: 0, rd: 0, writes_rd: false, rd_val: 0, mem_read: false, mem_write: false, mem_addr: 0, mem_val: 0, syscall: false, hash_row: false, n_alu: 0, sys_idx: 0xffffffff, ...extra });
+const cyc = (clk: number, extra: Partial<CycleView> = {}): CycleView => ({ clk, pc: 0x10000 + 4 * clk, next_pc: 0, word: 0, rd: 0, writes_rd: false, rd_val: 0, mem_read: false, mem_write: false, mem_addr: 0, mem_val: 0, syscall: false, hash_row: false, n_alu: 0, sys_idx: 0xffffffff, mem_old: 0, ...extra });
 
 function fakeFetch(total: number, syscalls: number[]) {
   return vi.fn(async (from: number, count: number) => Array.from({ length: Math.max(0, Math.min(count, total - from)) }, (_, k) => cyc(from + k, { syscall: syscalls.includes(from + k) })));

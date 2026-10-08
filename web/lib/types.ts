@@ -48,7 +48,8 @@ export interface TableRows { cpu: number; memory: number; alu: number; poseidon2
 export interface TierCapacity { tier: number; cpu: number; alu: number; memory_min: number; memory_max: number; poseidon2_permutations: number; keccak_permutations: number; sha256_compressions: number; fits: boolean }
 export interface SyscallView { clk: number; kind: string; detail: string }
 export interface RunSummary { rid: string; cycles: number; halted: boolean; trap?: string | null; trap_clk?: number | null; outputs: number[]; status: number; tier?: number | null; rows: TableRows; tiers: TierCapacity[]; syscall_counts: [string, number][]; hot_pcs: [number, number][]; input_words: number; public_words: number; discovery?: DiscoveryStep[] }
-export interface CycleView { clk: number; pc: number; next_pc: number; word: number; rd: number; writes_rd: boolean; rd_val: number; mem_read: boolean; mem_write: boolean; mem_addr: number; mem_val: number; syscall: boolean; hash_row: boolean; n_alu: number; sys_idx: number }
+export interface CycleView { clk: number; pc: number; next_pc: number; word: number; rd: number; writes_rd: boolean; rd_val: number; mem_read: boolean; mem_write: boolean; mem_addr: number; mem_val: number; syscall: boolean; hash_row: boolean; n_alu: number; sys_idx: number; mem_old: number }
+/** mem_val: the word a load read or a store wrote; mem_old: the word a store replaced (else = mem_val). */
 export interface CyclePage { from: number; cycles: CycleView[]; total: number }
 export interface StateView { clk: number; regs: number[]; cycle: CycleView; text: string; c_line?: number | null; src_pc?: number | null }
 export interface MemoryView { clk: number; addr: number; words: number[] }

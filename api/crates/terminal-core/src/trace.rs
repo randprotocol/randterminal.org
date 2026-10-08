@@ -2,7 +2,9 @@
 //! for SPL Token's 766 k cycles), so a run is folded once into fixed-width files the debugger
 //! pages through:
 //!
-//! * `cycles.bin`     36 B per cycle: clk, pc, next_pc, word, rd, flags, n_alu, rd_val, mem_addr, mem_val, sys_idx
+//! * `cycles.bin`     40 B per cycle: clk, pc, next_pc, word, rd, flags, n_alu, rd_val, mem_addr, mem_val, sys_idx, mem_old
+//!   (`mem_val` is the word a load read or a store wrote; `mem_old` the word a store replaced,
+//!   else equal to `mem_val`. The emulator's own `mem_val` is the old word for stores.)
 //! * `regwrites.bin`  12 B per register write: clk, reg, value (x0 never recorded)
 //! * `memwrites.bin`  12 B per RAM write: clk, word address, value
 //! * `regs.ckpt`      32 × u32 every REG_CKPT cycles: the file before that cycle
@@ -22,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 pub const REG_CKPT: u32 = 1024;
 pub const MEM_CKPT: u32 = 65_536;
-pub const REC_BYTES: u64 = 36;
+pub const REC_BYTES: u64 = 40;
 pub const LOG_BYTES: u64 = 12;
 pub const MAX_PAGE: u32 = 4096;
 pub const MAX_WINDOW: u32 = 256;
@@ -134,9 +136,19 @@ pub fn write(dir: &Path, exec: &Execution) -> io::Result<u32> {
         if e.dec.is_lb | e.dec.is_lh | e.dec.is_lw == 1 {
             flags |= F_MEM_READ;
         }
-        if e.dec.is_sb | e.dec.is_sh | e.dec.is_sw == 1 {
+        let is_store = e.dec.is_sb | e.dec.is_sh | e.dec.is_sw == 1;
+        if is_store {
             flags |= F_MEM_WRITE;
         }
+        // A store's new word is its RAM write (the merged word for sb/sh), not `e.mem_val`.
+        let mem_new = if is_store {
+            e.accesses
+                .iter()
+                .find(|a| a.space == SPACE_RAM && a.is_write)
+                .map_or(e.mem_val, |a| a.value)
+        } else {
+            e.mem_val
+        };
         if e.sys.is_some() {
             flags |= F_SYSCALL;
         }
@@ -158,8 +170,9 @@ pub fn write(dir: &Path, exec: &Execution) -> io::Result<u32> {
         cycles.write_all(&(e.alu.len().min(u16::MAX as usize) as u16).to_le_bytes())?;
         put(&mut cycles, rd_val)?;
         put(&mut cycles, e.mem_addr)?;
-        put(&mut cycles, e.mem_val)?;
+        put(&mut cycles, mem_new)?;
         put(&mut cycles, sys_idx)?;
+        put(&mut cycles, e.mem_val)?;
         for a in all_accesses(e).filter(|a| a.is_write) {
             if a.space == SPACE_REG {
                 if a.addr == 0 {
@@ -320,6 +333,7 @@ impl Trace {
                     hash_row: flags & F_HASH_ROW != 0,
                     n_alu: u16::from_le_bytes([c[18], c[19]]),
                     sys_idx: u32_at(c, 32),
+                    mem_old: u32_at(c, 36),
                 }
             })
             .collect())

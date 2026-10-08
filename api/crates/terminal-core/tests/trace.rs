@@ -188,3 +188,37 @@ fn incomplete_trace_is_rejected() {
         std::io::ErrorKind::InvalidData
     );
 }
+
+/// I6: a store's cycle record carries the word it wrote (`mem_val`) and the word it replaced
+/// (`mem_old`); the emulator's own `mem_val` is the old word for stores. Loads have
+/// `mem_old == mem_val` (the word read).
+#[test]
+fn stores_record_the_written_word_and_the_old_one() {
+    let mut stores = 0;
+    for (_, program, inputs) in rand_zkvm::guests::all() {
+        let Ok(exec) = execute(&program, &inputs, &[], 1 << 16) else {
+            continue;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        trace::write(dir.path(), &exec).unwrap();
+        let t = Trace::open(dir.path()).unwrap();
+        for e in &exec.events {
+            let c = t.cycle(e.clk).unwrap();
+            if c.mem_write {
+                let w = e
+                    .accesses
+                    .iter()
+                    .find(|a| a.space == SPACE_RAM && a.is_write)
+                    .unwrap();
+                assert_eq!((c.mem_addr, c.mem_val, c.mem_old), (w.addr, w.value, e.mem_val));
+                // The new word is what memory holds after the cycle.
+                assert_eq!(t.memory_at(e.clk + 1, c.mem_addr, 1).unwrap()[0], c.mem_val);
+                assert_eq!(t.memory_at(e.clk, c.mem_addr, 1).unwrap()[0], c.mem_old);
+                stores += 1;
+            } else if c.mem_read {
+                assert_eq!((c.mem_val, c.mem_old), (e.mem_val, e.mem_val));
+            }
+        }
+    }
+    assert!(stores > 0, "the guests store something");
+}

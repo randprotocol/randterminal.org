@@ -447,11 +447,15 @@ pub struct CycleView {
     pub mem_read: bool,
     pub mem_write: bool,
     pub mem_addr: u32,
+    /// The word a load read or a store wrote.
     pub mem_val: u32,
     pub syscall: bool,
     pub hash_row: bool,
     pub n_alu: u16,
     pub sys_idx: u32,
+    /// The word a store replaced; equal to `mem_val` for every other cycle.
+    #[serde(default)]
+    pub mem_old: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

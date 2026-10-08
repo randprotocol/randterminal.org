@@ -214,7 +214,7 @@ cap of 60 s. The raw `Execution` is **not** retained: 766 k `CycleEvent`s with t
 
 | file | record | purpose |
 |---|---|---|
-| `cycles.bin` | 40 B fixed: `clk, pc, next_pc, word, rd, flags, rd_val, mem_addr, mem_val, n_alu, n_acc, sys_idx` | the timeline; 766 k cycles ≈ 31 MB |
+| `cycles.bin` | 40 B fixed: `clk, pc, next_pc, word, rd, flags, n_alu, rd_val, mem_addr, mem_val, sys_idx, mem_old` (`mem_val` = the word a load read or a store wrote; `mem_old` = the word a store replaced) | the timeline; 766 k cycles ≈ 31 MB |
 | `regs.ckpt` | 32×u32 every 1 024 cycles | O(1) register state at any cycle (replay ≤ 1 023 records) |
 | `memwrites.bin` | 12 B: `clk, addr, value` per RAM write | memory state at any cycle by folding writes ≤ clk |
 | `syscalls.json` | `[{clk, kind, detail}]` | markers and the syscall log |
