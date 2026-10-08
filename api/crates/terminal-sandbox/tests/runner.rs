@@ -233,7 +233,7 @@ fn docker_failures_are_told_apart_from_tool_failures() {
     )));
     assert!(docker_unavailable(&out(
         1,
-        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock."
+        "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock."
     )));
     assert!(docker_unavailable(&out(
         125,
@@ -246,6 +246,44 @@ fn docker_failures_are_told_apart_from_tool_failures() {
     assert!(!docker_unavailable(&out(
         1,
         "Error: the image is rejected by the checker"
+    )));
+}
+
+/// M3: only lines that begin with `docker:` count, so a compiler's own output cannot read as
+/// "the sandbox is unavailable"; docker's prefix lines (a pull attempt) do not hide its error.
+#[test]
+fn only_docker_prefixed_lines_say_the_sandbox_is_down() {
+    use terminal_sandbox::{docker_unavailable, RunOutput};
+    let out = |status, stderr: &str| RunOutput {
+        status,
+        stderr: stderr.into(),
+        ..Default::default()
+    };
+    assert!(docker_unavailable(&out(
+        125,
+        "Unable to find image 'terminal-sandbox:x' locally\ndocker: Error response from daemon: pull access denied for terminal-sandbox"
+    )));
+    assert!(docker_unavailable(&out(
+        125,
+        "warning: something\n  docker: failed to connect to the docker API at unix:///x\n"
+    )));
+    // User output: a mention mid-line, a daemon message without docker's prefix, a 125 whose
+    // docker: line is not the start of a line.
+    assert!(!docker_unavailable(&out(
+        1,
+        "error: Cannot connect to the Docker daemon (user #error text)"
+    )));
+    assert!(!docker_unavailable(&out(
+        1,
+        "Cannot connect to the Docker daemon at unix:///x"
+    )));
+    assert!(!docker_unavailable(&out(
+        125,
+        "error: see docker: failed to connect to the docker API"
+    )));
+    assert!(!docker_unavailable(&out(
+        1,
+        "error[E0425]: cannot find value\n#error docker: failed to connect to the docker API"
     )));
 }
 
