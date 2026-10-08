@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use terminal_core::views::*;
 use terminal_core::{evm_analysis, image, sbpf_analysis, stages};
@@ -43,7 +44,12 @@ pub struct JobStore {
     builds: Arc<Semaphore>,
     chans: Mutex<HashMap<String, broadcast::Sender<JobEvent>>>,
     access: Mutex<HashMap<String, u64>>,
-    running: Mutex<HashSet<String>>,
+    /// Unfinished jobs → the client that submitted them (`None` when created without one).
+    running: Mutex<HashMap<String, Option<String>>>,
+    /// Approximate bytes under the data dir: the last sweep's measurement plus what finished
+    /// jobs and runs added since. Over `data_cap_bytes`, new jobs and runs are refused.
+    usage: AtomicU64,
+    sweeping: AtomicBool,
 }
 
 fn queued() -> StageState {
@@ -115,7 +121,9 @@ impl JobStore {
             runner,
             chans: Mutex::new(HashMap::new()),
             access: Mutex::new(HashMap::new()),
-            running: Mutex::new(HashSet::new()),
+            running: Mutex::new(HashMap::new()),
+            usage: AtomicU64::new(0),
+            sweeping: AtomicBool::new(false),
         })
     }
 
@@ -153,7 +161,36 @@ impl JobStore {
         self.access.lock().unwrap().len()
     }
 
+    /// Bytes added under the data dir since the last sweep (a finished job, a run).
+    pub fn add_usage(&self, bytes: u64) {
+        self.usage.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// 503 while the data dir is over its cap, and a sweep is started to free space (LRU).
+    pub fn check_space(self: &Arc<Self>) -> ApiResult<()> {
+        if self.usage.load(Ordering::Relaxed) <= self.config.data_cap_bytes {
+            return Ok(());
+        }
+        if !self.sweeping.swap(true, Ordering::AcqRel) {
+            let me = self.clone();
+            tokio::task::spawn_blocking(move || {
+                me.sweep(unix_now());
+                me.sweeping.store(false, Ordering::Release);
+            });
+        }
+        Err(AppError::Unavailable(
+            "the server is out of job storage; try again in a few minutes".into(),
+        ))
+    }
+
+    /// A job without a client (tests, tools): only the global queue bound applies.
     pub fn create(self: &Arc<Self>, req: NewJob) -> ApiResult<String> {
+        self.create_from(req, None)
+    }
+
+    /// Creates a job for `client`, who may have at most `max_active_jobs_per_ip` unfinished jobs
+    /// (429); at most `max_queued_jobs` are unfinished in all (503).
+    pub fn create_from(self: &Arc<Self>, req: NewJob, client: Option<&str>) -> ApiResult<String> {
         if !(1..=2).contains(&req.options.stage) {
             return Err(AppError::BadRequest(format!(
                 "stage must be 1 or 2, not {}",
@@ -233,10 +270,33 @@ impl JobStore {
                 }
             }
         }
+        self.check_space()?;
         let id = uuid::Uuid::new_v4().simple().to_string();
         let dir = self.path(&id);
-        // Marked running before its directory exists, so a concurrent sweep never sees it unmarked.
-        self.running.lock().unwrap().insert(id.clone());
+        // Marked running before its directory exists, so a concurrent sweep never sees it unmarked;
+        // the bounds are checked under the same lock.
+        {
+            let mut running = self.running.lock().unwrap();
+            if running.len() >= self.config.max_queued_jobs.max(1) {
+                return Err(AppError::Unavailable(format!(
+                    "the build queue is full ({} unfinished jobs); try again in a minute",
+                    running.len()
+                )));
+            }
+            if let Some(ip) = client {
+                let max = self.config.max_active_jobs_per_ip.max(1);
+                let mine = running
+                    .values()
+                    .filter(|c| c.as_deref() == Some(ip))
+                    .count();
+                if mine >= max {
+                    return Err(AppError::TooManyJobs(format!(
+                        "you have {mine} unfinished jobs, the most one client may have; wait for one to finish"
+                    )));
+                }
+            }
+            running.insert(id.clone(), client.map(str::to_string));
+        }
         if let Err(e) = std::fs::create_dir_all(dir.join("source")) {
             self.running.lock().unwrap().remove(&id);
             return Err(e.into());
@@ -370,51 +430,59 @@ impl JobStore {
         for e in rd.filter_map(|e| e.ok()) {
             let id = e.file_name().to_string_lossy().into_owned();
             let size = dir_size(&e.path());
-            if self.running.lock().unwrap().contains(&id) {
+            if self.running.lock().unwrap().contains_key(&id) {
                 running_size += size;
                 continue;
             }
             jobs.push((id.clone(), self.last_access(&id), size));
         }
         let mut removed = 0;
-        jobs.retain(|(id, at, _)| {
+        // A job that could not be (fully) deleted keeps counting towards the total.
+        let mut stuck = 0u64;
+        jobs.retain(|(id, at, size)| {
             if now.saturating_sub(*at) > self.config.job_ttl_secs {
-                self.remove(id);
-                removed += 1;
+                if self.remove(id) {
+                    removed += 1;
+                } else {
+                    stuck += size;
+                }
                 false
             } else {
                 true
             }
         });
-        let mut total: u64 = running_size + jobs.iter().map(|j| j.2).sum::<u64>();
+        let mut total: u64 = running_size + stuck + jobs.iter().map(|j| j.2).sum::<u64>();
         jobs.sort_by_key(|j| j.1);
         for (id, _, size) in jobs {
             if total <= self.config.data_cap_bytes {
                 break;
             }
-            self.remove(&id);
-            removed += 1;
-            total -= size;
+            if self.remove(&id) {
+                removed += 1;
+                total -= size;
+            }
         }
+        self.usage.store(total, Ordering::Relaxed);
         removed
     }
 
     pub fn spawn_sweeper(self: Arc<Self>) {
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
                 let me = self.clone();
                 match tokio::task::spawn_blocking(move || me.sweep(unix_now())).await {
                     Ok(n) if n > 0 => tracing::info!("swept {n} job(s)"),
                     Ok(_) => {}
                     Err(e) => tracing::error!("sweep: {e}"),
                 }
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
             }
         });
     }
 }
 
-fn dir_size(p: &Path) -> u64 {
+/// Bytes in the files under `p` (links are not followed).
+pub fn dir_size(p: &Path) -> u64 {
     std::fs::read_dir(p)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
@@ -704,6 +772,11 @@ impl Pipeline {
         if let Err((stage, e)) = result {
             self.set(stage, StageStatus::Failed, Some(e));
         }
+        let d = self.dir.clone();
+        let bytes = tokio::task::spawn_blocking(move || dir_size(&d))
+            .await
+            .unwrap_or(0);
+        self.store.add_usage(bytes);
         self.view.finished = true;
         self.save();
         self.store.running.lock().unwrap().remove(&self.view.id);

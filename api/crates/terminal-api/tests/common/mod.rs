@@ -40,12 +40,20 @@ pub async fn call(app: &Router, req: Request<Body>) -> (StatusCode, HeaderMap, V
 pub fn test_app(
     runner: std::sync::Arc<dyn terminal_sandbox::Runner>,
 ) -> (Router, terminal_api::state::AppState, tempfile::TempDir) {
+    test_app_with(runner, |_| {})
+}
+
+pub fn test_app_with(
+    runner: std::sync::Arc<dyn terminal_sandbox::Runner>,
+    f: impl FnOnce(&mut terminal_api::ApiConfig),
+) -> (Router, terminal_api::state::AppState, tempfile::TempDir) {
     let d = tempfile::tempdir().unwrap();
-    let cfg = terminal_api::ApiConfig {
+    let mut cfg = terminal_api::ApiConfig {
         data_dir: d.path().into(),
         samples_dir: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../samples"),
         ..Default::default()
     };
+    f(&mut cfg);
     let state = terminal_api::state::AppState::new(cfg, runner);
     (terminal_api::routes::create_router(state.clone()), state, d)
 }

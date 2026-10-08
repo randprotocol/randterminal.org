@@ -343,3 +343,64 @@ async fn next_src_finds_the_next_mapped_source_op() {
         assert!(e["error"].is_string(), "{bad}: {e}");
     }
 }
+
+/// I5: a job keeps its newest 8 runs; older run directories and their index files go.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_keeps_its_newest_eight_runs() {
+    let (app, state, _d) = test_app(fake_runner());
+    let id = finished_erc20(&app).await;
+    let mut body = evm_run(&evm_call::erc20_transfer_form());
+    body["max_cycles"] = json!(1000);
+    let mut rids = vec![];
+    for _ in 0..10 {
+        let (st, _, sum) = call(
+            &app,
+            json_req(
+                "POST",
+                &format!("/api/v1/jobs/{id}/runs"),
+                Some(body.clone()),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{sum}");
+        rids.push(sum["rid"].as_str().unwrap().to_string());
+    }
+    for (i, rid) in rids.iter().enumerate() {
+        let (st, _, _) = call(&app, json_req("GET", &format!("/api/v1/runs/{rid}"), None)).await;
+        assert_eq!(
+            st,
+            if i < 2 {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::OK
+            },
+            "run {i}"
+        );
+    }
+    let jdir = state.store.dir(&id).unwrap();
+    assert_eq!(std::fs::read_dir(jdir.join("runs")).unwrap().count(), 8);
+    assert_eq!(
+        std::fs::read_dir(state.config.data_dir.join("runs"))
+            .unwrap()
+            .count(),
+        8
+    );
+}
+
+/// I5: over the data cap, new runs are refused with 503.
+#[tokio::test(flavor = "multi_thread")]
+async fn runs_are_refused_over_the_data_cap() {
+    let (app, _s, _d) = test_app_with(fake_runner(), |c| c.data_cap_bytes = 1);
+    let id = finished_erc20(&app).await;
+    let (st, _, v) = call(
+        &app,
+        json_req(
+            "POST",
+            &format!("/api/v1/jobs/{id}/runs"),
+            Some(evm_run(&evm_call::erc20_transfer_form())),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("storage"), "{v}");
+}

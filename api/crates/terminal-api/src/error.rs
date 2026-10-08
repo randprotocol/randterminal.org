@@ -15,6 +15,9 @@ pub enum AppError {
     PayloadTooLarge(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    /// One client has too many unfinished jobs (429, unlike the rate limit it has no retry time).
+    #[error("too many jobs: {0}")]
+    TooManyJobs(String),
     #[error("rate limited")]
     TooManyRequests { retry_after: u64 },
     #[error("unavailable: {0}")]
@@ -41,6 +44,7 @@ impl IntoResponse for AppError {
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m),
             AppError::PayloadTooLarge(m) => (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", m),
             AppError::Conflict(m) => (StatusCode::CONFLICT, "conflict", m),
+            AppError::TooManyJobs(m) => (StatusCode::TOO_MANY_REQUESTS, "too_many_jobs", m),
             AppError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable", m),
             AppError::TooManyRequests { retry_after } => {
                 let body = Json(

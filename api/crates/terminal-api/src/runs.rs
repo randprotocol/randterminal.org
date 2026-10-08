@@ -35,6 +35,7 @@ enum Outcome {
 
 pub async fn create(s: &AppState, job: &str, req: RunRequest) -> ApiResult<RunSummary> {
     let view = s.store.view(job)?;
+    s.store.check_space()?;
     if view.build.status != StageStatus::Done {
         return Err(AppError::Conflict("the image is not built yet".into()));
     }
@@ -146,7 +147,48 @@ pub async fn create(s: &AppState, job: &str, req: RunRequest) -> ApiResult<RunSu
     let index = s.config.data_dir.join("runs");
     std::fs::create_dir_all(&index)?;
     std::fs::write(index.join(&rid), job)?;
+    let (rd, runs_dir) = (rdir.clone(), jdir.join("runs"));
+    let bytes = tokio::task::spawn_blocking(move || {
+        prune_runs(&runs_dir, &index);
+        crate::jobs::dir_size(&rd)
+    })
+    .await
+    .unwrap_or(0);
+    s.store.add_usage(bytes);
     Ok(summary)
+}
+
+/// Runs a job keeps; older ones are deleted when a new one finishes.
+pub const MAX_RUNS_PER_JOB: usize = 8;
+
+/// Deletes all but the newest [`MAX_RUNS_PER_JOB`] finished runs (those with `run.json`; a run
+/// still emulating has none and is left alone) and their index files.
+fn prune_runs(runs_dir: &std::path::Path, index: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(runs_dir) else {
+        return;
+    };
+    let mut done: Vec<(std::time::SystemTime, String)> = rd
+        .flatten()
+        .filter_map(|e| {
+            let rid = e.file_name().into_string().ok().filter(|r| rid_ok(r))?;
+            let at = std::fs::symlink_metadata(e.path().join("run.json"))
+                .ok()?
+                .modified()
+                .ok()?;
+            Some((at, rid))
+        })
+        .collect();
+    if done.len() <= MAX_RUNS_PER_JOB {
+        return;
+    }
+    done.sort();
+    let old = done.len() - MAX_RUNS_PER_JOB;
+    for (_, rid) in done.into_iter().take(old) {
+        if let Err(e) = std::fs::remove_dir_all(runs_dir.join(&rid)) {
+            tracing::warn!("could not delete run {rid}: {e}");
+        }
+        let _ = std::fs::remove_file(index.join(&rid));
+    }
 }
 
 pub fn open(s: &AppState, rid: &str) -> ApiResult<(PathBuf, PathBuf)> {

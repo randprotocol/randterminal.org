@@ -1,4 +1,4 @@
-use crate::{error::ApiResult, jobs::JobEvent, state::AppState};
+use crate::{error::ApiResult, jobs::JobEvent, ratelimit::ClientIp, state::AppState};
 use axum::{
     extract::{Path, State},
     http::{header, StatusCode},
@@ -6,7 +6,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    Json,
+    Extension, Json,
 };
 use futures_util::stream::{self, Stream, StreamExt};
 use serde_json::{json, Value};
@@ -16,9 +16,12 @@ use tokio::sync::broadcast::error::RecvError;
 
 pub async fn create(
     State(s): State<AppState>,
+    client: Option<Extension<ClientIp>>,
     Json(req): Json<NewJob>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
-    let id = s.store.create(req)?;
+    let id = s
+        .store
+        .create_from(req, client.as_ref().map(|c| c.0 .0.as_str()))?;
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
 }
 

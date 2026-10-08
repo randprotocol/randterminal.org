@@ -146,6 +146,8 @@ async fn bad_jobs_and_the_job_rate_limit() {
     for n in 1..=7 {
         let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
         assert_eq!(st, StatusCode::CREATED, "submission {n}: {v}");
+        // One client may only have a few unfinished jobs; this test is about the rate limit.
+        wait_job(&app, v["id"].as_str().unwrap()).await;
     }
     let (st, _, _) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
     assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
@@ -255,4 +257,69 @@ async fn a_job_left_unfinished_by_a_restart_is_failed_and_streams_snapshot_then_
         text.starts_with("event: job\n") && text.trim_end().ends_with("event: done\ndata: {}"),
         "{text}"
     );
+}
+
+fn job_from(ip: &str) -> axum::http::Request<axum::body::Body> {
+    let mut r = json_req("POST", "/api/v1/jobs", Some(erc20_job()));
+    r.headers_mut()
+        .insert("x-forwarded-for", ip.parse().unwrap());
+    r
+}
+
+/// I5: one client may have only a few unfinished jobs (429), and the queue as a whole is
+/// bounded (503); both say why.
+#[tokio::test(flavor = "multi_thread")]
+async fn unfinished_jobs_are_bounded_per_client_and_in_total() {
+    let gated = GatedRunner::new();
+    let (app, _s, _d) = test_app_with(gated.clone(), |c| {
+        c.trust_proxy = true;
+        c.max_active_jobs_per_ip = 2;
+        c.max_queued_jobs = 3;
+    });
+    for _ in 0..2 {
+        assert_eq!(
+            call(&app, job_from("10.0.0.1")).await.0,
+            StatusCode::CREATED
+        );
+    }
+    let (st, _, v) = call(&app, job_from("10.0.0.1")).await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{v}");
+    assert_eq!(v["error"], "too_many_jobs");
+    assert!(
+        v["message"].as_str().unwrap().contains("2 unfinished"),
+        "{v}"
+    );
+    assert_eq!(
+        call(&app, job_from("10.0.0.2")).await.0,
+        StatusCode::CREATED
+    );
+    let (st, _, v) = call(&app, job_from("10.0.0.3")).await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("queue is full"),
+        "{v}"
+    );
+    gated.open();
+    let (st, _, v) = loop {
+        let r = call(&app, job_from("10.0.0.1")).await;
+        if r.0 == StatusCode::CREATED {
+            break r;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+}
+
+/// I5: over the data cap, new jobs are refused with 503 until a sweep frees space.
+#[tokio::test(flavor = "multi_thread")]
+async fn jobs_are_refused_over_the_data_cap() {
+    let (app, s, _d) = test_app_with(fake_runner(), |c| c.data_cap_bytes = 1);
+    let (_, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+    wait_job(&app, v["id"].as_str().unwrap()).await;
+    let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("storage"), "{v}");
+    s.store.sweep(terminal_api::ratelimit::unix_now());
+    let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
 }
