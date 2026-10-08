@@ -231,8 +231,15 @@ fn docker_failures_are_told_apart_from_tool_failures() {
         125,
         "docker: Error response from daemon: No such image: x"
     )));
+    assert!(
+        !docker_unavailable(&out(
+            1,
+            "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock."
+        )),
+        "exit 1 is the tool's, not docker run's 125"
+    );
     assert!(docker_unavailable(&out(
-        1,
+        125,
         "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock."
     )));
     assert!(docker_unavailable(&out(

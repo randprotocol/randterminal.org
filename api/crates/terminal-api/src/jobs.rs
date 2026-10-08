@@ -25,6 +25,14 @@ pub const MAX_ELF_BYTES: usize = 2 * 1024 * 1024;
 const CONSOLE_KEEP: usize = 64 * 1024;
 const SANDBOX_DOWN: &str = "the build sandbox is unavailable";
 
+/// Clears the single-flight flag when dropped, panic or not.
+struct Clear<'a>(&'a AtomicBool);
+impl Drop for Clear<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 fn out_of_storage() -> AppError {
     AppError::Unavailable("the server is out of job storage; try again in a few minutes".into())
 }
@@ -55,6 +63,9 @@ pub struct JobStore {
     /// jobs and runs added since. Over `data_cap_bytes`, new jobs and runs are refused.
     usage: AtomicU64,
     sweeping: AtomicBool,
+    /// Test hook: the next sweep panics.
+    #[doc(hidden)]
+    pub fail_next_sweep: AtomicBool,
 }
 
 fn queued() -> StageState {
@@ -129,6 +140,7 @@ impl JobStore {
             running: Mutex::new(HashMap::new()),
             usage: AtomicU64::new(0),
             sweeping: AtomicBool::new(false),
+            fail_next_sweep: AtomicBool::new(false),
         })
     }
 
@@ -180,8 +192,8 @@ impl JobStore {
         if !self.sweeping.swap(true, Ordering::AcqRel) {
             let me = self.clone();
             tokio::task::spawn_blocking(move || {
+                let _clear = Clear(&me.sweeping);
                 me.sweep(unix_now());
-                me.sweeping.store(false, Ordering::Release);
             });
         }
         Err(out_of_storage())
@@ -193,27 +205,29 @@ impl JobStore {
     /// 503 only when running jobs and what could not be deleted still exceed the cap.
     pub async fn ensure_space(self: &Arc<Self>, keep: Option<&str>) -> ApiResult<()> {
         let over = |me: &Self| me.usage.load(Ordering::Relaxed) > me.config.data_cap_bytes;
-        if !over(self) {
-            return Ok(());
-        }
-        if !self.sweeping.swap(true, Ordering::AcqRel) {
-            let me = self.clone();
-            let keep = keep.map(str::to_string);
-            // The flag is cleared inside the blocking task, so a dropped request cannot leave it set.
-            let r = tokio::task::spawn_blocking(move || {
-                me.sweep_keeping(unix_now(), keep.as_deref());
-                me.sweeping.store(false, Ordering::Release);
-            })
-            .await;
-            if r.is_err() {
-                self.sweeping.store(false, Ordering::Release);
+        // A waiter that finds the cap still exceeded after another's sweep sweeps itself, up to
+        // three rounds.
+        for _ in 0..3 {
+            if !over(self) {
+                return Ok(());
             }
-        } else {
-            for _ in 0..6000 {
-                if !self.sweeping.load(Ordering::Acquire) {
-                    break;
+            if !self.sweeping.swap(true, Ordering::AcqRel) {
+                let me = self.clone();
+                let keep = keep.map(str::to_string);
+                // The flag is cleared by a guard inside the blocking task, so neither a dropped
+                // request nor a panicking sweep can leave it set.
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _clear = Clear(&me.sweeping);
+                    me.sweep_keeping(unix_now(), keep.as_deref());
+                })
+                .await;
+            } else {
+                for _ in 0..6000 {
+                    if !self.sweeping.load(Ordering::Acquire) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         }
         if over(self) {
@@ -466,6 +480,9 @@ impl JobStore {
 
     /// [`JobStore::sweep`] leaving job `keep` alone, as if it were running.
     pub fn sweep_keeping(&self, now: u64, keep: Option<&str>) -> usize {
+        if self.fail_next_sweep.swap(false, Ordering::AcqRel) {
+            panic!("sweep failed (test hook)");
+        }
         let Ok(rd) = std::fs::read_dir(&self.root) else {
             return 0;
         };

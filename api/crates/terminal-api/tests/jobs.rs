@@ -406,3 +406,21 @@ async fn concurrent_creates_at_the_cap_both_succeed_after_one_sweep() {
         "{va} {vb}"
     );
 }
+
+/// A sweep that panics leaves the single-flight flag clear: the next request sweeps and succeeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panicking_sweep_does_not_wedge_the_cap() {
+    let (app, s, _d, _cap, _ids) = app_over_cap().await;
+    s.store
+        .fail_next_sweep
+        .store(true, std::sync::atomic::Ordering::Release);
+    let t = std::time::Instant::now();
+    for _ in 0..2 {
+        let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+        assert_eq!(st, StatusCode::CREATED, "{v}");
+    }
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "no 60 s wait"
+    );
+}

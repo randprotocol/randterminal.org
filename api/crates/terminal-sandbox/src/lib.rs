@@ -57,20 +57,16 @@ pub trait Runner: Send + Sync {
 }
 
 /// True when a step's output says the docker CLI never reached a working daemon (or image):
-/// a line of stderr that begins with `docker:` (what the CLI prints; `Unable to find image`
-/// progress lines may precede it) and either the exit status is 125 (`docker run` itself failed)
-/// or the line names an unreachable daemon. Text elsewhere in stderr is the tool's own output,
-/// which a user's source can influence, and never counts.
+/// `docker run` failed before starting the container, which is exit status 125, and said so on
+/// a stderr line that begins with `docker:` (`Unable to find image` progress lines may precede
+/// it). Anything else is the tool's own output, which a user's source can influence, and never
+/// counts: a build script printing `docker: ...` and exiting 1 is a build failure.
 pub fn docker_unavailable(out: &RunOutput) -> bool {
-    out.stderr
-        .lines()
-        .map(str::trim_start)
-        .filter(|l| l.starts_with("docker:"))
-        .any(|l| {
-            out.status == 125
-                || l.contains("Cannot connect to the Docker daemon")
-                || l.contains("failed to connect to the docker API")
-        })
+    out.status == 125
+        && out
+            .stderr
+            .lines()
+            .any(|l| l.trim_start().starts_with("docker:"))
 }
 
 /// How long the `docker version` probe may take.

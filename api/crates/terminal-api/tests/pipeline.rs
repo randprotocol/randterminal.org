@@ -591,7 +591,7 @@ async fn a_build_without_an_image_fails() {
 async fn an_unreachable_docker_daemon_is_an_internal_error() {
     for (status, stderr) in [
         (125, "docker: failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running"),
-        (1, "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"),
+        (125, "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"),
         (125, "docker: Error response from daemon: No such image: terminal-sandbox:x"),
     ] {
         let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(
