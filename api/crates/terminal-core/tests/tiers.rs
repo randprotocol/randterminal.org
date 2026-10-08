@@ -55,6 +55,25 @@ fn trapped_summary_names_the_error() {
     assert_eq!(s.trap.as_deref(), Some("OutOfCycles(1023)"));
     assert_eq!(s.trap_clk, Some(1023));
     assert_eq!(s.tier, None);
+    assert!(s.tiers.iter().all(|c| !c.fits));
     let s = trapped("r3", &ExecError::BadPc(0x10), 3, 0, vec![]);
     assert_eq!(s.trap_clk, None);
+}
+
+#[test]
+fn keccak_capacity_is_capped_like_the_prover() {
+    let z = terminal_core::views::TableRows { cpu: 0, memory: 0, alu: 0, poseidon2_permutations: 0, keccak_permutations: 0, sha256_compressions: 0, digest_rows: 0 };
+    let caps = capacities(&z, 0);
+    let k = |t: usize| caps.iter().find(|c| c.tier == t).unwrap().keccak_permutations;
+    assert_eq!(k(10), (1 << 15) / 32);
+    assert_eq!(k(14), (1 << 19) / 32);
+    for t in [16, 18, 20] { assert_eq!(k(t), (1 << 20) / 32, "tier {t}"); }
+}
+
+#[test]
+fn memory_boundary_is_strict() {
+    let mut r = terminal_core::views::TableRows { cpu: 0, memory: (1 << 24) - 1, alu: 0, poseidon2_permutations: 0, keccak_permutations: 0, sha256_compressions: 0, digest_rows: 0 };
+    assert!(capacities(&r, 0)[0].fits);
+    r.memory = 1 << 24;
+    assert!(capacities(&r, 0).iter().all(|c| !c.fits));
 }

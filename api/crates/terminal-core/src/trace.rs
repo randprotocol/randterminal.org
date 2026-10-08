@@ -10,8 +10,10 @@
 //! * `syscalls.json`  Vec<SyscallView>
 //!
 //! All integers little-endian. State at `clk` is the state before cycle `clk` runs.
-use crate::views::{CycleView, SyscallView};
-use rand_zkvm::emulator::{Execution, MemAccess, Syscall, SPACE_RAM, SPACE_REG};
+use crate::tiers;
+use crate::views::{CycleView, DiscoveryStep, RunSummary, SyscallView, TableRows, TierCapacity};
+use rand_zkvm::emulator::{ExecError, Execution, MemAccess, Syscall, SPACE_RAM, SPACE_REG};
+use rand_zkvm::isa::Program;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -31,18 +33,31 @@ const F_MEM_WRITE: u8 = 4;
 const F_SYSCALL: u8 = 8;
 const F_HASH_ROW: u8 = 16;
 
+pub fn syscall_kind(s: &Syscall) -> &'static str {
+    match s {
+        Syscall::Halt => "halt",
+        Syscall::WriteOutput { .. } => "write_output",
+        Syscall::ReadInput { .. } => "read_input",
+        Syscall::ReadPublic { .. } => "read_public",
+        Syscall::Poseidon2 { .. } => "poseidon2",
+        Syscall::Poseidon2Len { .. } => "poseidon2_len",
+        Syscall::Keccak { .. } => "keccak",
+        Syscall::Sha256 { .. } => "sha256",
+    }
+}
+
 pub fn syscall_view(clk: u32, s: &Syscall) -> SyscallView {
-    let (kind, detail) = match *s {
-        Syscall::Halt => ("halt", String::new()),
-        Syscall::WriteOutput { slot, word } => ("write_output", format!("out[{slot}] = {word}")),
-        Syscall::ReadInput { idx, word } => ("read_input", format!("in[{idx}] → {word}")),
-        Syscall::ReadPublic { idx, word } => ("read_public", format!("pub[{idx}] → {word}")),
-        Syscall::Poseidon2 { ptr, n } => ("poseidon2", format!("{n} words at {ptr:#x}")),
-        Syscall::Poseidon2Len { ptr, n } => ("poseidon2_len", format!("{n} words at {ptr:#x}")),
-        Syscall::Keccak { ptr } => ("keccak", format!("state at {ptr:#x}")),
-        Syscall::Sha256 { ptr } => ("sha256", format!("block at {ptr:#x}")),
+    let detail = match *s {
+        Syscall::Halt => String::new(),
+        Syscall::WriteOutput { slot, word } => format!("out[{slot}] = {word}"),
+        Syscall::ReadInput { idx, word } => format!("in[{idx}] → {word}"),
+        Syscall::ReadPublic { idx, word } => format!("pub[{idx}] → {word}"),
+        Syscall::Poseidon2 { ptr, n } => format!("{n} words at {ptr:#x}"),
+        Syscall::Poseidon2Len { ptr, n } => format!("{n} words at {ptr:#x}"),
+        Syscall::Keccak { ptr } => format!("state at {ptr:#x}"),
+        Syscall::Sha256 { ptr } => format!("block at {ptr:#x}"),
     };
-    SyscallView { clk, kind: kind.into(), detail }
+    SyscallView { clk, kind: syscall_kind(s).into(), detail }
 }
 
 fn all_accesses(e: &rand_zkvm::emulator::CycleEvent) -> impl Iterator<Item = &MemAccess> {
@@ -236,10 +251,6 @@ impl Trace {
     }
 }
 
-use crate::tiers;
-use crate::views::{DiscoveryStep, RunSummary, TableRows};
-use rand_zkvm::emulator::ExecError;
-use rand_zkvm::isa::Program;
 
 pub fn summarize(rid: &str, program: &Program, n_in: usize, n_pub: usize, exec: &Execution, discovery: Vec<DiscoveryStep>) -> RunSummary {
     let rows = tiers::rows(program, n_in, n_pub, exec);
@@ -247,7 +258,7 @@ pub fn summarize(rid: &str, program: &Program, n_in: usize, n_pub: usize, exec: 
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut hits: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     for e in &exec.events {
-        if let Some(s) = &e.sys { *counts.entry(syscall_view(0, s).kind).or_default() += 1; }
+        if let Some(s) = &e.sys { *counts.entry(syscall_kind(s).to_string()).or_default() += 1; }
         *hits.entry(e.pc).or_default() += 1;
     }
     let mut hot: Vec<(u32, usize)> = hits.into_iter().collect();
@@ -267,7 +278,7 @@ pub fn trapped(rid: &str, err: &ExecError, n_in: usize, n_pub: usize, discovery:
     RunSummary {
         rid: rid.into(), cycles: 0, halted: false, trap: Some(format!("{err:?}")),
         trap_clk: match err { ExecError::OutOfCycles(n) => Some(*n as u32), _ => None },
-        outputs: [0; 8], status: 2, tier: None, tiers: tiers::capacities(&rows, 0), rows,
+        outputs: [0; 8], status: 2, tier: None, tiers: tiers::capacities(&rows, 0).into_iter().map(|c| TierCapacity { fits: false, ..c }).collect(), rows,
         syscall_counts: vec![], hot_pcs: vec![], input_words: n_in, public_words: n_pub, discovery,
     }
 }

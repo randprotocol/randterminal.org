@@ -31,13 +31,13 @@ pub fn capacities(rows: &TableRows, cycles_total: usize) -> Vec<TierCapacity> {
     TIERS.iter().map(|&t| {
         let tier = Tier(t);
         let poseidon2_permutations = tier.poseidon2_height() / poseidon2::BLOCK;
-        let keccak_permutations = (1usize << tier.max_keccak_log_height()) / keccak::BLOCK;
+        let keccak_permutations = (1usize << tier.max_keccak_log_height().min(keccak::MAX_LOG_HEIGHT)) / keccak::BLOCK;
         let sha256_compressions = (1usize << tier.max_sha256_log_height()) / sha256::BLOCK;
         let memory_max = 1usize << MAX_MEM_LOG_HEIGHT;
         let fits = cycles_total <= tier.max_cycles()
             && rows.poseidon2_permutations <= poseidon2_permutations
             && rows.alu <= tier.alu_height()
-            && rows.memory <= memory_max
+            && rows.memory < memory_max
             && rows.keccak_permutations <= keccak_permutations
             && rows.sha256_compressions <= sha256_compressions;
         TierCapacity {
