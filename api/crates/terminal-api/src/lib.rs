@@ -54,21 +54,39 @@ impl Default for ApiConfig {
 impl ApiConfig {
     pub fn from_env() -> Self {
         let d = Self::default();
-        let var = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-        fn num<T: std::str::FromStr>(v: Option<String>, d: T) -> T { v.and_then(|s| s.parse().ok()).unwrap_or(d) }
+        let var = |k: &str| {
+            std::env::var(k)
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        fn num<T: std::str::FromStr>(v: Option<String>, d: T) -> T {
+            v.and_then(|s| s.parse().ok()).unwrap_or(d)
+        }
         let host = var("API_HOST").unwrap_or_else(|| "127.0.0.1".into());
         let port: u16 = num(var("API_PORT"), 8080);
         Self {
             listen_addr: format!("{host}:{port}").parse().unwrap_or(d.listen_addr),
-            data_dir: var("TERMINAL_DATA").map(PathBuf::from).unwrap_or(d.data_dir),
-            samples_dir: var("TERMINAL_SAMPLES").map(PathBuf::from).unwrap_or(d.samples_dir),
+            data_dir: var("TERMINAL_DATA")
+                .map(PathBuf::from)
+                .unwrap_or(d.data_dir),
+            samples_dir: var("TERMINAL_SAMPLES")
+                .map(PathBuf::from)
+                .unwrap_or(d.samples_dir),
             sandbox_image: var("TERMINAL_SANDBOX_IMAGE").unwrap_or(d.sandbox_image),
             max_program_words: num(var("TERMINAL_MAX_PROGRAM_WORDS"), d.max_program_words),
             max_builds: num(var("TERMINAL_MAX_CONCURRENT_BUILDS"), d.max_builds),
             max_runs: num(var("TERMINAL_MAX_CONCURRENT_RUNS"), d.max_runs),
             data_cap_bytes: num::<u64>(var("TERMINAL_DATA_CAP_GB"), 20).saturating_mul(1 << 30),
             job_ttl_secs: d.job_ttl_secs,
-            trust_proxy: var("TRUST_PROXY").map(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")).unwrap_or(false),
+            trust_proxy: var("TRUST_PROXY")
+                .map(|v| {
+                    !matches!(
+                        v.to_ascii_lowercase().as_str(),
+                        "0" | "false" | "no" | "off"
+                    )
+                })
+                .unwrap_or(false),
             jobs_rpm: num(var("TERMINAL_JOBS_RPM"), d.jobs_rpm),
             runs_rpm: num(var("TERMINAL_RUNS_RPM"), d.runs_rpm),
             api_rpm: num(var("TERMINAL_API_RPM"), d.api_rpm),

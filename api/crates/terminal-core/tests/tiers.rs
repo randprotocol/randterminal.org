@@ -12,13 +12,28 @@ fn erc20_transfer_lands_in_tier_18_like_rand_guest_run() {
     let exec = execute(&program, &inputs, &[], 1 << 20).unwrap();
     let r = rows(&program, inputs.len(), 0, &exec);
     assert_eq!(r.cpu, 66_235);
-    assert_eq!(r.digest_rows, program.digest_rows() + rand_zkvm::hash::input_digest_row_count(inputs.len()) + rand_zkvm::hash::public_digest_row_count(0));
+    assert_eq!(
+        r.digest_rows,
+        program.digest_rows()
+            + rand_zkvm::hash::input_digest_row_count(inputs.len())
+            + rand_zkvm::hash::public_digest_row_count(0)
+    );
     assert!(r.memory > r.cpu, "every cycle has at least one access");
     assert!(r.alu > 0 && r.poseidon2_permutations >= r.digest_rows);
-    assert_eq!(pick(&r, cycles_total(&r)), Some(18), "run-transfer.txt says tier 18");
+    assert_eq!(
+        pick(&r, cycles_total(&r)),
+        Some(18),
+        "run-transfer.txt says tier 18"
+    );
     let caps = capacities(&r, cycles_total(&r));
-    assert_eq!(caps.iter().map(|c| c.tier).collect::<Vec<_>>(), vec![10, 12, 14, 16, 18, 20]);
-    assert_eq!(caps.iter().map(|c| c.fits).collect::<Vec<_>>(), vec![false, false, false, false, true, true]);
+    assert_eq!(
+        caps.iter().map(|c| c.tier).collect::<Vec<_>>(),
+        vec![10, 12, 14, 16, 18, 20]
+    );
+    assert_eq!(
+        caps.iter().map(|c| c.fits).collect::<Vec<_>>(),
+        vec![false, false, false, false, true, true]
+    );
     let t18 = &caps[4];
     assert_eq!(t18.cpu, 1 << 18);
     assert_eq!(t18.alu, 1 << 19);
@@ -62,17 +77,40 @@ fn trapped_summary_names_the_error() {
 
 #[test]
 fn keccak_capacity_is_capped_like_the_prover() {
-    let z = terminal_core::views::TableRows { cpu: 0, memory: 0, alu: 0, poseidon2_permutations: 0, keccak_permutations: 0, sha256_compressions: 0, digest_rows: 0 };
+    let z = terminal_core::views::TableRows {
+        cpu: 0,
+        memory: 0,
+        alu: 0,
+        poseidon2_permutations: 0,
+        keccak_permutations: 0,
+        sha256_compressions: 0,
+        digest_rows: 0,
+    };
     let caps = capacities(&z, 0);
-    let k = |t: usize| caps.iter().find(|c| c.tier == t).unwrap().keccak_permutations;
+    let k = |t: usize| {
+        caps.iter()
+            .find(|c| c.tier == t)
+            .unwrap()
+            .keccak_permutations
+    };
     assert_eq!(k(10), (1 << 15) / 32);
     assert_eq!(k(14), (1 << 19) / 32);
-    for t in [16, 18, 20] { assert_eq!(k(t), (1 << 20) / 32, "tier {t}"); }
+    for t in [16, 18, 20] {
+        assert_eq!(k(t), (1 << 20) / 32, "tier {t}");
+    }
 }
 
 #[test]
 fn memory_boundary_is_strict() {
-    let mut r = terminal_core::views::TableRows { cpu: 0, memory: (1 << 24) - 1, alu: 0, poseidon2_permutations: 0, keccak_permutations: 0, sha256_compressions: 0, digest_rows: 0 };
+    let mut r = terminal_core::views::TableRows {
+        cpu: 0,
+        memory: (1 << 24) - 1,
+        alu: 0,
+        poseidon2_permutations: 0,
+        keccak_permutations: 0,
+        sha256_compressions: 0,
+        digest_rows: 0,
+    };
     assert!(capacities(&r, 0)[0].fits);
     r.memory = 1 << 24;
     assert!(capacities(&r, 0).iter().all(|c| !c.fits));

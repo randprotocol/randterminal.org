@@ -5,17 +5,27 @@ use rand_zkvm::isa::Program;
 use terminal_core::trace::{self, Trace, MEM_CKPT, REG_CKPT};
 
 fn all_accesses(e: &rand_zkvm::emulator::CycleEvent) -> impl Iterator<Item = &MemAccess> {
-    e.accesses.iter().chain(e.keccak_accesses.iter()).chain(e.sha256_accesses.iter())
+    e.accesses
+        .iter()
+        .chain(e.keccak_accesses.iter())
+        .chain(e.sha256_accesses.iter())
 }
 
 /// The final register file and RAM, folded straight from the events' writes.
-fn fold(events: &[rand_zkvm::emulator::CycleEvent]) -> ([u32; 32], std::collections::BTreeMap<u32, u32>) {
+fn fold(
+    events: &[rand_zkvm::emulator::CycleEvent],
+) -> ([u32; 32], std::collections::BTreeMap<u32, u32>) {
     let mut regs = [0u32; 32];
     let mut mem = std::collections::BTreeMap::new();
     for e in events {
         for a in all_accesses(e).filter(|a| a.is_write) {
-            if a.space == SPACE_REG { if a.addr != 0 { regs[a.addr as usize] = a.value; } }
-            else if a.space == SPACE_RAM { mem.insert(a.addr, a.value); }
+            if a.space == SPACE_REG {
+                if a.addr != 0 {
+                    regs[a.addr as usize] = a.value;
+                }
+            } else if a.space == SPACE_RAM {
+                mem.insert(a.addr, a.value);
+            }
         }
     }
     (regs, mem)
@@ -27,7 +37,14 @@ fn check_final(t: &Trace, events: &[rand_zkvm::emulator::CycleEvent]) {
     assert_eq!(t.regs_at(t.total).unwrap(), regs);
     let base = mem.keys().next().copied().unwrap_or(0);
     let got = t.memory_at(t.total, base, 256).unwrap();
-    for (i, w) in got.iter().enumerate() { assert_eq!(*w, mem.get(&(base + i as u32)).copied().unwrap_or(0), "final mem {:#x}", base + i as u32); }
+    for (i, w) in got.iter().enumerate() {
+        assert_eq!(
+            *w,
+            mem.get(&(base + i as u32)).copied().unwrap_or(0),
+            "final mem {:#x}",
+            base + i as u32
+        );
+    }
 }
 
 /// Every recorded register read equals the replayed register file before that cycle, and every
@@ -44,7 +61,10 @@ fn check_replay(t: &Trace, exec: &Execution, clks: impl Iterator<Item = u32>) {
             assert_eq!(w[0], a.value, "clk {clk} mem {:#x}", a.addr);
         }
         let c = t.cycle(clk).unwrap();
-        assert_eq!((c.clk, c.pc, c.next_pc, c.word), (e.clk, e.pc, e.next_pc, e.instr.encode()));
+        assert_eq!(
+            (c.clk, c.pc, c.next_pc, c.word),
+            (e.clk, e.pc, e.next_pc, e.instr.encode())
+        );
     }
 }
 
@@ -52,7 +72,9 @@ fn check_replay(t: &Trace, exec: &Execution, clks: impl Iterator<Item = u32>) {
 fn hand_assembled_guests_round_trip() {
     let mut ok = 0;
     for (name, program, inputs) in rand_zkvm::guests::all() {
-        let Ok(exec) = execute(&program, &inputs, &[], 1 << 16) else { continue };
+        let Ok(exec) = execute(&program, &inputs, &[], 1 << 16) else {
+            continue;
+        };
         ok += 1;
         let dir = tempfile::tempdir().unwrap();
         let total = trace::write(dir.path(), &exec).unwrap();
@@ -68,8 +90,14 @@ fn hand_assembled_guests_round_trip() {
         assert_eq!(page.len(), (total.min(4096)) as usize);
         assert!(t.cycles(total, 10).unwrap().is_empty());
         let sys = t.syscalls().unwrap();
-        assert_eq!(sys.len(), exec.events.iter().filter(|e| e.sys.is_some()).count());
-        assert!(sys.last().map(|s| s.kind == "halt").unwrap_or(true), "{name}");
+        assert_eq!(
+            sys.len(),
+            exec.events.iter().filter(|e| e.sys.is_some()).count()
+        );
+        assert!(
+            sys.last().map(|s| s.kind == "halt").unwrap_or(true),
+            "{name}"
+        );
     }
     assert!(ok >= 5, "only {ok} guests ran");
 }
@@ -84,8 +112,15 @@ fn erc20_transfer_crosses_both_checkpoint_sizes() {
     let dir = tempfile::tempdir().unwrap();
     let total = trace::write(dir.path(), &exec).unwrap();
     let t = Trace::open(dir.path()).unwrap();
-    let samples = (0..total).step_by(997)
-        .chain([REG_CKPT - 1, REG_CKPT, REG_CKPT + 1, MEM_CKPT - 1, MEM_CKPT, MEM_CKPT + 1, total - 1]);
+    let samples = (0..total).step_by(997).chain([
+        REG_CKPT - 1,
+        REG_CKPT,
+        REG_CKPT + 1,
+        MEM_CKPT - 1,
+        MEM_CKPT,
+        MEM_CKPT + 1,
+        total - 1,
+    ]);
     check_replay(&t, &exec, samples);
     // a window straddles the sparse map and the write log
     let w = t.memory_at(total, 0x4000, 256).unwrap();
@@ -112,13 +147,20 @@ fn page_and_window_limits() {
 
 #[test]
 fn checkpoint_owed_at_exact_multiples_and_empty() {
-    let (_, program, inputs) = rand_zkvm::guests::all().into_iter().find(|(n, ..)| *n == "fib(20)").unwrap();
+    let (_, program, inputs) = rand_zkvm::guests::all()
+        .into_iter()
+        .find(|(n, ..)| *n == "fib(20)")
+        .unwrap();
     let mut exec = execute(&program, &inputs, &[], 1 << 16).unwrap();
     // loop the events so there are at least 1024 of them, then truncate to exactly 1024
     let base = exec.events.clone();
-    while exec.events.len() < 1024 { exec.events.extend(base.iter().cloned()); }
+    while exec.events.len() < 1024 {
+        exec.events.extend(base.iter().cloned());
+    }
     exec.events.truncate(1024);
-    for (i, e) in exec.events.iter_mut().enumerate() { e.clk = i as u32; }
+    for (i, e) in exec.events.iter_mut().enumerate() {
+        e.clk = i as u32;
+    }
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(trace::write(dir.path(), &exec).unwrap(), 1024);
     let t = Trace::open(dir.path()).unwrap();
@@ -141,5 +183,8 @@ fn incomplete_trace_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     trace::write(dir.path(), &exec).unwrap();
     std::fs::remove_file(dir.path().join("syscalls.json")).unwrap();
-    assert_eq!(Trace::open(dir.path()).err().unwrap().kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(
+        Trace::open(dir.path()).err().unwrap().kind(),
+        std::io::ErrorKind::InvalidData
+    );
 }

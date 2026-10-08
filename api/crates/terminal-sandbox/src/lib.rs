@@ -72,7 +72,10 @@ fn entry(tool: &Tool) -> Vec<String> {
         Tool::Solc => vec!["solc".into()],
         Tool::BuildSbf => vec!["build-sbf".into()],
         Tool::RandGuestBuild { debug } => {
-            vec!["rand-guest-build".into(), if *debug { "debug" } else { "release" }.into()]
+            vec![
+                "rand-guest-build".into(),
+                if *debug { "debug" } else { "release" }.into(),
+            ]
         }
     }
 }
@@ -86,21 +89,49 @@ pub struct DockerRunner {
 
 impl DockerRunner {
     pub fn new(image: impl Into<String>) -> Self {
-        Self { program: "docker".into(), image: image.into(), memory: "4g".into(), cpus: "2".into() }
+        Self {
+            program: "docker".into(),
+            image: image.into(),
+            memory: "4g".into(),
+            cpus: "2".into(),
+        }
     }
 
     pub fn args(&self, spec: &RunSpec, name: &str) -> Vec<String> {
         let mut a: Vec<String> = [
-            "run", "--rm", "--name", name, "--network", "none",
-            "--memory", &self.memory, "--memory-swap", &self.memory, "--cpus", &self.cpus, "--pids-limit", "512",
-            "--read-only", "--tmpfs", "/tmp:rw,exec,size=2g", "--security-opt", "no-new-privileges", "--cap-drop", "ALL",
-            "--user", "10001:10001",
+            "run",
+            "--rm",
+            "--name",
+            name,
+            "--network",
+            "none",
+            "--memory",
+            &self.memory,
+            "--memory-swap",
+            &self.memory,
+            "--cpus",
+            &self.cpus,
+            "--pids-limit",
+            "512",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,exec,size=2g",
+            "--security-opt",
+            "no-new-privileges",
+            "--cap-drop",
+            "ALL",
+            "--user",
+            "10001:10001",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
         a.push("-v".into());
-        a.push(format!("{}:{}:rw", spec.work.display(), mount_point(&spec.tool)));
+        a.push(format!(
+            "{}:{}:rw",
+            spec.work.display(),
+            mount_point(&spec.tool)
+        ));
         a.push(self.image.clone());
         a.extend(entry(&spec.tool));
         a
@@ -192,15 +223,29 @@ impl Runner for DockerRunner {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| SandboxError::Spawn(format!("{}: {e}", self.program)))?;
-        let mut guard = ContainerGuard { program: self.program.clone(), name: name.clone(), armed: true };
+        let mut guard = ContainerGuard {
+            program: self.program.clone(),
+            name: name.clone(),
+            armed: true,
+        };
         let (out_buf, err_buf): (Capture, Capture) = Default::default();
-        let out = tokio::spawn(read_capped(child.stdout.take().expect("piped stdout"), out_buf.clone()));
-        let err = tokio::spawn(read_capped(child.stderr.take().expect("piped stderr"), err_buf.clone()));
+        let out = tokio::spawn(read_capped(
+            child.stdout.take().expect("piped stdout"),
+            out_buf.clone(),
+        ));
+        let err = tokio::spawn(read_capped(
+            child.stderr.take().expect("piped stderr"),
+            err_buf.clone(),
+        ));
         let (status, timed_out) = match tokio::time::timeout(spec.timeout, child.wait()).await {
             Ok(s) => (s?.code().unwrap_or(-1), false),
             Err(_) => {
                 // Stop the container itself; killing the CLI process alone would leave it running.
-                let _ = tokio::time::timeout(KILL_GRACE, Command::new(&self.program).args(["kill", &name]).output()).await;
+                let _ = tokio::time::timeout(
+                    KILL_GRACE,
+                    Command::new(&self.program).args(["kill", &name]).output(),
+                )
+                .await;
                 let _ = child.kill().await;
                 (-1, true)
             }
@@ -208,14 +253,24 @@ impl Runner for DockerRunner {
         guard.armed = false;
         join_reader(out, timed_out).await;
         join_reader(err, timed_out).await;
-        Ok(RunOutput { status, stdout: finish(&out_buf), stderr: finish(&err_buf), timed_out })
+        Ok(RunOutput {
+            status,
+            stdout: finish(&out_buf),
+            stderr: finish(&err_buf),
+            timed_out,
+        })
     }
 }
 
 fn rand_id() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    );
     h.finish()
 }
 

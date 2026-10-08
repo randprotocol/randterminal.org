@@ -4,27 +4,54 @@ use std::sync::Arc;
 use terminal_api::{jobs::JobStore, ApiConfig};
 use terminal_core::views::*;
 
-fn store() -> (Arc<JobStore>, tempfile::TempDir) { store_with(fake_runner()) }
+fn store() -> (Arc<JobStore>, tempfile::TempDir) {
+    store_with(fake_runner())
+}
 
 fn store_with(runner: Arc<dyn terminal_sandbox::Runner>) -> (Arc<JobStore>, tempfile::TempDir) {
     let d = tempfile::tempdir().unwrap();
-    let cfg = ApiConfig { data_dir: d.path().into(), ..ApiConfig::default() };
+    let cfg = ApiConfig {
+        data_dir: d.path().into(),
+        ..ApiConfig::default()
+    };
     (JobStore::new(Arc::new(cfg), runner), d)
 }
 
-fn store_cfg(runner: Arc<dyn terminal_sandbox::Runner>, f: impl FnOnce(&mut ApiConfig)) -> (Arc<JobStore>, tempfile::TempDir) {
+fn store_cfg(
+    runner: Arc<dyn terminal_sandbox::Runner>,
+    f: impl FnOnce(&mut ApiConfig),
+) -> (Arc<JobStore>, tempfile::TempDir) {
     let d = tempfile::tempdir().unwrap();
-    let mut cfg = ApiConfig { data_dir: d.path().into(), ..ApiConfig::default() };
+    let mut cfg = ApiConfig {
+        data_dir: d.path().into(),
+        ..ApiConfig::default()
+    };
     f(&mut cfg);
     (JobStore::new(Arc::new(cfg), runner), d)
 }
 
 fn rust_job(src: &str) -> NewJob {
-    NewJob { lang: Lang::SolanaRust, files: vec![FileIn { name: "lib.rs".into(), encoding: "text".into(), content: src.into() }], options: JobOptions::default() }
+    NewJob {
+        lang: Lang::SolanaRust,
+        files: vec![FileIn {
+            name: "lib.rs".into(),
+            encoding: "text".into(),
+            content: src.into(),
+        }],
+        options: JobOptions::default(),
+    }
 }
 
 fn sol(src: &str) -> NewJob {
-    NewJob { lang: Lang::Solidity, files: vec![FileIn { name: "ERC20.sol".into(), encoding: "text".into(), content: src.into() }], options: JobOptions::default() }
+    NewJob {
+        lang: Lang::Solidity,
+        files: vec![FileIn {
+            name: "ERC20.sol".into(),
+            encoding: "text".into(),
+            content: src.into(),
+        }],
+        options: JobOptions::default(),
+    }
 }
 
 #[tokio::test]
@@ -32,17 +59,29 @@ async fn solidity_runs_every_stage() {
     let (s, _d) = store();
     let id = s.create(sol("contract ERC20 {}")).unwrap();
     let v = wait_finished(&s, &id).await;
-    for st in [&v.compile, &v.transpile, &v.build] { assert_eq!(st.status, StageStatus::Done, "{v:?}"); assert!(st.ended >= st.started); }
+    for st in [&v.compile, &v.transpile, &v.build] {
+        assert_eq!(st.status, StageStatus::Done, "{v:?}");
+        assert!(st.ended >= st.started);
+    }
     let c: CompileView = serde_json::from_value(s.stage_view(&id, "compile").unwrap()).unwrap();
     let CompileView::Evm(c) = c else { panic!() };
-    assert_eq!((c.contract.as_str(), c.size_bytes, c.blocks), ("ERC20", 1296, 74));
+    assert_eq!(
+        (c.contract.as_str(), c.size_bytes, c.blocks),
+        ("ERC20", 1296, 74)
+    );
     let t: TranspileView = serde_json::from_value(s.stage_view(&id, "transpile").unwrap()).unwrap();
-    assert!(t.c_source.contains("CHAINID 20"), "the default chain id reached the transpiler");
+    assert!(
+        t.c_source.contains("CHAINID 20"),
+        "the default chain id reached the transpiler"
+    );
     let i: ImageView = serde_json::from_value(s.stage_view(&id, "image").unwrap()).unwrap();
     assert_eq!(i.words, 11_686);
     assert!(i.source_map.is_none());
     assert!(i.source_map_note.unwrap().contains("-g"));
-    assert!(v.console.iter().any(|l| l.stage == StageName::Build && l.text.contains("wrote image.bin")));
+    assert!(v
+        .console
+        .iter()
+        .any(|l| l.stage == StageName::Build && l.text.contains("wrote image.bin")));
     let (bytes, ty) = s.file(&id, "contract.c").unwrap();
     assert_eq!(ty, "text/plain; charset=utf-8");
     assert_eq!(String::from_utf8(bytes).unwrap(), t.c_source);
@@ -76,11 +115,29 @@ async fn solana_elf_skips_the_compiler() {
     use base64::Engine;
     let (s, _d) = store();
     let elf = std::fs::read(fixtures_dir().join("spl_token.so")).unwrap();
-    let id = s.create(NewJob { lang: Lang::SolanaElf, files: vec![FileIn { name: "program.so".into(), encoding: "base64".into(), content: base64::engine::general_purpose::STANDARD.encode(&elf) }], options: JobOptions::default() }).unwrap();
+    let id = s
+        .create(NewJob {
+            lang: Lang::SolanaElf,
+            files: vec![FileIn {
+                name: "program.so".into(),
+                encoding: "base64".into(),
+                content: base64::engine::general_purpose::STANDARD.encode(&elf),
+            }],
+            options: JobOptions::default(),
+        })
+        .unwrap();
     let v = wait_finished(&s, &id).await;
     assert_eq!(v.build.status, StageStatus::Done, "{v:?}");
-    let CompileView::Sbpf(c) = serde_json::from_value(s.stage_view(&id, "compile").unwrap()).unwrap() else { panic!() };
-    assert_eq!(c.functions.len(), 30, "the SPL Token fixture scans to 30 functions (terminal-core asserts > 20)");
+    let CompileView::Sbpf(c) =
+        serde_json::from_value(s.stage_view(&id, "compile").unwrap()).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        c.functions.len(),
+        30,
+        "the SPL Token fixture scans to 30 functions (terminal-core asserts > 20)"
+    );
     let i: ImageView = serde_json::from_value(s.stage_view(&id, "image").unwrap()).unwrap();
     assert_eq!(i.words, 65_096);
 }
@@ -88,7 +145,17 @@ async fn solana_elf_skips_the_compiler() {
 #[tokio::test]
 async fn solana_rust_errors_are_diagnostics() {
     let (s, _d) = store();
-    let id = s.create(NewJob { lang: Lang::SolanaRust, files: vec![FileIn { name: "lib.rs".into(), encoding: "text".into(), content: "compile_error!(\"x\");".into() }], options: JobOptions::default() }).unwrap();
+    let id = s
+        .create(NewJob {
+            lang: Lang::SolanaRust,
+            files: vec![FileIn {
+                name: "lib.rs".into(),
+                encoding: "text".into(),
+                content: "compile_error!(\"x\");".into(),
+            }],
+            options: JobOptions::default(),
+        })
+        .unwrap();
     let v = wait_finished(&s, &id).await;
     let e = v.compile.error.unwrap();
     assert_eq!(e.kind, "compile");
@@ -101,17 +168,53 @@ fn validation() {
     let _g = rt.enter();
     let (s, _d) = store();
     let bad = |j: NewJob| s.create(j).unwrap_err().to_string();
-    assert!(bad(NewJob { lang: Lang::Solidity, files: vec![], options: JobOptions::default() }).contains("bad request"));
-    assert!(bad(NewJob { lang: Lang::Solidity, files: vec![FileIn { name: "../x.sol".into(), encoding: "text".into(), content: "".into() }], options: JobOptions::default() }).contains("bad request"));
+    assert!(bad(NewJob {
+        lang: Lang::Solidity,
+        files: vec![],
+        options: JobOptions::default()
+    })
+    .contains("bad request"));
+    assert!(bad(NewJob {
+        lang: Lang::Solidity,
+        files: vec![FileIn {
+            name: "../x.sol".into(),
+            encoding: "text".into(),
+            content: "".into()
+        }],
+        options: JobOptions::default()
+    })
+    .contains("bad request"));
     assert!(bad(sol(&"x".repeat(512 * 1024 + 1))).contains("too large"));
-    assert!(bad(NewJob { lang: Lang::SolanaRust, files: vec![FileIn { name: "main.rs".into(), encoding: "text".into(), content: "".into() }], options: JobOptions::default() }).contains("lib.rs"));
-    let mut j = sol("contract A {}"); j.options.stage = 3;
+    assert!(bad(NewJob {
+        lang: Lang::SolanaRust,
+        files: vec![FileIn {
+            name: "main.rs".into(),
+            encoding: "text".into(),
+            content: "".into()
+        }],
+        options: JobOptions::default()
+    })
+    .contains("lib.rs"));
+    let mut j = sol("contract A {}");
+    j.options.stage = 3;
     assert!(bad(j).contains("stage"));
-    let mut j = sol("contract A {}"); j.files.push(j.files[0].clone());
+    let mut j = sol("contract A {}");
+    j.files.push(j.files[0].clone());
     assert!(bad(j).contains("duplicate"));
     use base64::Engine;
-    let elf = base64::engine::general_purpose::STANDARD.encode(vec![0u8; terminal_api::jobs::MAX_ELF_BYTES + 1]);
-    assert!(bad(NewJob { lang: Lang::SolanaElf, files: vec![FileIn { name: "program.so".into(), encoding: "base64".into(), content: elf }], options: JobOptions::default() }).contains("too large"));
+    let elf =
+        base64::engine::general_purpose::STANDARD
+            .encode(vec![0u8; terminal_api::jobs::MAX_ELF_BYTES + 1]);
+    assert!(bad(NewJob {
+        lang: Lang::SolanaElf,
+        files: vec![FileIn {
+            name: "program.so".into(),
+            encoding: "base64".into(),
+            content: elf
+        }],
+        options: JobOptions::default()
+    })
+    .contains("too large"));
 }
 
 #[tokio::test]
@@ -136,16 +239,38 @@ async fn only_the_sandbox_dirs_are_world_writable() {
     assert_eq!(v.build.status, StageStatus::Done, "{v:?}");
     let mode = |p: std::path::PathBuf| std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
     let dir = s.dir(&id).unwrap();
-    assert!(dir.is_absolute(), "the docker runner rejects relative work paths");
+    assert!(
+        dir.is_absolute(),
+        "the docker runner rejects relative work paths"
+    );
     assert_eq!(mode(dir.join("compile/sandbox")), 0o777);
     assert_eq!(mode(dir.join("compile/sandbox/input.json")) & 0o666, 0o666);
     assert_eq!(mode(dir.join("build/sandbox")), 0o777);
     assert_eq!(mode(dir.join("build/sandbox/shim")), 0o777);
     assert_eq!(mode(dir.join("build/sandbox/shim/src")), 0o777);
-    assert_eq!(mode(dir.join("build/sandbox/shim/contract.c")) & 0o666, 0o666);
-    assert_eq!(mode(dir.join("build/sandbox/shim/src/main.rs")) & 0o666, 0o666);
-    for host in ["", "compile", "transpile", "build", "source", "compile/abi.json", "build/image.bin", "job.json"] {
-        assert_eq!(mode(dir.join(host)) & 0o002, 0, "{host} must not be world-writable");
+    assert_eq!(
+        mode(dir.join("build/sandbox/shim/contract.c")) & 0o666,
+        0o666
+    );
+    assert_eq!(
+        mode(dir.join("build/sandbox/shim/src/main.rs")) & 0o666,
+        0o666
+    );
+    for host in [
+        "",
+        "compile",
+        "transpile",
+        "build",
+        "source",
+        "compile/abi.json",
+        "build/image.bin",
+        "job.json",
+    ] {
+        assert_eq!(
+            mode(dir.join(host)) & 0o002,
+            0,
+            "{host} must not be world-writable"
+        );
     }
 }
 
@@ -157,20 +282,30 @@ async fn a_symlinked_sandbox_output_fails_the_stage() {
     let secret = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(secret.path(), "host secret").unwrap();
     let target = secret.path().to_path_buf();
-    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(move |spec: &terminal_sandbox::RunSpec| {
-        if spec.tool == terminal_sandbox::Tool::BuildSbf {
-            std::os::unix::fs::symlink(&target, spec.work.join("program.so")).unwrap();
-            return terminal_sandbox::RunOutput { status: 0, stdout: String::new(), stderr: String::new(), timed_out: false };
-        }
-        fake_answer(spec)
-    }));
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(
+        move |spec: &terminal_sandbox::RunSpec| {
+            if spec.tool == terminal_sandbox::Tool::BuildSbf {
+                std::os::unix::fs::symlink(&target, spec.work.join("program.so")).unwrap();
+                return terminal_sandbox::RunOutput {
+                    status: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    timed_out: false,
+                };
+            }
+            fake_answer(spec)
+        },
+    ));
     let (s, _d) = store_with(runner);
     let id = s.create(rust_job("pub fn x() {}")).unwrap();
     let v = wait_finished(&s, &id).await;
     let e = v.compile.error.clone().unwrap_or_else(|| panic!("{v:?}"));
     assert_eq!(e.kind, "compile");
     assert!(e.message.contains("invalid output"), "{}", e.message);
-    assert!(matches!(s.file(&id, "program.so"), Err(terminal_api::error::AppError::NotFound(_))));
+    assert!(matches!(
+        s.file(&id, "program.so"),
+        Err(terminal_api::error::AppError::NotFound(_))
+    ));
 }
 
 #[cfg(unix)]
@@ -179,13 +314,15 @@ async fn a_symlinked_solc_output_fails_the_stage() {
     let secret = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(secret.path(), "{}").unwrap();
     let target = secret.path().to_path_buf();
-    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(move |spec: &terminal_sandbox::RunSpec| {
-        if spec.tool == terminal_sandbox::Tool::Solc {
-            std::os::unix::fs::symlink(&target, spec.work.join("output.json")).unwrap();
-            return terminal_sandbox::RunOutput::default();
-        }
-        fake_answer(spec)
-    }));
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(
+        move |spec: &terminal_sandbox::RunSpec| {
+            if spec.tool == terminal_sandbox::Tool::Solc {
+                std::os::unix::fs::symlink(&target, spec.work.join("output.json")).unwrap();
+                return terminal_sandbox::RunOutput::default();
+            }
+            fake_answer(spec)
+        },
+    ));
     let (s, _d) = store_with(runner);
     let id = s.create(sol("contract ERC20 {}")).unwrap();
     let v = wait_finished(&s, &id).await;
@@ -199,21 +336,47 @@ async fn links_planted_in_the_sandbox_are_never_written_through() {
     let victim = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(victim.path(), "untouched").unwrap();
     let target = victim.path().to_path_buf();
-    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(move |spec: &terminal_sandbox::RunSpec| {
-        let out = fake_answer(spec);
-        for n in ["abi.json", "view.json", "view.tmp", "abi.tmp", "runtime.hex", "creation.hex", "job.json", "job.tmp", "source_map.json", "op_map.json", "contract.c"] {
-            let _ = std::os::unix::fs::symlink(&target, spec.work.join(n));
-        }
-        out
-    }));
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(
+        move |spec: &terminal_sandbox::RunSpec| {
+            let out = fake_answer(spec);
+            for n in [
+                "abi.json",
+                "view.json",
+                "view.tmp",
+                "abi.tmp",
+                "runtime.hex",
+                "creation.hex",
+                "job.json",
+                "job.tmp",
+                "source_map.json",
+                "op_map.json",
+                "contract.c",
+            ] {
+                let _ = std::os::unix::fs::symlink(&target, spec.work.join(n));
+            }
+            out
+        },
+    ));
     let (s, _d) = store_with(runner);
     let id = s.create(sol("contract ERC20 {}")).unwrap();
     let v = wait_finished(&s, &id).await;
     assert_eq!(v.build.status, StageStatus::Done, "{v:?}");
     assert_eq!(std::fs::read_to_string(victim.path()).unwrap(), "untouched");
     let dir = s.dir(&id).unwrap();
-    for host in ["compile/abi.json", "compile/view.json", "compile/runtime.hex", "build/view.json", "job.json"] {
-        assert!(std::fs::symlink_metadata(dir.join(host)).unwrap().file_type().is_file(), "{host}");
+    for host in [
+        "compile/abi.json",
+        "compile/view.json",
+        "compile/runtime.hex",
+        "build/view.json",
+        "job.json",
+    ] {
+        assert!(
+            std::fs::symlink_metadata(dir.join(host))
+                .unwrap()
+                .file_type()
+                .is_file(),
+            "{host}"
+        );
     }
 }
 
@@ -239,8 +402,14 @@ async fn sweep_leaves_running_jobs_alone() {
     let gated = GatedRunner::new();
     let (s, _d) = store_with(gated.clone());
     let id = s.create(sol("contract ERC20 {}")).unwrap();
-    while s.view(&id).unwrap().compile.status != StageStatus::Running { tokio::time::sleep(std::time::Duration::from_millis(5)).await; }
-    assert_eq!(s.sweep(terminal_api::ratelimit::unix_now() + 3601), 0, "a running job is never swept");
+    while s.view(&id).unwrap().compile.status != StageStatus::Running {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        s.sweep(terminal_api::ratelimit::unix_now() + 3601),
+        0,
+        "a running job is never swept"
+    );
     assert!(s.view(&id).is_ok());
     gated.open();
     let v = wait_finished(&s, &id).await;
@@ -254,9 +423,15 @@ async fn ids_are_validated() {
     assert!(s.dir("../etc").is_err());
     assert!(s.dir(&"0".repeat(32)).is_err(), "no such job");
     assert!(s.subscribe("../etc").is_none());
-    for i in 0..100 { s.touch(&format!("junk{i}")); }
+    for i in 0..100 {
+        s.touch(&format!("junk{i}"));
+    }
     assert_eq!(s.sweep(terminal_api::ratelimit::unix_now()), 0);
-    assert_eq!(s.tracked(), 0, "touching unknown ids does not grow the access map");
+    assert_eq!(
+        s.tracked(),
+        0,
+        "touching unknown ids does not grow the access map"
+    );
 }
 
 async fn peak_with(max_builds: usize) -> usize {
@@ -264,7 +439,9 @@ async fn peak_with(max_builds: usize) -> usize {
     let (s, _d) = store_cfg(counting.clone(), |c| c.max_builds = max_builds);
     let a = s.create(sol("contract ERC20 {}")).unwrap();
     let b = s.create(sol("contract ERC20 {}")).unwrap();
-    for id in [a, b] { assert_eq!(wait_finished(&s, &id).await.build.status, StageStatus::Done); }
+    for id in [a, b] {
+        assert_eq!(wait_finished(&s, &id).await.build.status, StageStatus::Done);
+    }
     assert_eq!(counting.calls.load(std::sync::atomic::Ordering::SeqCst), 6);
     counting.peak.load(std::sync::atomic::Ordering::SeqCst)
 }
@@ -272,19 +449,26 @@ async fn peak_with(max_builds: usize) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_builds_bounds_sandbox_concurrency() {
     assert_eq!(peak_with(1).await, 1);
-    assert_eq!(peak_with(2).await, 2, "the bound is the semaphore, not the test");
+    assert_eq!(
+        peak_with(2).await,
+        2,
+        "the bound is the semaphore, not the test"
+    );
 }
 
 #[tokio::test]
 async fn a_reproducing_debug_build_gives_a_pc_source_map() {
-    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(|spec: &terminal_sandbox::RunSpec| {
-        if spec.tool == (terminal_sandbox::Tool::RandGuestBuild { debug: true }) {
-            std::fs::copy(spec.work.join("image.bin"), spec.work.join("image-dbg.bin")).unwrap();
-            std::fs::write(spec.work.join("debug-line.txt"), "file_names[  0]:\n name: \"contract.c\"\nAddress Line Column File ISA Discriminator OpIndex Flags\n0x0000000000010000 7 5 0 0 0 0 is_stmt\n").unwrap();
-            return terminal_sandbox::RunOutput::default();
-        }
-        fake_answer(spec)
-    }));
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(
+        |spec: &terminal_sandbox::RunSpec| {
+            if spec.tool == (terminal_sandbox::Tool::RandGuestBuild { debug: true }) {
+                std::fs::copy(spec.work.join("image.bin"), spec.work.join("image-dbg.bin"))
+                    .unwrap();
+                std::fs::write(spec.work.join("debug-line.txt"), "file_names[  0]:\n name: \"contract.c\"\nAddress Line Column File ISA Discriminator OpIndex Flags\n0x0000000000010000 7 5 0 0 0 0 is_stmt\n").unwrap();
+                return terminal_sandbox::RunOutput::default();
+            }
+            fake_answer(spec)
+        },
+    ));
     let (s, _d) = store_with(runner);
     let id = s.create(sol("contract ERC20 {}")).unwrap();
     let v = wait_finished(&s, &id).await;
@@ -293,5 +477,7 @@ async fn a_reproducing_debug_build_gives_a_pc_source_map() {
     assert!(i.source_map_note.is_none(), "{:?}", i.source_map_note);
     assert_eq!(i.source_map.unwrap().pc_to_c, vec![(0x10000, 7)]);
     let dir = s.dir(&id).unwrap();
-    assert!(dir.join("build/debug-line.txt").is_file() && dir.join("build/image-dbg.bin").is_file());
+    assert!(
+        dir.join("build/debug-line.txt").is_file() && dir.join("build/image-dbg.bin").is_file()
+    );
 }

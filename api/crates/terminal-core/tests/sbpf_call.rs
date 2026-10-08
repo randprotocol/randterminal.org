@@ -20,7 +20,10 @@ fn spl_transfer_round_trips() {
 fn keys() {
     let k = parse_key("11111111111111111111111111111111").unwrap();
     assert_eq!(k, [0u8; 32]);
-    assert_eq!(parse_key(&format!("0x{}", "ab".repeat(32))).unwrap(), [0xab; 32]);
+    assert_eq!(
+        parse_key(&format!("0x{}", "ab".repeat(32))).unwrap(),
+        [0xab; 32]
+    );
     assert!(parse_key("0x1234").is_err());
     assert!(parse_key("not base58 0OIl").is_err());
 }

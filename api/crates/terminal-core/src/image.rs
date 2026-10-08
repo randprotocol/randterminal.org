@@ -17,7 +17,13 @@ pub fn load(bytes: &[u8]) -> Result<Program, String> {
 
 fn rd_of(i: &Instr) -> Option<u32> {
     match *i {
-        Instr::AluImm { rd, .. } | Instr::AluReg { rd, .. } | Instr::Load { rd, .. } | Instr::Lui { rd, .. } | Instr::Auipc { rd, .. } | Instr::Jal { rd, .. } | Instr::Jalr { rd, .. } => Some(rd),
+        Instr::AluImm { rd, .. }
+        | Instr::AluReg { rd, .. }
+        | Instr::Load { rd, .. }
+        | Instr::Lui { rd, .. }
+        | Instr::Auipc { rd, .. }
+        | Instr::Jal { rd, .. }
+        | Instr::Jalr { rd, .. } => Some(rd),
         _ => None,
     }
 }
@@ -31,24 +37,55 @@ pub fn disasm(p: &Program) -> Vec<DisasmLine> {
         let pc = p.base_pc.wrapping_add((4 * i) as u32);
         match Instr::decode(w) {
             Ok(instr) => {
-                let ecall = if matches!(instr, Instr::Ecall) { a7.and_then(ecall_name).map(str::to_string) } else { None };
-                if let Instr::AluImm { op: AluOp::Add, rd: REG_A7, rs1: 0, imm } = instr {
+                let ecall = if matches!(instr, Instr::Ecall) {
+                    a7.and_then(ecall_name).map(str::to_string)
+                } else {
+                    None
+                };
+                if let Instr::AluImm {
+                    op: AluOp::Add,
+                    rd: REG_A7,
+                    rs1: 0,
+                    imm,
+                } = instr
+                {
                     a7 = Some(imm);
-                } else if rd_of(&instr) == Some(REG_A7) || matches!(instr, Instr::Jal { .. } | Instr::Jalr { .. } | Instr::Branch { .. }) {
+                } else if rd_of(&instr) == Some(REG_A7)
+                    || matches!(
+                        instr,
+                        Instr::Jal { .. } | Instr::Jalr { .. } | Instr::Branch { .. }
+                    )
+                {
                     a7 = None;
                 }
-                out.push(DisasmLine { pc, word: w, text: text(&instr), ecall });
+                out.push(DisasmLine {
+                    pc,
+                    word: w,
+                    text: text(&instr),
+                    ecall,
+                });
             }
             Err(e) => {
                 a7 = None;
-                out.push(DisasmLine { pc, word: w, text: format!(".word {w:#010x} ; {e:?}"), ecall: None });
+                out.push(DisasmLine {
+                    pc,
+                    word: w,
+                    text: format!(".word {w:#010x} ; {e:?}"),
+                    ecall: None,
+                });
             }
         }
     }
     out
 }
 
-pub fn view(bytes: &[u8], cap: usize, op_map: &[OpLine], debug_line: Option<&str>, c_file: &str) -> Result<ImageView, String> {
+pub fn view(
+    bytes: &[u8],
+    cap: usize,
+    op_map: &[OpLine],
+    debug_line: Option<&str>,
+    c_file: &str,
+) -> Result<ImageView, String> {
     let (info, text_words, _data) = pack::split(bytes).map_err(|e| e.to_string())?;
     let p = load(bytes)?;
     // As `rand-guest info`/`check` do: the checker reads the image's text at its text base, and the
@@ -58,12 +95,23 @@ pub fn view(bytes: &[u8], cap: usize, op_map: &[OpLine], debug_line: Option<&str
         Some(dl) => {
             let rows = parse_debug_line(dl, c_file);
             if rows.is_empty() {
-                (None, Some(format!("the debug build's line table has no rows for {c_file}")))
+                (
+                    None,
+                    Some(format!(
+                        "the debug build's line table has no rows for {c_file}"
+                    )),
+                )
             } else {
                 (Some(compose(&rows, op_map)), None)
             }
         }
-        None => (None, Some("no debug build: pc-level source map unavailable; the opcode-to-C map still works".to_string())),
+        None => (
+            None,
+            Some(
+                "no debug build: pc-level source map unavailable; the opcode-to-C map still works"
+                    .to_string(),
+            ),
+        ),
     };
     Ok(ImageView {
         words: p.words.len(),
@@ -76,7 +124,16 @@ pub fn view(bytes: &[u8], cap: usize, op_map: &[OpLine], debug_line: Option<&str
         program_id: hex::encode(chain::program_id(p.base_pc, &p.words)),
         cap_words: cap,
         fits: p.words.len() <= cap,
-        findings: report.findings.iter().map(|f| CheckFinding { addr: f.addr, word: f.word, rule: format!("{:?}", f.rule), what: f.what.clone() }).collect(),
+        findings: report
+            .findings
+            .iter()
+            .map(|f| CheckFinding {
+                addr: f.addr,
+                word: f.word,
+                rule: format!("{:?}", f.rule),
+                what: f.what.clone(),
+            })
+            .collect(),
         disasm: disasm(&p),
         source_map,
         source_map_note,

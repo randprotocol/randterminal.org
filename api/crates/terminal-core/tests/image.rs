@@ -4,7 +4,10 @@ use terminal_core::image::{disasm, hex8, load, view};
 use terminal_core::views::OpLine;
 
 fn info_field(info: &str, key: &str) -> String {
-    info.lines().find_map(|l| l.strip_prefix(key)).map(|s| s.trim().to_string()).unwrap_or_else(|| panic!("{key}"))
+    info.lines()
+        .find_map(|l| l.strip_prefix(key))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| panic!("{key}"))
 }
 
 #[test]
@@ -37,7 +40,11 @@ fn over_cap_does_not_fit_but_still_views() {
     let v = view(&bytes, 4_096, &[], None, "contract.c").unwrap();
     assert!(!v.fits);
     assert_eq!(v.cap_words, 4_096);
-    assert!(v.findings.iter().any(|f| f.rule == "Cap"), "{:?}", v.findings);
+    assert!(
+        v.findings.iter().any(|f| f.rule == "Cap"),
+        "{:?}",
+        v.findings
+    );
 }
 
 #[test]
@@ -59,7 +66,14 @@ fn garbage_is_refused() {
 fn source_map_is_attached_when_debug_line_is_given() {
     let bytes = fixtures::bytes("erc20.image.bin");
     let dl = "file_names[  0]:\n name: \"contract.c\"\nAddress Line Column File ISA Discriminator OpIndex Flags\n0x0000000000010000 105 5 0 0 0 0 is_stmt\n";
-    let v = view(&bytes, 65_535, &[OpLine { pc: 0, line: 105 }], Some(dl), "contract.c").unwrap();
+    let v = view(
+        &bytes,
+        65_535,
+        &[OpLine { pc: 0, line: 105 }],
+        Some(dl),
+        "contract.c",
+    )
+    .unwrap();
     let sm = v.source_map.unwrap();
     assert_eq!(sm.pc_to_c, vec![(0x10000, 105)]);
     assert_eq!(sm.c_to_src, vec![(105, 0)]);
@@ -67,7 +81,10 @@ fn source_map_is_attached_when_debug_line_is_given() {
 
 #[test]
 fn hex8_formats_words() {
-    assert_eq!(hex8(&[0xa0feae92, 1, 2, 3, 4, 5, 6, 7]), "a0feae9200000001000000020000000300000004000000050000000600000007");
+    assert_eq!(
+        hex8(&[0xa0feae92, 1, 2, 3, 4, 5, 6, 7]),
+        "a0feae9200000001000000020000000300000004000000050000000600000007"
+    );
 }
 
 #[test]

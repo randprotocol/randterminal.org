@@ -13,8 +13,8 @@ use evm_core::interp::{Halt, Outcome};
 use evm_core::u256::U256;
 use evm_core::Host;
 use rand_zkvm::evm::{
-    mapping_slot, mapping_slot2, selector, slot_index, EvmCall, HostRef, SparseTree, ALICE, BOB, SLOT_BALANCES,
-    SLOT_TOTAL_SUPPLY, TOKEN,
+    mapping_slot, mapping_slot2, selector, slot_index, EvmCall, HostRef, SparseTree, ALICE, BOB,
+    SLOT_BALANCES, SLOT_TOTAL_SUPPLY, TOKEN,
 };
 use std::collections::BTreeSet;
 
@@ -24,31 +24,46 @@ pub const MAX_WITNESSES: usize = evm_core::storage::MAX_WITNESSES;
 const CONSTANT_SLOTS: u32 = 16;
 
 /// `0x` + 64 hex digits, big-endian.
-pub fn u256_hex(v: &U256) -> String { format!("0x{}", hex::encode(v.to_be_bytes())) }
+pub fn u256_hex(v: &U256) -> String {
+    format!("0x{}", hex::encode(v.to_be_bytes()))
+}
 
 /// A decimal or `0x`-hex number of at most 256 bits.
 pub fn parse_u256(s: &str) -> Result<U256, String> {
     let s = s.trim();
-    if s.is_empty() { return Err("empty number".into()); }
+    if s.is_empty() {
+        return Err("empty number".into());
+    }
     if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        if h.is_empty() { return Err(format!("{s} has no digits")); }
+        if h.is_empty() {
+            return Err(format!("{s} has no digits"));
+        }
         let h = h.trim_start_matches('0');
-        if h.len() > 64 { return Err(format!("{s} is wider than 256 bits")); }
+        if h.len() > 64 {
+            return Err(format!("{s} is wider than 256 bits"));
+        }
         let padded = format!("{h:0>64}");
-        let bytes: [u8; 32] = hex::decode(&padded).map_err(|e| format!("{s}: {e}"))?.try_into().unwrap();
+        let bytes: [u8; 32] = hex::decode(&padded)
+            .map_err(|e| format!("{s}: {e}"))?
+            .try_into()
+            .unwrap();
         return Ok(U256::from_be_bytes(&bytes));
     }
     // Big-endian bytes × 10 + digit, with the carry out of byte 0 meaning overflow.
     let mut be = [0u8; 32];
     for ch in s.chars() {
-        let d = ch.to_digit(10).ok_or_else(|| format!("{s} is not a number"))?;
+        let d = ch
+            .to_digit(10)
+            .ok_or_else(|| format!("{s} is not a number"))?;
         let mut carry = d;
         for b in be.iter_mut().rev() {
             let x = *b as u32 * 10 + carry;
             *b = x as u8;
             carry = x >> 8;
         }
-        if carry != 0 { return Err(format!("{s} does not fit in 256 bits")); }
+        if carry != 0 {
+            return Err(format!("{s} does not fit in 256 bits"));
+        }
     }
     Ok(U256::from_be_bytes(&be))
 }
@@ -57,50 +72,94 @@ pub fn parse_u256(s: &str) -> Result<U256, String> {
 /// word holding a right-aligned address (what [`u256_hex`] prints) is accepted.
 fn parse_address(arg: &str) -> Result<U256, String> {
     let arg = arg.trim();
-    let h = arg.strip_prefix("0x").ok_or_else(|| format!("address must be 0x-hex: {arg}"))?;
-    if h.trim_start_matches('0').len() > 40 { return Err(format!("address wider than 20 bytes: {arg}")); }
+    let h = arg
+        .strip_prefix("0x")
+        .ok_or_else(|| format!("address must be 0x-hex: {arg}"))?;
+    if h.trim_start_matches('0').len() > 40 {
+        return Err(format!("address wider than 20 bytes: {arg}"));
+    }
     parse_u256(arg)
 }
 
 /// The canonical spelling the selector is hashed over: `uint` and `int` are `uint256`/`int256`.
 fn canonical_type(ty: &str) -> String {
-    match ty { "uint" => "uint256".into(), "int" => "int256".into(), t => t.into() }
+    match ty {
+        "uint" => "uint256".into(),
+        "int" => "int256".into(),
+        t => t.into(),
+    }
 }
 
 fn split_params(sig: &str) -> Result<(&str, Vec<String>), String> {
-    let open = sig.find('(').ok_or_else(|| format!("{sig}: not a signature"))?;
-    let inner = sig[open + 1..].strip_suffix(')').ok_or_else(|| format!("{sig}: not a signature"))?;
-    if inner.contains('(') { return Err(format!("{sig}: tuple parameters are not supported")); }
-    let params = if inner.is_empty() { vec![] } else { inner.split(',').map(|p| canonical_type(p.trim())).collect() };
+    let open = sig
+        .find('(')
+        .ok_or_else(|| format!("{sig}: not a signature"))?;
+    let inner = sig[open + 1..]
+        .strip_suffix(')')
+        .ok_or_else(|| format!("{sig}: not a signature"))?;
+    if inner.contains('(') {
+        return Err(format!("{sig}: tuple parameters are not supported"));
+    }
+    let params = if inner.is_empty() {
+        vec![]
+    } else {
+        inner.split(',').map(|p| canonical_type(p.trim())).collect()
+    };
     Ok((&sig[..open], params))
 }
 
 fn encode_arg(ty: &str, arg: &str) -> Result<[u8; 32], String> {
     let arg = arg.trim();
     if ty.ends_with(']') || ty == "string" || ty == "bytes" {
-        return Err(format!("{ty}: dynamic and array types are not supported by the terminal's encoder"));
+        return Err(format!(
+            "{ty}: dynamic and array types are not supported by the terminal's encoder"
+        ));
     }
     if ty == "bool" {
-        return match arg { "true" | "1" => Ok(U256::ONE.to_be_bytes()), "false" | "0" => Ok([0; 32]), _ => Err(format!("bool: {arg}")) };
+        return match arg {
+            "true" | "1" => Ok(U256::ONE.to_be_bytes()),
+            "false" | "0" => Ok([0; 32]),
+            _ => Err(format!("bool: {arg}")),
+        };
     }
     if ty == "address" {
         return Ok(parse_address(arg)?.to_be_bytes());
     }
     if let Some(n) = ty.strip_prefix("bytes") {
-        let n: usize = n.parse().map_err(|_| format!("{ty}: not supported by the terminal's encoder"))?;
-        if !(1..=32).contains(&n) { return Err(format!("{ty}: not supported")); }
+        let n: usize = n
+            .parse()
+            .map_err(|_| format!("{ty}: not supported by the terminal's encoder"))?;
+        if !(1..=32).contains(&n) {
+            return Err(format!("{ty}: not supported"));
+        }
         let b = hex::decode(arg.trim_start_matches("0x")).map_err(|e| format!("{ty}: {e}"))?;
-        if b.len() > n { return Err(format!("{ty}: {} bytes given", b.len())); }
+        if b.len() > n {
+            return Err(format!("{ty}: {} bytes given", b.len()));
+        }
         let mut out = [0u8; 32];
         out[..b.len()].copy_from_slice(&b);
         return Ok(out);
     }
-    let (signed, bits) = if let Some(b) = ty.strip_prefix("uint") { (false, b) } else if let Some(b) = ty.strip_prefix("int") { (true, b) } else {
+    let (signed, bits) = if let Some(b) = ty.strip_prefix("uint") {
+        (false, b)
+    } else if let Some(b) = ty.strip_prefix("int") {
+        (true, b)
+    } else {
         return Err(format!("{ty}: not supported by the terminal's encoder"));
     };
-    let bits: usize = if bits.is_empty() { 256 } else { bits.parse().map_err(|_| format!("{ty}: not supported"))? };
-    if bits == 0 || bits > 256 || !bits.is_multiple_of(8) { return Err(format!("{ty}: not supported")); }
-    let (neg, mag) = match arg.strip_prefix('-') { Some(m) if signed => (true, m), Some(_) => return Err(format!("{ty} cannot be negative")), None => (false, arg) };
+    let bits: usize = if bits.is_empty() {
+        256
+    } else {
+        bits.parse().map_err(|_| format!("{ty}: not supported"))?
+    };
+    if bits == 0 || bits > 256 || !bits.is_multiple_of(8) {
+        return Err(format!("{ty}: not supported"));
+    }
+    let (neg, mag) = match arg.strip_prefix('-') {
+        Some(m) if signed => (true, m),
+        Some(_) => return Err(format!("{ty} cannot be negative")),
+        None => (false, arg),
+    };
     let be = parse_u256(mag)?.to_be_bytes();
     // |v| < 2^limit, or ≤ 2^limit for a negative signed value. Big-endian byte arrays compare
     // lexicographically in numeric order.
@@ -109,15 +168,25 @@ fn encode_arg(ty: &str, arg: &str) -> Result<[u8; 32], String> {
         let mut bound = [0u8; 32];
         bound[31 - limit / 8] = 1 << (limit % 8);
         let ok = if neg { be <= bound } else { be < bound };
-        if !ok { return Err(format!("{arg} does not fit in {ty}")); }
+        if !ok {
+            return Err(format!("{arg} does not fit in {ty}"));
+        }
     }
     Ok(if neg { neg_be(be) } else { be })
 }
 
 /// Two's complement of a big-endian 256-bit value.
 fn neg_be(mut b: [u8; 32]) -> [u8; 32] {
-    for x in b.iter_mut() { *x = !*x; }
-    for x in b.iter_mut().rev() { let (s, c) = x.overflowing_add(1); *x = s; if !c { break; } }
+    for x in b.iter_mut() {
+        *x = !*x;
+    }
+    for x in b.iter_mut().rev() {
+        let (s, c) = x.overflowing_add(1);
+        *x = s;
+        if !c {
+            break;
+        }
+    }
     b
 }
 
@@ -125,10 +194,18 @@ fn neg_be(mut b: [u8; 32]) -> [u8; 32] {
 /// `address`, `bool`, `bytesN`). Dynamic, array and tuple types are refused by name.
 pub fn encode_calldata(sig: &str, args: &[String]) -> Result<Vec<u8>, String> {
     let (name, params) = split_params(sig)?;
-    if params.len() != args.len() { return Err(format!("{sig} expects {} argument(s), got {}", params.len(), args.len())); }
+    if params.len() != args.len() {
+        return Err(format!(
+            "{sig} expects {} argument(s), got {}",
+            params.len(),
+            args.len()
+        ));
+    }
     let canonical = format!("{}({})", name.trim(), params.join(","));
     let mut out = selector(&canonical).to_vec();
-    for (ty, a) in params.iter().zip(args) { out.extend_from_slice(&encode_arg(ty, a)?); }
+    for (ty, a) in params.iter().zip(args) {
+        out.extend_from_slice(&encode_arg(ty, a)?);
+    }
     Ok(out)
 }
 
@@ -156,22 +233,33 @@ impl Host for TraceHost {
         HostRef.keccak_f(state);
         if is_64 {
             let mut h = [0u8; 32];
-            for (k, b) in h.iter_mut().enumerate() { *b = byte(state, k); }
+            for (k, b) in h.iter_mut().enumerate() {
+                *b = byte(state, k);
+            }
             self.mapping_hashes.push(U256::from_be_bytes(&h));
         }
     }
-    fn poseidon2(&mut self, words: &mut [u32], n: usize) { HostRef.poseidon2(words, n) }
+    fn poseidon2(&mut self, words: &mut [u32], n: usize) {
+        HostRef.poseidon2(words, n)
+    }
 }
 
 fn dry_run(call: &EvmCall) -> (Outcome, Vec<U256>) {
     let words = call.input_words();
     let mut ws = Box::new(Workspace::ZERO);
     let mut host = TraceHost::default();
-    let (_, o) = run_call_with(&mut host, &mut ws, |i| words[i as usize], words.len() as u32);
+    let (_, o) = run_call_with(
+        &mut host,
+        &mut ws,
+        |i| words[i as usize],
+        words.len() as u32,
+    );
     (o, host.mapping_hashes)
 }
 
-fn collides(touched: &[U256], s: &U256) -> bool { touched.iter().any(|t| slot_index(t) == slot_index(s)) }
+fn collides(touched: &[U256], s: &U256) -> bool {
+    touched.iter().any(|t| slot_index(t) == slot_index(s))
+}
 
 /// The pre-state tree and the distinct seeded slots, in form order.
 fn seed_tree(seeds: &[StorageSeed]) -> Result<(SparseTree, Vec<U256>), String> {
@@ -180,12 +268,27 @@ fn seed_tree(seeds: &[StorageSeed]) -> Result<(SparseTree, Vec<U256>), String> {
     for s in seeds {
         let (slot, value) = match s {
             StorageSeed::Slot { slot, value } => (parse_u256(slot)?, parse_u256(value)?),
-            StorageSeed::Mapping { base, key, value } => (mapping_slot(&parse_u256(key)?, *base), parse_u256(value)?),
-            StorageSeed::Mapping2 { base, key1, key2, value } => (mapping_slot2(&parse_u256(key1)?, &parse_u256(key2)?, *base), parse_u256(value)?),
+            StorageSeed::Mapping { base, key, value } => {
+                (mapping_slot(&parse_u256(key)?, *base), parse_u256(value)?)
+            }
+            StorageSeed::Mapping2 {
+                base,
+                key1,
+                key2,
+                value,
+            } => (
+                mapping_slot2(&parse_u256(key1)?, &parse_u256(key2)?, *base),
+                parse_u256(value)?,
+            ),
         };
-        if slots.contains(&slot) { return Err(format!("storage slot {} is seeded twice", u256_hex(&slot))); }
+        if slots.contains(&slot) {
+            return Err(format!("storage slot {} is seeded twice", u256_hex(&slot)));
+        }
         if collides(&slots, &slot) {
-            return Err(format!("storage slot {} shares a leaf position with another seeded slot", u256_hex(&slot)));
+            return Err(format!(
+                "storage slot {} shares a leaf position with another seeded slot",
+                u256_hex(&slot)
+            ));
         }
         tree.insert(slot, value);
         slots.push(slot);
@@ -196,16 +299,34 @@ fn seed_tree(seeds: &[StorageSeed]) -> Result<(SparseTree, Vec<U256>), String> {
 /// The call the form describes, with `touched` discovered, and the discovery steps taken.
 pub fn build(code: &[u8], form: &EvmCallForm) -> Result<(EvmCall, Vec<DiscoveryStep>), String> {
     if form.gas_limit > u32::MAX as u64 {
-        return Err(format!("gas limit {} is above {}, the most the guest's one gas word carries", form.gas_limit, u32::MAX));
+        return Err(format!(
+            "gas limit {} is above {}, the most the guest's one gas word carries",
+            form.gas_limit,
+            u32::MAX
+        ));
     }
     let calldata = encode_calldata(&form.function, &form.args)?;
     let (tree, seeded) = seed_tree(&form.storage)?;
-    if seeded.len() > MAX_WITNESSES { return Err(format!("{} seeded slots; the guest takes at most {MAX_WITNESSES}", seeded.len())); }
+    if seeded.len() > MAX_WITNESSES {
+        return Err(format!(
+            "{} seeded slots; the guest takes at most {MAX_WITNESSES}",
+            seeded.len()
+        ));
+    }
     let mut call = EvmCall {
-        code: code.to_vec(), calldata,
-        address: form.address.as_deref().map(parse_address).transpose()?.unwrap_or(TOKEN),
-        caller: parse_address(&form.caller)?, callvalue: parse_u256(&form.value)?,
-        gas_limit: form.gas_limit, tree, touched: seeded,
+        code: code.to_vec(),
+        calldata,
+        address: form
+            .address
+            .as_deref()
+            .map(parse_address)
+            .transpose()?
+            .unwrap_or(TOKEN),
+        caller: parse_address(&form.caller)?,
+        callvalue: parse_u256(&form.value)?,
+        gas_limit: form.gas_limit,
+        tree,
+        touched: seeded,
     };
     let mut steps = Vec::new();
     let mut tried_constants: BTreeSet<u32> = BTreeSet::new();
@@ -221,21 +342,34 @@ pub fn build(code: &[u8], form: &EvmCallForm) -> Result<(EvmCall, Vec<DiscoveryS
             // Constant guesses fill the cap one by one, so once any were made the honest message
             // is that the slot was never identified, not that the call reads too much.
             if !tried_constants.is_empty() {
-                return Err(format!("{UNIDENTIFIED} within the {MAX_WITNESSES}-witness limit"));
+                return Err(format!(
+                    "{UNIDENTIFIED} within the {MAX_WITNESSES}-witness limit"
+                ));
             }
             return Err(format!("the call reads more than {MAX_WITNESSES} storage slots, the most one guest input can carry"));
         }
         let usable = |s: &U256, touched: &[U256]| !touched.contains(s) && !collides(touched, s);
-        let next = hashes.iter().rev().find(|h| usable(h, &call.touched)).copied().or_else(|| {
-            let c = (0..CONSTANT_SLOTS).find(|c| !tried_constants.contains(c) && usable(&U256::from_u32(*c), &call.touched))?;
-            tried_constants.insert(c);
-            Some(U256::from_u32(c))
-        });
+        let next = hashes
+            .iter()
+            .rev()
+            .find(|h| usable(h, &call.touched))
+            .copied()
+            .or_else(|| {
+                let c = (0..CONSTANT_SLOTS).find(|c| {
+                    !tried_constants.contains(c) && usable(&U256::from_u32(*c), &call.touched)
+                })?;
+                tried_constants.insert(c);
+                Some(U256::from_u32(c))
+            });
         let Some(slot) = next else {
             return Err(UNIDENTIFIED.into());
         };
         call.touched.push(slot);
-        steps.push(DiscoveryStep { run, slot: u256_hex(&slot), gas_used: o.gas_used });
+        steps.push(DiscoveryStep {
+            run,
+            slot: u256_hex(&slot),
+            gas_used: o.gas_used,
+        });
     }
     unreachable!("the witness cap ends discovery")
 }
@@ -250,7 +384,9 @@ fn prune(call: &mut EvmCall, reference: &Outcome) {
     while i < call.touched.len() {
         let s = call.touched.remove(i);
         let (o, _) = dry_run(call);
-        if o.halt == reference.halt && o.gas_used == reference.gas_used { continue; }
+        if o.halt == reference.halt && o.gas_used == reference.gas_used {
+            continue;
+        }
         call.touched.insert(i, s);
         i += 1;
     }
@@ -261,11 +397,22 @@ fn prune(call: &mut EvmCall, reference: &Outcome) {
 /// `_totalSupply` of 1 000).
 pub fn erc20_transfer_form() -> EvmCallForm {
     EvmCallForm {
-        function: "transfer(address,uint256)".into(), args: vec![u256_hex(&BOB), "250".into()],
-        caller: u256_hex(&ALICE), address: None, value: "0".into(), gas_limit: 1_000_000,
+        function: "transfer(address,uint256)".into(),
+        args: vec![u256_hex(&BOB), "250".into()],
+        caller: u256_hex(&ALICE),
+        address: None,
+        value: "0".into(),
+        gas_limit: 1_000_000,
         storage: vec![
-            StorageSeed::Mapping { base: SLOT_BALANCES, key: u256_hex(&ALICE), value: "1000".into() },
-            StorageSeed::Slot { slot: SLOT_TOTAL_SUPPLY.to_string(), value: "1000".into() },
+            StorageSeed::Mapping {
+                base: SLOT_BALANCES,
+                key: u256_hex(&ALICE),
+                value: "1000".into(),
+            },
+            StorageSeed::Slot {
+                slot: SLOT_TOTAL_SUPPLY.to_string(),
+                value: "1000".into(),
+            },
         ],
     }
 }

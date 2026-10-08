@@ -2,7 +2,15 @@ use sbpf_core::isa::{decode, Insn};
 use sbpf_core::syscalls::SOL_LOG;
 use terminal_core::sbpf_disasm::{syscall_name, text};
 
-fn i(opc: u8, dst: u8, src: u8, off: i16, imm: i32) -> Insn { Insn { opc, dst, src, off, imm } }
+fn i(opc: u8, dst: u8, src: u8, off: i16, imm: i32) -> Insn {
+    Insn {
+        opc,
+        dst,
+        src,
+        off,
+        imm,
+    }
+}
 
 #[test]
 fn alu_and_mov() {
@@ -33,13 +41,25 @@ fn loads_stores() {
 #[test]
 fn jumps_calls_exit() {
     assert_eq!(text(10, &i(0x05, 0, 0, 5, 0), None), "ja +5 ; -> 16");
-    assert_eq!(text(10, &i(0x15, 1, 0, -3, 0), None), "jeq r1, 0, -3 ; -> 8");
-    assert_eq!(text(10, &i(0x1d, 1, 2, 2, 0), None), "jeq r1, r2, +2 ; -> 13");
-    assert_eq!(text(10, &i(0xad, 1, 2, 1, 0), None), "jlt r1, r2, +1 ; -> 12");
+    assert_eq!(
+        text(10, &i(0x15, 1, 0, -3, 0), None),
+        "jeq r1, 0, -3 ; -> 8"
+    );
+    assert_eq!(
+        text(10, &i(0x1d, 1, 2, 2, 0), None),
+        "jeq r1, r2, +2 ; -> 13"
+    );
+    assert_eq!(
+        text(10, &i(0xad, 1, 2, 1, 0), None),
+        "jlt r1, r2, +1 ; -> 12"
+    );
     // The scanner's convention: src 0 = internal call, src 1 = syscall by hash.
     assert_eq!(text(10, &i(0x85, 0, 0, 0, 4), None), "call +4 ; -> 15");
     assert_eq!(text(10, &i(0x85, 0, 1, 0, 0x1234), None), "syscall 0x1234");
-    assert_eq!(text(10, &i(0x85, 0, 1, 0, SOL_LOG as i32), None), "syscall sol_log_");
+    assert_eq!(
+        text(10, &i(0x85, 0, 1, 0, SOL_LOG as i32), None),
+        "syscall sol_log_"
+    );
     assert_eq!(text(10, &i(0x85, 0, 3, 0, 9), None), "call 9 ; bad src 3");
     assert_eq!(text(10, &i(0x8d, 0, 0, 0, 3), None), "callx r3");
     assert_eq!(text(10, &i(0x95, 0, 0, 0, 0), None), "exit");

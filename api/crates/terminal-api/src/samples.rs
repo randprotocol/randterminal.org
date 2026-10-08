@@ -11,13 +11,25 @@ fn load_one(d: &Path) -> anyhow::Result<SampleView> {
         "spl-token" => Some(CallForm::Sbpf(sbpf_call::spl_transfer_form(250))),
         _ => meta.default_call,
     };
-    let files = meta.files.iter().map(|n| {
-        let b = std::fs::read(d.join(n))?;
-        Ok(match String::from_utf8(b.clone()) {
-            Ok(t) if !n.ends_with(".so") => SampleFile { name: n.clone(), encoding: "text".into(), content: t },
-            _ => SampleFile { name: n.clone(), encoding: "base64".into(), content: base64::engine::general_purpose::STANDARD.encode(&b) },
+    let files = meta
+        .files
+        .iter()
+        .map(|n| {
+            let b = std::fs::read(d.join(n))?;
+            Ok(match String::from_utf8(b.clone()) {
+                Ok(t) if !n.ends_with(".so") => SampleFile {
+                    name: n.clone(),
+                    encoding: "text".into(),
+                    content: t,
+                },
+                _ => SampleFile {
+                    name: n.clone(),
+                    encoding: "base64".into(),
+                    content: base64::engine::general_purpose::STANDARD.encode(&b),
+                },
+            })
         })
-    }).collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(SampleView { meta, files })
 }
 
@@ -26,7 +38,9 @@ pub fn load(dir: &Path) -> anyhow::Result<Vec<SampleView>> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir)? {
         let d = e?.path();
-        if !d.is_dir() { continue; }
+        if !d.is_dir() {
+            continue;
+        }
         match load_one(&d) {
             Ok(v) => out.push(v),
             Err(e) => tracing::warn!("samples: skipping {}: {e}", d.display()),

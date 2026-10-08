@@ -35,7 +35,11 @@ fn debug_line_rows_for_the_contract_file_only() {
 
 #[test]
 fn compose_and_lookup() {
-    let op_map = vec![OpLine { pc: 0, line: 105 }, OpLine { pc: 2, line: 106 }, OpLine { pc: 4, line: 107 }];
+    let op_map = vec![
+        OpLine { pc: 0, line: 105 },
+        OpLine { pc: 2, line: 106 },
+        OpLine { pc: 4, line: 107 },
+    ];
     let sm = compose(&[(0x10000, 105), (0x10008, 107)], &op_map);
     assert_eq!(sm.pc_to_c, vec![(0x10000, 105), (0x10008, 107)]);
     assert_eq!(sm.c_to_src, vec![(105, 0), (106, 2), (107, 4)]);
