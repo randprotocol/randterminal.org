@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cpuTotal, tableBars, tierSentence } from '@/lib/tables';
+import { cpuTotal, fittingTier, tableBars, tierSentence } from '@/lib/tables';
 import type { RunSummary } from '@/lib/types';
 
 const tier = (t: number, fits: boolean) => ({ tier: t, cpu: 2 ** t, alu: 2 ** (t + 1), memory_min: 2 ** (t + 2), memory_max: 2 ** 24, poseidon2_permutations: 2 ** (t + 2) / 32, keccak_permutations: 2 ** Math.min(t + 5, 20) / 32, sha256_compressions: 2 ** Math.min(t + 6, 20) / 64, fits });
@@ -69,5 +69,13 @@ describe('tierSentence', () => {
     const s = tierSentence(r);
     expect(s).not.toMatch(/needs tier/);
     expect(s).toMatch(/trapped \(illegal instruction\)/);
+  });
+});
+
+describe('fittingTier', () => {
+  it('is the smallest tier that fits, never a server tier that does not', () => {
+    expect(fittingTier(run)).toBe(18);
+    expect(fittingTier({ ...run, tier: 16, tiers: [16, 18, 20].map((t) => tier(t, t >= 20)) })).toBe(20);
+    expect(fittingTier({ ...run, tiers: [16, 18, 20].map((t) => tier(t, false)) })).toBeNull();
   });
 });

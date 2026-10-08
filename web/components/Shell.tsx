@@ -9,9 +9,28 @@ import { StagePanel } from './StagePanel';
 import { filesFor, useJob, type Stage } from '@/lib/job';
 import type { CallForm, Diagnostic, JobOptions, Lang, SampleView } from '@/lib/types';
 
+const TEMPLATE_CARGO = `[package]
+name = "program"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+resolver = "3"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+solana-program = "=2.3.0"
+
+[features]
+no-entrypoint = []
+`;
+
 const STARTER: Record<Lang, Record<string, string>> = {
   solidity: { 'Contract.sol': '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\ncontract Hello {\n    uint256 public n;\n    function bump() external { n += 1; }\n}\n' },
-  'solana-rust': { 'lib.rs': '// Pick the "Solana counter" sample to start from a working program.\n', 'Cargo.toml': '' },
+  // Cargo.toml is the sandbox template's own (sandbox/solana-template/Cargo.toml): only the crates
+  // vendored there resolve, and an empty file would have replaced it.
+  'solana-rust': { 'lib.rs': '// Pick the "Solana counter" sample to start from a working program.\n', 'Cargo.toml': TEMPLATE_CARGO },
   'solana-elf': {},
 };
 
@@ -58,6 +77,20 @@ export function Shell() {
     setFocused('compile'); setView('stage');
     void submit({ lang, files: filesFor(lang, files, binary), options });
   }, [busy, lang, files, binary, options, submit]);
+
+  // Re-submits the same sources with the contract the developer picked (several contracts in the file).
+  const pickContract = useCallback((contract: string) => {
+    if (busy) return;
+    const o = { ...options, contract };
+    setOptions(o); setFocused('compile'); setView('stage');
+    void submit({ lang, files: filesFor(lang, files, binary), options: o });
+  }, [busy, lang, files, binary, options, submit]);
+  // An edit to the source may rename or remove the picked contract: forget it (keep chain id, stage).
+  const onEdit = (v: string) => {
+    if (v === files[active]) return;
+    setFiles({ ...files, [active]: v });
+    setOptions((o) => (o.contract != null ? { ...o, contract: null } : o));
+  };
 
   const runRef = useRef(run);
   runRef.current = run;
@@ -112,7 +145,7 @@ export function Shell() {
 
   const diagnostics: Diagnostic[] = useMemo(() => (state.job?.compile.error?.diagnostics ?? []).filter((d) => d.file === active || d.file.endsWith(`/${active}`)), [state.job, active]);
   const langSelect = (
-        <select aria-label="language" value={lang} onChange={(e) => { const l = e.target.value as Lang; setLang(l); setFiles(STARTER[l]); setBinary(undefined); setActive(Object.keys(STARTER[l])[0] ?? ''); setDefaultCall(null); reset(); setUpErr(null); }}
+        <select aria-label="language" value={lang} onChange={(e) => { const l = e.target.value as Lang; setLang(l); setFiles(STARTER[l]); setBinary(undefined); setActive(Object.keys(STARTER[l])[0] ?? ''); setOptions((o) => ({ chain_id: o.chain_id, stage: 2 })); setDefaultCall(null); reset(); setUpErr(null); }}
           className="h-8 rounded-sm border border-border bg-surface px-2 text-text max-lg:h-11">
           <option value="solidity">Solidity</option><option value="solana-rust">Solana (Rust)</option><option value="solana-elf">Solana (.so upload)</option>
         </select>
@@ -147,13 +180,13 @@ export function Shell() {
         <main id="panel-editor" role="tabpanel" aria-labelledby="tab-editor" className={`min-h-0 border-r border-border-soft ${view === 'editor' ? '' : 'max-lg:hidden'}`}>
           {lang === 'solana-elf'
             ? <div className="p-6 text-text-soft">{binary ? `program.so loaded (${Math.round((binary.length * 3) / 4 / 1024)} KB). Press Compile & Run.` : 'Upload a Solana program (.so) built with cargo build-sbf, or pick the SPL Token sample.'}</div>
-            : <Editor key={`${lang}:${active}`} value={files[active] ?? ''} onChange={(v) => setFiles({ ...files, [active]: v })} language={active.endsWith('.sol') ? 'solidity' : active.endsWith('.rs') ? 'rust' : 'toml'} diagnostics={diagnostics} onRun={run} />}
+            : <Editor key={`${lang}:${active}`} value={files[active] ?? ''} onChange={onEdit} language={active.endsWith('.sol') ? 'solidity' : active.endsWith('.rs') ? 'rust' : 'toml'} diagnostics={diagnostics} onRun={run} />}
         </main>
         <section id="panel-stage" role="tabpanel" aria-labelledby="tab-stage" className={`relative min-h-0 overflow-auto ${view === 'stage' ? '' : 'max-lg:hidden'}`} aria-label="stage panel">
           <div role="separator" aria-orientation="vertical" aria-label="resize stage panel" aria-valuenow={stageW} aria-valuemin={MIN_W} aria-valuemax={maxW} tabIndex={0} onPointerDown={drag} onKeyDown={nudge}
             className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-accent focus-visible:bg-accent focus-visible:outline-2 focus-visible:outline-accent max-lg:hidden" />
           {state.error && <p className="m-3 rounded-sm border border-negative p-3 text-negative" role="alert">{state.error}</p>}
-          <StagePanel stage={focused} job={state.job} defaultCall={defaultCall} onFocus={setFocused} />
+          <StagePanel stage={focused} job={state.job} defaultCall={defaultCall} onFocus={setFocused} onPickContract={busy ? undefined : pickContract} />
         </section>
       </div>
       <Console lines={state.console} />

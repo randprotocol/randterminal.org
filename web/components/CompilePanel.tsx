@@ -2,15 +2,17 @@
 import { useState } from 'react';
 import type { CompileView } from '@/lib/types';
 import { groupDigits } from '@/lib/format';
+import { contractChoices } from '@/lib/job';
+import { ContractPicker } from './ContractPicker';
 
-export function CompilePanel({ view }: { view: CompileView }) {
+export function CompilePanel({ view, onPickContract }: { view: CompileView; onPickContract?: (c: string) => void }) {
   const [which, setWhich] = useState<'runtime' | 'creation'>('runtime');
   if (view.lang === 'evm') {
     const hex = which === 'runtime' ? view.runtime_hex : view.creation_hex;
     return (
       <div className="flex flex-col gap-4 p-4">
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-          <dt className="text-text-mute">contract</dt><dd>{view.contract}{view.contracts.length > 1 && <span className="text-text-mute"> (of {view.contracts.join(', ')})</span>}</dd>
+          <dt className="text-text-mute">contract</dt><dd>{view.contracts.length > 1 ? <ContractPicker contracts={contractChoices(null, view)} value={view.contract} onPick={onPickContract} /> : view.contract}</dd>
           <dt className="text-text-mute">runtime bytecode</dt><dd className="mono">{groupDigits(view.size_bytes)} bytes · {view.blocks} blocks · {view.jumpdests} jump destinations</dd>
         </dl>
         <div>

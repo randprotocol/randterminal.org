@@ -39,9 +39,9 @@ export function tableBars(r: RunSummary, tier: number): Bar[] {
 /** The sentence above the bars. "needs tier T" only for the smallest tier `run.tiers` marks fits:true: the
  *  server's `tier` ignores the memory table (and ALU, Keccak, SHA-256), so it can name a tier that does not fit. */
 export function tierSentence(r: RunSummary): string {
-  const fit = r.tiers.filter((x) => x.fits).sort((a, b) => a.tier - b.tier)[0];
-  if (fit) {
-    return `This run needs tier ${fit.tier}: the smallest whose CPU table holds ${groupDigits(cpuTotal(r))} CPU rows (cycles plus digest rows) and whose Poseidon2 table holds ${groupDigits(r.rows.poseidon2_permutations)} permutations. Proving cost grows with the tier.`;
+  const fit = fittingTier(r);
+  if (fit != null) {
+    return `This run needs tier ${fit}: the smallest whose CPU table holds ${groupDigits(cpuTotal(r))} CPU rows (cycles plus digest rows) and whose Poseidon2 table holds ${groupDigits(r.rows.poseidon2_permutations)} permutations. Proving cost grows with the tier.`;
   }
   const top = r.tiers.length ? Math.max(...r.tiers.map((x) => x.tier)) : 20;
   const mem = tableBars(r, top).find((b) => b.key === 'memory' && b.over);
@@ -56,4 +56,11 @@ export function tierSentence(r: RunSummary): string {
   if (r.tier != null && over.length) return `Tier ${at} does not fit: ${list}; no larger tier holds it either.${trap}`;
   if (over.length) return `No tier fits: at tier ${at}, ${list}.${trap}`;
   return `No tier fits this run.${trap}`;
+}
+
+/** The tier this run needs: the smallest one `run.tiers` marks fits:true (the server's `tier`
+ *  ignores the memory, ALU, Keccak and SHA-256 tables, so it may name one that does not fit). */
+export function fittingTier(r: RunSummary): number | null {
+  const fit = r.tiers.filter((x) => x.fits).sort((a, b) => a.tier - b.tier)[0];
+  return fit ? fit.tier : null;
 }

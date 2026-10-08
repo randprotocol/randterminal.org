@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { api, subscribeJob } from './api';
-import type { ConsoleLine, FileIn, JobStreamEvent, JobView, Lang, NewJob, StageState, StageStatus } from './types';
+import type { ConsoleLine, FileIn, JobStreamEvent, JobView, Lang, NewJob, StageError, StageState, StageStatus } from './types';
 
 export type Stage = 'compile' | 'analyse' | 'transpile' | 'image' | 'run';
 export const STAGES: { id: Stage; n: number; title: string }[] = [
@@ -43,7 +43,19 @@ export function stageStatus(job: JobView | null, s: Stage): StageStatus | 'idle'
 
 export function filesFor(lang: Lang, files: Record<string, string>, binary?: string): FileIn[] {
   if (lang === 'solana-elf') return [{ name: 'program.so', encoding: 'base64', content: binary ?? '' }];
-  return Object.entries(files).map(([name, content]) => ({ name, encoding: 'text' as const, content }));
+  // An empty file (the starter's blank Cargo.toml, a cleared tab) is left out: the server would
+  // take it as the file's whole content.
+  return Object.entries(files).filter(([, content]) => content.trim() !== '').map(([name, content]) => ({ name, encoding: 'text' as const, content }));
+}
+
+/** The contracts the developer can pick between: from a compile error that lists them ("choose a
+ *  contract: the file defines A, B", "no contract named X; the file defines A, B"), or from a
+ *  compile view that defines several. Empty when there is nothing to choose. */
+export function contractChoices(error: StageError | null | undefined, view: { lang: string; contracts?: string[] } | null | undefined): string[] {
+  const m = error?.kind === 'unsupported' ? /the file defines (.+)$/.exec(error.message) : null;
+  if (m) return m[1]!.split(',').map((s) => s.trim()).filter(Boolean);
+  const listed = view?.lang === 'evm' ? view.contracts ?? [] : [];
+  return listed.length > 1 ? listed : [];
 }
 
 type Action = JobStreamEvent | { type: 'reset' };

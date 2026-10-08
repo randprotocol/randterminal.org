@@ -1,12 +1,11 @@
 'use client';
 import { useState } from 'react';
 import { groupDigits } from '@/lib/format';
-import { tableBars, tierSentence } from '@/lib/tables';
+import { fittingTier, tableBars, tierSentence } from '@/lib/tables';
 import type { RunSummary } from '@/lib/types';
 
 export function TablesPanel({ run }: { run: RunSummary }) {
-  const fitting = run.tiers.find((t) => t.tier === run.tier && t.fits);
-  const [tier, setTier] = useState(fitting ? fitting.tier : run.tiers.length ? Math.max(...run.tiers.map((t) => t.tier)) : 20);
+  const [tier, setTier] = useState(() => fittingTier(run) ?? (run.tiers.length ? Math.max(...run.tiers.map((t) => t.tier)) : 20));
   const bars = tableBars(run, tier);
   return (
     <div className="flex h-full flex-col gap-4 overflow-auto p-4">

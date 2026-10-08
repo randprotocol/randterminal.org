@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filesFor, reduce, stageStatus, type JobState } from '@/lib/job';
+import { contractChoices, filesFor, reduce, stageStatus, type JobState } from '@/lib/job';
 import type { JobView } from '@/lib/types';
 
 const q = { status: 'queued' as const };
@@ -50,5 +50,20 @@ describe('stream loss', () => {
     expect(s.job!.transpile.status).toBe('failed');
     expect(s.job!.build.status).toBe('failed');
     expect(s.job!.build.error?.message).toBe('lost');
+  });
+});
+
+describe('contracts and files', () => {
+  it('lists the contracts a compile error or a compile view offers', () => {
+    expect(contractChoices({ kind: 'unsupported', message: 'choose a contract: the file defines A, B, Token', diagnostics: [] }, null)).toEqual(['A', 'B', 'Token']);
+    expect(contractChoices({ kind: 'unsupported', message: 'no contract named X; the file defines A, B', diagnostics: [] }, null)).toEqual(['A', 'B']);
+    expect(contractChoices({ kind: 'compile', message: 'the file defines nothing useful', diagnostics: [] }, null)).toEqual([]);
+    expect(contractChoices(null, { lang: 'evm', contracts: ['A', 'B'] })).toEqual(['A', 'B']);
+    expect(contractChoices(null, { lang: 'evm', contracts: ['A'] })).toEqual([]);
+    expect(contractChoices(null, null)).toEqual([]);
+  });
+  it('drops empty files: a blank Cargo.toml must not replace the template', () => {
+    expect(filesFor('solana-rust', { 'lib.rs': 'fn x() {}', 'Cargo.toml': '' }).map((f) => f.name)).toEqual(['lib.rs']);
+    expect(filesFor('solana-rust', { 'lib.rs': 'fn x() {}', 'Cargo.toml': '  \n' }).map((f) => f.name)).toEqual(['lib.rs']);
   });
 });

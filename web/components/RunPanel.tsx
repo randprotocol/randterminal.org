@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { api } from '@/lib/api';
 import { groupDigits } from '@/lib/format';
+import { fittingTier } from '@/lib/tables';
 import { abiSignature, ALICE, evmFormFromAbi, gasError } from '@/lib/replay';
 import { EvmCallForm } from './EvmCallForm';
 import { SbpfCallForm } from './SbpfCallForm';
@@ -50,7 +51,7 @@ export function RunPanel({ job, compile, transpile, image, defaultCall }: { job:
           <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 border-b border-border-soft px-4 py-2 text-xs">
             <span><span className="text-text-mute">cycles</span> <span className="mono">{groupDigits(run.cycles)}</span></span>
             {run.trap ? <span className="text-negative">trap: {run.trap}</span> : <span className={run.status === 1 ? 'text-positive' : 'text-warning'}>{STATUS[run.status] ?? `status ${run.status}`}</span>}
-            <span><span className="text-text-mute">tier</span> <span className="mono">{run.tier ?? 'none fits'}</span></span>
+            <span><span className="text-text-mute">tier</span> <span className="mono">{fittingTier(run) ?? 'none fits'}</span></span>
             <span className="mono text-text-soft" title="the eight public output words">out {run.outputs.join(' ')}</span>
             <span className="text-text-mute">{groupDigits(run.input_words)} input words{run.public_words ? ` · ${groupDigits(run.public_words)} public` : ''}</span>
             {(run.discovery ?? []).map((d) => <span key={d.run} className="text-text-mute">found storage slot <span className="mono">{d.slot.slice(0, 10)}…</span> on dry run {d.run + 1}</span>)}
