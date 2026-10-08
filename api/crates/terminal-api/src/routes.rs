@@ -8,6 +8,8 @@ pub const BODY_LIMIT: usize = 4 << 20;
 pub fn create_router(state: AppState) -> Router {
     let api = Router::new()
         .route("/health", get(handlers::health))
+        .route("/samples", get(handlers::samples::list))
+        .route("/samples/:id", get(handlers::samples::get))
         .route("/jobs", post(handlers::jobs::create))
         .route("/jobs/:id", get(handlers::jobs::get))
         .route("/jobs/:id/events", get(handlers::jobs::events))

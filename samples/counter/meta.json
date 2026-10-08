@@ -1,0 +1,6 @@
+{ "id": "counter", "title": "Counter", "lang": "solidity", "files": ["Counter.sol"],
+  "description": "One storage slot. increment(5) on a count of 7.",
+  "options": { "contract": "Counter", "chain_id": 20, "stage": 2 },
+  "default_call": { "lang": "evm", "function": "increment(uint256)", "args": ["5"],
+    "caller": "0x0000000000000000000000001111111111111111111111111111111111111111",
+    "storage": [ { "kind": "slot", "slot": "0", "value": "7" } ] } }

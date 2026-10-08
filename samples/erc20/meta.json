@@ -1,0 +1,3 @@
+{ "id": "erc20", "title": "ERC-20 token", "lang": "solidity", "files": ["ERC20.sol"],
+  "description": "The OpenZeppelin-shaped ERC-20 the translator is tested against. Run transfer: ALICE sends BOB 250 of her 1 000.",
+  "options": { "contract": "ERC20", "chain_id": 20, "stage": 2 } }

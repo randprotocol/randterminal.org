@@ -5,6 +5,7 @@ pub mod jobs;
 pub mod ratelimit;
 pub mod routes;
 pub mod runs;
+pub mod samples;
 pub mod state;
 
 use std::net::SocketAddr;

@@ -97,6 +97,22 @@ and up to four **stages**. Each stage writes its artifacts under
 `$TERMINAL_DATA/jobs/<job_id>/<stage>/` and a `view.json` the API serves verbatim.
 Stages run sequentially in a tokio task; status is `queued | running | done | failed`.
 
+The sandbox runs untrusted code (a Solana job controls its `Cargo.toml`, so build scripts run in
+the container). Each tool step therefore mounts only a dedicated `<stage>/sandbox/` directory and
+nothing else:
+
+```
+jobs/<id>/compile/sandbox/   solc: input.json -> output.json
+                             build-sbf: src/lib.rs, src/Cargo.toml -> program.so
+jobs/<id>/build/sandbox/     shim/ (generated crate), shim-dbg/ (the -g copy)
+                             -> image.bin, image-dbg.bin, debug-line.txt
+```
+
+After the step the host copies exactly the outputs it expects out of `sandbox/` (regular files
+only, opened without following links, size-capped) into host-owned paths in the stage directory
+(`compile/runtime.hex`, `compile/program.so`, `build/image.bin`, ...). The container never sees
+those paths, and the API serves only the host-owned copies.
+
 | Stage | Solidity | Solana Rust | Solana `.so` |
 |---|---|---|---|
 | compile | solc (sandbox) → `creation.hex`, `runtime.hex`, `abi.json`, `metadata.json` | cargo build-sbf (sandbox) → `program.so` | copy upload → `program.so` |

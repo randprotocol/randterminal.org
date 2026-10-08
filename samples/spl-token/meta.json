@@ -1,0 +1,2 @@
+{ "id": "spl-token", "title": "SPL Token (mainnet .so)", "lang": "solana-elf", "files": ["spl_token.so"],
+  "description": "Solana's token program as deployed on mainnet, 65 096 RV32 words once translated. Run Transfer(250)." }

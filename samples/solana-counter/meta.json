@@ -1,0 +1,6 @@
+{ "id": "solana-counter", "title": "Solana counter (Rust)", "lang": "solana-rust", "files": ["lib.rs", "Cargo.toml"],
+  "description": "A native Solana program built with cargo build-sbf: adds the instruction's u64 to the account's.",
+  "default_call": { "lang": "sbpf", "program_id": "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx",
+    "accounts": [ { "key": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi", "owner": "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx",
+                    "lamports": 1000000, "data": "0x0700000000000000", "is_writable": true } ],
+    "data": "0x0500000000000000" } }

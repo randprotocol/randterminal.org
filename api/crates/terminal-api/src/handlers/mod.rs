@@ -9,3 +9,4 @@ pub async fn health(State(s): State<AppState>) -> Json<Value> {
 
 pub async fn not_found() -> AppError { AppError::NotFound("no such route".into()) }
 pub mod runs;
+pub mod samples;
