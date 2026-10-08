@@ -27,9 +27,14 @@ rm -rf /opt/terminal/web.new
 mkdir -p /opt/terminal/web.new
 cp -r .next/standalone/. /opt/terminal/web.new/
 cp -r .next/static /opt/terminal/web.new/.next/static
-[ -d public ] && cp -r public /opt/terminal/web.new/public || true
+if [ -d public ]; then
+  cp -r public /opt/terminal/web.new/public
+fi
 mv /opt/terminal/bin/terminal-api.new /opt/terminal/bin/terminal-api
-rm -rf /opt/terminal/web.old && { [ -d /opt/terminal/web ] && mv /opt/terminal/web /opt/terminal/web.old || true; }
+rm -rf /opt/terminal/web.old
+if [ -d /opt/terminal/web ]; then
+  mv /opt/terminal/web /opt/terminal/web.old
+fi
 mv /opt/terminal/web.new /opt/terminal/web
 grep -q "TERMINAL_SANDBOX_IMAGE=terminal-sandbox:$REV" /etc/terminal/api.env || echo "WARNING: /etc/terminal/api.env names a different sandbox image than terminal-sandbox:$REV"
 sudo systemctl restart terminal-api terminal-web

@@ -11,7 +11,7 @@ so hold no other secrets on it.
 4. Point the `randterminal.org` and `www` A records at the droplet. `nginx.conf` cannot load before the
    certificate exists, so first install `nginx-bootstrap.conf` as `/etc/nginx/sites-enabled/randterminal.org`
    (remove the default site), `systemctl reload nginx`, and run
-   `mkdir -p /var/www/certbot && certbot certonly --webroot -w /var/www/certbot -d randterminal.org -d www.randterminal.org`
+   `mkdir -p /var/www/certbot && certbot certonly --webroot -w /var/www/certbot -d randterminal.org -d www.randterminal.org --deploy-hook "systemctl reload nginx"`
    (or `--standalone` with nginx stopped). Then replace the site file with `nginx.conf` and reload. If Cloudflare
    proxies the domain, enable the `set_real_ip_from` / `real_ip_header CF-Connecting-IP` block at the top of
    `nginx.conf`.

@@ -62,7 +62,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable (branch head, 2026-10-05)
       - name: build the image (its own hc checks run inside)
         run: |
-          out=$(sandbox/build.sh)
+          set -o pipefail
+          out=$(sandbox/build.sh | tee /dev/stderr)
           tag=$(printf '%s\n' "$out" | tail -n 1)
           case "$tag" in terminal-sandbox:*) ;; *) echo "build.sh did not end with an image tag: $tag" >&2; exit 1;; esac
           echo "TAG=$tag" >> "$GITHUB_ENV"
