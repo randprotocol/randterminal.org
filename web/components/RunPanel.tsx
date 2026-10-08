@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { api } from '@/lib/api';
 import { groupDigits } from '@/lib/format';
+import { abiSignature, ALICE, evmFormFromAbi, gasError } from '@/lib/replay';
 import { EvmCallForm } from './EvmCallForm';
 import { SbpfCallForm } from './SbpfCallForm';
 import { Debugger } from './Debugger';
@@ -11,24 +12,36 @@ import type { CallForm, CompileView, EvmCallForm as EF, ImageView, JobView, RunS
 const STATUS: Record<number, string> = { 1: 'success', 0: 'reverted', 2: 'error' };
 
 export function RunPanel({ job, compile, transpile, image, defaultCall }: { job: JobView; compile: CompileView | null; transpile: TranspileView | null; image: ImageView; defaultCall: CallForm | null }) {
-  const [form, setForm] = useState<CallForm | null>(defaultCall);
+  const [picked, setForm] = useState<CallForm | null>(defaultCall);
   const [run, setRun] = useState<RunSummary | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [tab, setTab] = useState<'debugger' | 'tables'>('debugger');
   const evm = job.lang === 'solidity';
+  // With no sample call, start from the ABI's first function (or one blank writable account), so a zero-argument call can run at once.
+  const abi = compile?.lang === 'evm' ? compile.abi : [];
+  const first = abi.find((a) => a.type === 'function');
+  const form: CallForm = picked ?? (evm
+    ? evmFormFromAbi(abi, first ? abiSignature(first) : 'f()', ALICE)
+    : { lang: 'sbpf', program_id: '', accounts: [{ key: '', owner: '', lamports: 0, data: '0x', is_signer: false, is_writable: true, executable: false }], data: '0x' });
+  const invalid = form.lang === 'evm' && gasError(form.gas_limit ?? 1_000_000) !== null;
   const go = async () => {
-    if (!form) return;
+    if (invalid) return;
     setBusy(true); setErr(null);
-    try { setRun(await api.createRun(job.id, { call: form })); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+    try {
+      const r = await api.createRun(job.id, { call: form });
+      // A new run starts at cycle 0: the #clk= hash belongs to the previous run only.
+      history.replaceState(null, '', location.pathname + location.search);
+      setRun(r);
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
   return (
     <div className="flex h-full flex-col">
       <details open={!run} className="border-b border-border-soft p-4">
         <summary className="cursor-pointer text-sm text-text-soft">Call</summary>
         <div className="mt-3">
-          {evm ? <EvmCallForm abi={compile?.lang === 'evm' ? compile.abi : []} value={form as EF | null} onChange={setForm} /> : <SbpfCallForm value={form as SF | null} onChange={setForm} />}
-          <button onClick={go} disabled={busy || !form} className="mt-3 h-8 rounded-sm bg-accent px-4 text-on-accent disabled:opacity-50">{busy ? 'Running…' : 'Run on the zkVM'}</button>
+          {evm ? <EvmCallForm abi={abi} value={form as EF} onChange={setForm} /> : <SbpfCallForm value={form as SF} onChange={setForm} />}
+          <button onClick={go} disabled={busy || invalid} className="mt-3 h-8 rounded-sm bg-accent px-4 text-on-accent disabled:opacity-50">{busy ? 'Running…' : 'Run on the zkVM'}</button>
           {err && <p role="alert" className="mt-2 text-xs text-negative">{err}</p>}
         </div>
       </details>

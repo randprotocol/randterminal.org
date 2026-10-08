@@ -17,7 +17,7 @@ export function Timeline({ total, clk, syscalls, onSeek }: { total: number; clk:
         </svg>
         <div className="absolute top-0 h-full w-0.5 bg-text-strong" style={{ left: `${(clk / Math.max(total - 1, 1)) * 100}%` }} />
       </div>
-      <input aria-label="go to cycle" type="number" min={0} max={total - 1} value={clk} onChange={(e) => onSeek(Math.max(0, Math.min(total - 1, Number(e.target.value))))} className="mono h-8 w-28 rounded-sm border border-border bg-surface px-2 text-xs" />
+      <input aria-label="go to cycle" type="number" min={0} max={total - 1} value={clk} onChange={(e) => { if (e.target.value !== '' && Number.isFinite(Number(e.target.value))) onSeek(Math.max(0, Math.min(total - 1, Math.trunc(Number(e.target.value))))); }} className="mono h-8 w-28 rounded-sm border border-border bg-surface px-2 text-xs" />
     </div>
   );
 }

@@ -10,9 +10,12 @@ export class PageCache {
     const hit = this.pages.get(p);
     if (hit) { this.pages.delete(p); this.pages.set(p, hit); return hit; }
     let f = this.inflight.get(p);
-    if (!f) { f = this.fetchPage(p * this.size, this.size); this.inflight.set(p, f); }
+    if (!f) {
+      // A rejected fetch must not stay in `inflight`, or every later get() of the page would replay the failure.
+      f = this.fetchPage(p * this.size, this.size).finally(() => { this.inflight.delete(p); });
+      this.inflight.set(p, f);
+    }
     const rows = await f;
-    this.inflight.delete(p);
     this.pages.set(p, rows);
     while (this.pages.size > this.keep) this.pages.delete(this.pages.keys().next().value!);
     return rows;
@@ -46,4 +49,17 @@ export const abiSignature = (a: AbiItem) => `${a.name}(${(a.inputs ?? []).map((p
 export function evmFormFromAbi(abi: AbiItem[], fn: string, caller: string): EvmCallForm {
   const item = abi.find((a) => a.type === 'function' && abiSignature(a) === fn);
   return { lang: 'evm', function: fn, args: (item?.inputs ?? []).map(() => ''), caller, value: '0', gas_limit: 1_000_000, storage: [] };
+}
+
+export const ALICE = '0x0000000000000000000000001111111111111111111111111111111111111111';
+export const MAX_GAS = 30_000_000;
+export const gasError = (g: number | undefined): string | null =>
+  g !== undefined && Number.isInteger(g) && g >= 1 && g <= MAX_GAS ? null : `gas limit must be a whole number from 1 to ${MAX_GAS.toLocaleString('en-US')}`;
+
+/** The nearest syscall strictly after (dir 1) or before (dir -1) `clk`, by binary search over the clk-sorted list. */
+export function syscallFrom(syscalls: { clk: number }[], clk: number, dir: 1 | -1): number | null {
+  let lo = 0, hi = syscalls.length;
+  if (dir === 1) { while (lo < hi) { const m = (lo + hi) >> 1; if (syscalls[m]!.clk <= clk) lo = m + 1; else hi = m; } return syscalls[lo]?.clk ?? null; }
+  while (lo < hi) { const m = (lo + hi) >> 1; if (syscalls[m]!.clk < clk) lo = m + 1; else hi = m; }
+  return syscalls[lo - 1]?.clk ?? null;
 }

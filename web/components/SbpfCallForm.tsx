@@ -13,7 +13,7 @@ export function SbpfCallForm({ value, onChange }: { value: Form | null; onChange
         <fieldset key={i} className="grid grid-cols-2 gap-1 rounded-sm border border-border-soft p-2"><legend className="px-1 text-text-mute">account {i}</legend>
           <input className={input} value={a.key} placeholder="key" onChange={(e) => setAcc(i, { ...a, key: e.target.value })} />
           <input className={input} value={a.owner} placeholder="owner" onChange={(e) => setAcc(i, { ...a, owner: e.target.value })} />
-          <input className={input} type="number" value={a.lamports} placeholder="lamports" onChange={(e) => setAcc(i, { ...a, lamports: Number(e.target.value) })} />
+          <input className={input} type="number" value={a.lamports} min={0} placeholder="lamports" onChange={(e) => setAcc(i, { ...a, lamports: Number(e.target.value) })} />
           <input className={input} value={a.data} placeholder="data (hex)" onChange={(e) => setAcc(i, { ...a, data: e.target.value })} />
           <div className="col-span-2 flex gap-3">{(['is_signer', 'is_writable', 'executable'] as const).map((k) => <label key={k}><input type="checkbox" checked={!!a[k]} onChange={(e) => setAcc(i, { ...a, [k]: e.target.checked })} /> {k.replace('is_', '')}</label>)}
             <button className="ml-auto text-text-mute" onClick={() => setAcc(i, null)}>remove</button></div>
