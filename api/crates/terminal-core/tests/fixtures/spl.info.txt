@@ -1,0 +1,5 @@
+form: image container
+text 64819 words at 0x10000; data 102 words (101 non-zero) at 0x4f4cc; prologue 277 words; program 65096 words from base_pc 0xfbac
+hc 8ca905ae3c62f503de7de86829040f323e098b53dba5fffe09b42f1aad16758b
+program id 65d234ce9ca4d082f487c038abfa76e67f41a0d91e10b9ac388f1e1541d59184
+65096 words against a cap of 4096: does not fit

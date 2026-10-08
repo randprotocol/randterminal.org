@@ -1,0 +1,23 @@
+[package]
+name = "terminal-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+evm2rv = { workspace = true }
+sbpf2rv = { workspace = true }
+rand_zkvm = { workspace = true }
+rand-guest = { workspace = true }
+evm-core = { workspace = true }
+sbpf-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+hex = { workspace = true }
+bs58 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

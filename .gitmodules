@@ -1,0 +1,3 @@
+[submodule "circuits"]
+	path = circuits
+	url = git@github.com:dendisuhubdy/zkp-circuits.git

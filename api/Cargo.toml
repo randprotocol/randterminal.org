@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = ["crates/terminal-core", "crates/terminal-sandbox", "crates/terminal-api"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+authors = ["RandProtocol Contributors"]
+repository = "https://github.com/randprotocol/randterminal.org"
+
+[workspace.dependencies]
+tokio = { version = "1.35", features = ["full"] }
+axum = { version = "0.7", features = ["macros"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hex = "0.4"
+bs58 = "0.5"
+uuid = { version = "1.6", features = ["v4"] }
+async-trait = "0.1"
+futures-util = "0.3"
+base64 = "0.22"
+# circuits (pinned submodule)
+evm2rv = { path = "../circuits/evm2rv" }
+sbpf2rv = { path = "../circuits/sbpf2rv" }
+rand_zkvm = { path = "../circuits/research" }
+rand-guest = { path = "../circuits/rand-guest" }
+evm-core = { path = "../circuits/guests-compiled/evm-core" }
+sbpf-core = { path = "../circuits/guests-compiled/sbpf-core" }
+# internal
+terminal-core = { path = "crates/terminal-core" }
+terminal-sandbox = { path = "crates/terminal-sandbox" }
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+codegen-units = 4
+
+# The emulator and the transpilers must run at speed in tests (SPL Token's transfer is 766 k cycles).
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
