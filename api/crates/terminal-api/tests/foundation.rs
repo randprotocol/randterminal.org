@@ -235,6 +235,35 @@ async fn run_reads_have_their_own_bucket() {
     assert_eq!(ApiConfig::default().runs_get_rpm, 6000);
 }
 
+/// next_src scans up to 40 MB per request: it has its own, tighter bucket, and the debugger's
+/// other reads are not charged to it.
+#[tokio::test]
+async fn next_src_has_its_own_bucket() {
+    let a = app(ApiConfig {
+        scan_rpm: 2,
+        trust_proxy: true,
+        ..ApiConfig::default()
+    });
+    let scan = "/api/v1/runs/00000000000000000000000000000000/next_src?from=0&dir=1";
+    let state = "/api/v1/runs/00000000000000000000000000000000/state?at=0";
+    for _ in 0..2 {
+        assert_ne!(
+            call(&a, req_from("GET", scan, "10.0.0.1")).await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    assert_eq!(
+        call(&a, req_from("GET", scan, "10.0.0.1")).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_ne!(
+        call(&a, req_from("GET", state, "10.0.0.1")).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let d = ApiConfig::default();
+    assert_eq!((d.scan_rpm, d.max_scans), (120, 2));
+}
+
 /// M4: axum's own extractor rejections (bad JSON, bad query, body too large) answer in the
 /// api's {error, message} shape like every other error.
 #[tokio::test]

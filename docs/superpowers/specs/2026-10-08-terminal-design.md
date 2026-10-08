@@ -304,13 +304,17 @@ Base `/api/v1`. JSON everywhere; errors are `{error, message, details?}`.
 Limits: source files ≤ 512 KB total, `.so` ≤ 2 MB, one job per POST, 10 jobs per
 minute per IP and 60 runs per minute per IP (randscan's limiter pattern), 6 000 reads
 under `/runs/` per minute per IP (the debugger's own bucket, `TERMINAL_RUNS_GET_RPM`;
-nginx gives `/api/v1/runs/` its own zone too), 600 other requests per minute, 2 concurrent
+nginx gives `/api/v1/runs/` its own zone too), except `next_src` (a trace scan): 120 per
+minute per IP (`TERMINAL_SCAN_RPM`) and at most 2 scans at once
+(`TERMINAL_MAX_CONCURRENT_SCANS`, 503 "busy, try again"), 600 other requests per minute, 2 concurrent
 sandbox builds globally (`TERMINAL_MAX_CONCURRENT_BUILDS`). At most 3 unfinished jobs per
 client (`TERMINAL_MAX_ACTIVE_JOBS_PER_IP`, 429 `too_many_jobs`) and 32 in all
 (`TERMINAL_MAX_QUEUED_JOBS`, 503). A job keeps its newest 8 runs. Jobs and runs expire one
 hour after last access; a disk cap (`TERMINAL_DATA_CAP_GB`, default 20) evicts
 least-recently-used jobs first, and while usage (the last sweep's measurement plus what
-finished jobs and runs added) is over it, new jobs and runs get 503 and a sweep starts.
+finished jobs and runs added) is over it, the request first sweeps synchronously (one sweep at
+a time, others wait) down to 90% of the cap; it gets 503 only if running jobs and what could
+not be deleted still exceed the cap.
 
 ## 7. Sandbox
 

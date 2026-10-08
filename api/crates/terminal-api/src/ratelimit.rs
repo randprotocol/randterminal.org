@@ -1,5 +1,5 @@
-//! Fixed-window rate limiting per client IP, in memory, in four buckets: job submissions,
-//! run submissions, reads under /runs/ (the debugger), and everything else.
+//! Fixed-window rate limiting per client IP, in memory, in five buckets: job submissions,
+//! run submissions, `next_src` scans, other reads under /runs/ (the debugger), and everything else.
 use crate::{error::AppError, state::AppState};
 use axum::{
     extract::{ConnectInfo, Request, State},
@@ -109,6 +109,9 @@ pub async fn limit(State(state): State<AppState>, mut req: Request, next: Next) 
     let (bucket, rpm) = match (req.method(), path) {
         (&Method::POST, p) if p.ends_with("/jobs") => ("jobs", state.config.jobs_rpm),
         (&Method::POST, p) if p.ends_with("/runs") => ("runs", state.config.runs_rpm),
+        (&Method::GET, p) if run_read && p.ends_with("/next_src") => {
+            ("scan", state.config.scan_rpm)
+        }
         (&Method::GET, _) if run_read => ("runs_get", state.config.runs_get_rpm),
         _ => ("api", state.config.api_rpm),
     };

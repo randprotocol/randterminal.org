@@ -11,6 +11,8 @@ pub struct AppState {
     pub limiter: Arc<RateLimiter>,
     pub store: Arc<JobStore>,
     pub runs: Arc<Semaphore>,
+    /// Permits for `next_src` scans.
+    pub scans: Arc<Semaphore>,
     pub samples: Arc<Vec<SampleView>>,
     pub sandbox: Arc<SandboxProbe>,
 }
@@ -55,6 +57,7 @@ impl AppState {
             }),
             store: JobStore::new(config.clone(), runner),
             runs: Arc::new(Semaphore::new(config.max_runs.max(1))),
+            scans: Arc::new(Semaphore::new(config.max_scans.max(1))),
             limiter: Arc::new(RateLimiter::new()),
             config,
         }

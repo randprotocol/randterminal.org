@@ -25,6 +25,10 @@ pub const MAX_ELF_BYTES: usize = 2 * 1024 * 1024;
 const CONSOLE_KEEP: usize = 64 * 1024;
 const SANDBOX_DOWN: &str = "the build sandbox is unavailable";
 
+fn out_of_storage() -> AppError {
+    AppError::Unavailable("the server is out of job storage; try again in a few minutes".into())
+}
+
 /// Size caps on what the host takes back from a sandbox step.
 const MAX_SOLC_OUTPUT: u64 = 32 << 20;
 const MAX_IMAGE: u64 = 1 << 20;
@@ -167,7 +171,8 @@ impl JobStore {
         self.usage.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// 503 while the data dir is over its cap, and a sweep is started to free space (LRU).
+    /// Non-blocking space check: 503 while the data dir is over its cap, starting a background
+    /// sweep. Handlers call [`JobStore::ensure_space`] first, which sweeps synchronously.
     pub fn check_space(self: &Arc<Self>) -> ApiResult<()> {
         if self.usage.load(Ordering::Relaxed) <= self.config.data_cap_bytes {
             return Ok(());
@@ -179,9 +184,42 @@ impl JobStore {
                 me.sweeping.store(false, Ordering::Release);
             });
         }
-        Err(AppError::Unavailable(
-            "the server is out of job storage; try again in a few minutes".into(),
-        ))
+        Err(out_of_storage())
+    }
+
+    /// Over the cap, sweeps synchronously (off the async threads) down to 90% of it before
+    /// answering. One sweep runs at a time; callers arriving meanwhile wait for it and then look
+    /// at the result. `keep` is a job the request is about to use, which the sweep leaves alone.
+    /// 503 only when running jobs and what could not be deleted still exceed the cap.
+    pub async fn ensure_space(self: &Arc<Self>, keep: Option<&str>) -> ApiResult<()> {
+        let over = |me: &Self| me.usage.load(Ordering::Relaxed) > me.config.data_cap_bytes;
+        if !over(self) {
+            return Ok(());
+        }
+        if !self.sweeping.swap(true, Ordering::AcqRel) {
+            let me = self.clone();
+            let keep = keep.map(str::to_string);
+            // The flag is cleared inside the blocking task, so a dropped request cannot leave it set.
+            let r = tokio::task::spawn_blocking(move || {
+                me.sweep_keeping(unix_now(), keep.as_deref());
+                me.sweeping.store(false, Ordering::Release);
+            })
+            .await;
+            if r.is_err() {
+                self.sweeping.store(false, Ordering::Release);
+            }
+        } else {
+            for _ in 0..6000 {
+                if !self.sweeping.load(Ordering::Acquire) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+        if over(self) {
+            return Err(out_of_storage());
+        }
+        Ok(())
     }
 
     /// A job without a client (tests, tools): only the global queue bound applies.
@@ -420,9 +458,14 @@ impl JobStore {
         }
     }
 
-    /// Removes expired jobs, then least recently used ones while over the disk cap. Jobs whose
+    /// Removes expired jobs, then, when over the disk cap, least recently used ones down to 90% of it. Jobs whose
     /// pipeline is still running are never removed. Blocking: walks the job tree.
     pub fn sweep(&self, now: u64) -> usize {
+        self.sweep_keeping(now, None)
+    }
+
+    /// [`JobStore::sweep`] leaving job `keep` alone, as if it were running.
+    pub fn sweep_keeping(&self, now: u64, keep: Option<&str>) -> usize {
         let Ok(rd) = std::fs::read_dir(&self.root) else {
             return 0;
         };
@@ -431,7 +474,7 @@ impl JobStore {
         for e in rd.filter_map(|e| e.ok()) {
             let id = e.file_name().to_string_lossy().into_owned();
             let size = dir_size(&e.path());
-            if self.running.lock().unwrap().contains_key(&id) {
+            if keep == Some(id.as_str()) || self.running.lock().unwrap().contains_key(&id) {
                 running_size += size;
                 continue;
             }
@@ -453,9 +496,13 @@ impl JobStore {
             }
         });
         let mut total: u64 = running_size + stuck + jobs.iter().map(|j| j.2).sum::<u64>();
+        // Over the cap, evict down to the low-water mark so the next finished job does not
+        // push usage straight back over it.
+        let cap = self.config.data_cap_bytes;
+        let target = if total > cap { cap / 10 * 9 } else { cap };
         jobs.sort_by_key(|j| j.1);
         for (id, _, size) in jobs {
-            if total <= self.config.data_cap_bytes {
+            if total <= target {
                 break;
             }
             if self.remove(&id) {

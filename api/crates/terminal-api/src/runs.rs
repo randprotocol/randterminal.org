@@ -35,6 +35,7 @@ enum Outcome {
 
 pub async fn create(s: &AppState, job: &str, req: RunRequest) -> ApiResult<RunSummary> {
     let view = s.store.view(job)?;
+    s.store.ensure_space(Some(job)).await?;
     s.store.check_space()?;
     if view.build.status != StageStatus::Done {
         return Err(AppError::Conflict("the image is not built yet".into()));

@@ -314,6 +314,16 @@ async fn next_src_finds_the_next_mapped_source_op() {
     )
     .unwrap();
 
+    // Every scan slot taken: 503 busy, not a queue of 40 MB scans; a freed slot works again.
+    let held: Vec<_> = (0..state.config.max_scans)
+        .map(|_| state.scans.clone().try_acquire_owned().unwrap())
+        .collect();
+    let (st, _, v) = call(&app, json_req("GET", &url("from=0&dir=1"), None)).await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("busy"), "{v}");
+    drop(held);
+    assert_eq!(state.scans.available_permits(), state.config.max_scans);
+
     let first = pcs.iter().position(|&p| p == x).unwrap();
     let (st, _, v) = call(&app, json_req("GET", &url("from=0&dir=1"), None)).await;
     assert_eq!(st, StatusCode::OK, "{v}");

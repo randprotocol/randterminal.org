@@ -19,6 +19,7 @@ pub async fn create(
     client: Option<Extension<ClientIp>>,
     Json(req): Json<NewJob>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
+    s.store.ensure_space(None).await?;
     let id = s
         .store
         .create_from(req, client.as_ref().map(|c| c.0 .0.as_str()))?;

@@ -157,10 +157,19 @@ pub async fn next_src(
             "this build has no pc-level source map".into(),
         ));
     };
-    let found = tokio::task::spawn_blocking(move || scan_src(&t, &map, &op_map, q.from, q.dir))
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-        .map_err(runs::trace_err)?;
+    // At most `max_scans` scans at once; the permit is held by the blocking task until it ends.
+    let permit = s
+        .scans
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::Unavailable("busy, try again".into()))?;
+    let found = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        scan_src(&t, &map, &op_map, q.from, q.dir)
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?
+    .map_err(runs::trace_err)?;
     match found {
         Some((clk, src_pc)) => Ok(Json(NextSrc { clk, src_pc })),
         None => Err(AppError::NotFound(format!(

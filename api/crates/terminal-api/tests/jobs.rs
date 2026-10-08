@@ -310,16 +310,99 @@ async fn unfinished_jobs_are_bounded_per_client_and_in_total() {
     assert_eq!(st, StatusCode::CREATED, "{v}");
 }
 
-/// I5: over the data cap, new jobs are refused with 503 until a sweep frees space.
-#[tokio::test(flavor = "multi_thread")]
-async fn jobs_are_refused_over_the_data_cap() {
-    let (app, s, _d) = test_app_with(fake_runner(), |c| c.data_cap_bytes = 1);
+/// Size in bytes of one finished erc20 job under the fake sandbox.
+async fn one_job_size() -> u64 {
+    let (app, s, _d) = test_app(fake_runner());
     let (_, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
-    wait_job(&app, v["id"].as_str().unwrap()).await;
+    let id = v["id"].as_str().unwrap().to_string();
+    wait_job(&app, &id).await;
+    terminal_api::jobs::dir_size(&s.store.dir(&id).unwrap())
+}
+
+/// An app whose cap holds three finished jobs and a half; four finished jobs put it over.
+async fn app_over_cap() -> (
+    axum::Router,
+    terminal_api::state::AppState,
+    tempfile::TempDir,
+    u64,
+    Vec<String>,
+) {
+    let cap = one_job_size().await * 7 / 2;
+    let (app, s, d) = test_app_with(fake_runner(), |c| c.data_cap_bytes = cap);
+    let mut ids = vec![];
+    for _ in 0..4 {
+        let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+        assert_eq!(st, StatusCode::CREATED, "{v}");
+        let id = v["id"].as_str().unwrap().to_string();
+        wait_job(&app, &id).await;
+        ids.push(id);
+    }
+    (app, s, d, cap, ids)
+}
+
+fn old_bytes(s: &terminal_api::state::AppState, ids: &[String]) -> u64 {
+    ids.iter()
+        .filter_map(|i| s.store.dir(i).ok())
+        .map(|d| terminal_api::jobs::dir_size(&d))
+        .sum()
+}
+
+/// At the cap with evictable finished jobs, a new job is accepted at once: the request sweeps
+/// synchronously down to 90% of the cap instead of answering 503.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_job_at_the_cap_sweeps_synchronously_and_is_accepted() {
+    let (app, s, _d, cap, ids) = app_over_cap().await;
+    let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let new = v["id"].as_str().unwrap().to_string();
+    assert!(
+        old_bytes(&s, &ids) <= cap / 10 * 9,
+        "evicted to the low-water mark"
+    );
+    assert!(old_bytes(&s, &ids) > 0, "not everything was evicted");
+    wait_job(&app, &new).await;
+}
+
+/// Only running jobs fill the cap: nothing can be evicted, so the new job gets 503 and the
+/// running one is untouched.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_job_gets_503_when_only_running_jobs_fill_the_cap() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let gate = std::sync::Arc::new(AtomicBool::new(false));
+    let g = gate.clone();
+    let runner: std::sync::Arc<dyn terminal_sandbox::Runner> = std::sync::Arc::new(
+        terminal_sandbox::FakeRunner::new(move |spec: &terminal_sandbox::RunSpec| {
+            while !g.load(Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            fake_answer(spec)
+        }),
+    );
+    let (app, s, _d) = test_app_with(runner, |c| c.data_cap_bytes = 1);
+    let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let running = v["id"].as_str().unwrap().to_string();
+    s.store.sweep(terminal_api::ratelimit::unix_now()); // measures the running job's directory
     let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
     assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{v}");
     assert!(v["message"].as_str().unwrap().contains("storage"), "{v}");
-    s.store.sweep(terminal_api::ratelimit::unix_now());
-    let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
-    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert!(
+        s.store.dir(&running).is_ok(),
+        "a running job is never evicted"
+    );
+    gate.store(true, Ordering::Release);
+    wait_job(&app, &running).await;
+}
+
+/// Two creates at the cap at the same moment: one sweeps, the other waits for it; both succeed.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_creates_at_the_cap_both_succeed_after_one_sweep() {
+    let (app, _s, _d, _cap, _ids) = app_over_cap().await;
+    let post = || call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job())));
+    let ((a, _, va), (b, _, vb)) = tokio::join!(post(), post());
+    assert_eq!(
+        (a, b),
+        (StatusCode::CREATED, StatusCode::CREATED),
+        "{va} {vb}"
+    );
 }

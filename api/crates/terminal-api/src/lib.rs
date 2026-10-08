@@ -34,6 +34,10 @@ pub struct ApiConfig {
     pub api_rpm: u32,
     /// GETs under /runs/ (the debugger steps with state + memory per position).
     pub runs_get_rpm: u32,
+    /// GETs of `/runs/:rid/next_src`, each a scan of up to 40 MB of trace.
+    pub scan_rpm: u32,
+    /// `next_src` scans in flight at once.
+    pub max_scans: usize,
     /// Unfinished jobs one client may have at once.
     pub max_active_jobs_per_ip: usize,
     /// Unfinished jobs across all clients (queued for or in the sandbox).
@@ -57,6 +61,8 @@ impl Default for ApiConfig {
             runs_rpm: 60,
             api_rpm: 600,
             runs_get_rpm: 6000,
+            scan_rpm: 120,
+            max_scans: 2,
             max_active_jobs_per_ip: 3,
             max_queued_jobs: 32,
         }
@@ -103,6 +109,8 @@ impl ApiConfig {
             runs_rpm: num(var("TERMINAL_RUNS_RPM"), d.runs_rpm),
             api_rpm: num(var("TERMINAL_API_RPM"), d.api_rpm),
             runs_get_rpm: num(var("TERMINAL_RUNS_GET_RPM"), d.runs_get_rpm),
+            scan_rpm: num(var("TERMINAL_SCAN_RPM"), d.scan_rpm),
+            max_scans: num(var("TERMINAL_MAX_CONCURRENT_SCANS"), d.max_scans),
             max_active_jobs_per_ip: num(
                 var("TERMINAL_MAX_ACTIVE_JOBS_PER_IP"),
                 d.max_active_jobs_per_ip,
