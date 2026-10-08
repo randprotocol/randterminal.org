@@ -3,3 +3,5 @@
 pub mod rv_disasm;
 pub mod views;
 pub mod sbpf_disasm;
+pub mod evm_analysis;
+pub mod source_map;
