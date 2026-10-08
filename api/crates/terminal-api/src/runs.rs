@@ -23,7 +23,7 @@ fn rid_ok(rid: &str) -> bool { rid.len() == 32 && rid.chars().all(|c| matches!(c
 /// Highest EVM gas limit a run may ask the host interpreter for.
 pub const MAX_GAS: u64 = 30_000_000;
 
-enum Outcome { Bad(String), Ran(RunSummary, Option<String>) }
+enum Outcome { Bad(String), Ran(Box<RunSummary>, Option<String>) }
 
 pub async fn create(s: &AppState, job: &str, req: RunRequest) -> ApiResult<RunSummary> {
     let view = s.store.view(job)?;
@@ -65,18 +65,18 @@ pub async fn create(s: &AppState, job: &str, req: RunRequest) -> ApiResult<RunSu
                 if flag.load(Ordering::SeqCst) { return Ok(Outcome::Bad("cancelled".into())); }
                 trace::write(&rd, &exec)?;
                 if flag.load(Ordering::SeqCst) { let _ = std::fs::remove_dir_all(&rd); }
-                Ok::<_, std::io::Error>(Outcome::Ran(trace::summarize(&rid2, &program, n_in, n_pub, &exec, discovery), None))
+                Ok::<_, std::io::Error>(Outcome::Ran(Box::new(trace::summarize(&rid2, &program, n_in, n_pub, &exec, discovery)), None))
             }
             Err(e) => {
                 let msg = match e { ExecError::OutOfCycles(n) => format!("the run ran out of cycles at {n}"), other => format!("the run trapped: {other:?}") };
-                Ok(Outcome::Ran(trace::trapped(&rid2, &e, n_in, n_pub, discovery), Some(msg)))
+                Ok(Outcome::Ran(Box::new(trace::trapped(&rid2, &e, n_in, n_pub, discovery)), Some(msg)))
             }
         }
     });
     let done = tokio::time::timeout(WALL_CLOCK, work).await;
     let fail = |e: AppError| { cancelled.store(true, Ordering::SeqCst); let _ = std::fs::remove_dir_all(&rdir); e };
     let (summary, trapped) = match done {
-        Ok(Ok(Ok(Outcome::Ran(sum, t)))) => (sum, t),
+        Ok(Ok(Ok(Outcome::Ran(sum, t)))) => (*sum, t),
         Ok(Ok(Ok(Outcome::Bad(m)))) => return Err(fail(AppError::BadRequest(m))),
         Ok(Ok(Err(e))) => return Err(fail(e.into())),
         Ok(Err(e)) => return Err(fail(AppError::Internal(e.to_string()))),
