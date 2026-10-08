@@ -115,9 +115,9 @@ those paths, and the API serves only the host-owned copies.
 
 | Stage | Solidity | Solana Rust | Solana `.so` |
 |---|---|---|---|
-| compile | solc (sandbox) → `creation.hex`, `runtime.hex`, `abi.json`, `metadata.json` | cargo build-sbf (sandbox) → `program.so` | copy upload → `program.so` |
+| compile | solc (sandbox) → `creation.hex`, `runtime.hex`, `abi.json` | cargo build-sbf (sandbox) → `program.so` | copy upload → `program.so` |
 | transpile | `evm2rv::emit::translate` → `contract.c`, blocks view | `sbpf2rv` scan + emit → `program.c`, functions view | same |
-| build | `rand-guest build` (sandbox) on the shim crate → `image.bin`, `guest.elf`, plus the `-g` side build | same | same |
+| build | `rand-guest build` (sandbox) on the shim crate → `image.bin`, plus the `-g` side build (`image-dbg.bin`, `debug-line.txt`) | same | same |
 | run | emulator in-process, on demand, many runs per job | same | same |
 
 ### 4.1 Compile

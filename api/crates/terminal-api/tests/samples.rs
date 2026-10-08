@@ -36,3 +36,19 @@ fn every_default_call_is_well_formed() {
         }
     }
 }
+
+#[test]
+fn a_broken_sample_does_not_blank_the_rest() {
+    let d = tempfile::tempdir().unwrap();
+    let ok = d.path().join("ok");
+    std::fs::create_dir(&ok).unwrap();
+    std::fs::write(ok.join("meta.json"), r#"{"id":"ok","title":"Ok","lang":"solidity","files":["a.sol"]}"#).unwrap();
+    std::fs::write(ok.join("a.sol"), "contract A {}").unwrap();
+    let bad = d.path().join("bad");
+    std::fs::create_dir(&bad).unwrap();
+    std::fs::write(bad.join("meta.json"), "{ not json").unwrap();
+    std::fs::create_dir(d.path().join("empty")).unwrap();
+    std::fs::write(d.path().join("stray.txt"), "x").unwrap();
+    let got = terminal_api::samples::load(d.path()).unwrap();
+    assert_eq!(got.iter().map(|s| s.meta.id.as_str()).collect::<Vec<_>>(), ["ok"]);
+}
