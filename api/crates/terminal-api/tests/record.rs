@@ -3,7 +3,23 @@ mod common;
 use common::{fake::*, *};
 use serde_json::{json, Value};
 
-fn put(dir: &std::path::Path, name: &str, v: &Value) { std::fs::write(dir.join(name), serde_json::to_vec(v).unwrap()).unwrap(); }
+/// Wall-clock fields differ on every recording; zero them so a re-record only diffs on real changes.
+fn scrub(v: &mut Value) {
+    match v {
+        Value::Object(m) => for (k, x) in m.iter_mut() {
+            if matches!(k.as_str(), "created" | "started" | "ended") && x.is_number() { *x = json!(0); } else { scrub(x); }
+        },
+        Value::Array(a) => a.iter_mut().for_each(scrub),
+        _ => {}
+    }
+}
+
+/// Sorted keys (serde_json's map is a BTreeMap here), pretty-printed, timestamps zeroed.
+fn put(dir: &std::path::Path, name: &str, v: &Value) {
+    let mut v = v.clone();
+    scrub(&mut v);
+    std::fs::write(dir.join(name), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn record_e2e_fixtures() {

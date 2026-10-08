@@ -2,7 +2,7 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 const F = (n) => JSON.parse(readFileSync(new URL(`./fixtures/${n}`, import.meta.url)));
-const job = F('job.json'), run = F('run.json'), states = F('states.json'), memory = F('memory.json');
+const job = F('job.json'), run = F('run.json'), states = F('states.json'), memory = F('memory.json'), cycles0 = F('cycles-0.json');
 const send = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 createServer((req, res) => {
   const u = new URL(req.url, 'http://x'); const p = u.pathname.replace(/^\/api\/v1/, '');
@@ -14,7 +14,11 @@ createServer((req, res) => {
   for (const s of ['compile', 'transpile', 'image']) if (p === `/jobs/${job.id}/${s}`) return send(res, 200, F(`${s}.json`));
   if (req.method === 'POST' && p === `/jobs/${job.id}/runs`) return send(res, 201, run);
   if (p === `/runs/${run.rid}`) return send(res, 200, run);
-  if (p === `/runs/${run.rid}/cycles`) return send(res, 200, F('cycles-0.json'));
+  if (p === `/runs/${run.rid}/cycles`) {
+    const page = cycles0; const from = Number(u.searchParams.get('from') ?? 0), count = Number(u.searchParams.get('count') ?? 1024);
+    if (!(from >= page.from && from < page.from + page.cycles.length)) return send(res, 404, { error: 'not_found', message: 'cycles not recorded there' });
+    return send(res, 200, { ...page, from, cycles: page.cycles.slice(from - page.from, from - page.from + count) });
+  }
   if (p === `/runs/${run.rid}/syscalls`) return send(res, 200, F('syscalls.json'));
   if (p === `/runs/${run.rid}/state`) { const s = states[u.searchParams.get('at')]; return s ? send(res, 200, s) : send(res, 404, { error: 'not_found', message: 'not recorded' }); }
   if (p === `/runs/${run.rid}/memory`) { const m = memory[u.searchParams.get('at')]; return m ? send(res, 200, m) : send(res, 404, { error: 'not_found', message: 'not recorded' }); }

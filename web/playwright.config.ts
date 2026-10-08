@@ -16,7 +16,8 @@ export default defineConfig({
       port: 3002,
       env: { TERMINAL_API_URL: live ? (process.env.TERMINAL_API_URL ?? 'http://127.0.0.1:8080') : 'http://127.0.0.1:8799', PORT: '3002', HOSTNAME: '127.0.0.1' },
       timeout: 300_000,
-      reuseExistingServer: !process.env.CI,
+      // Live must never reuse a server built against the mock (rewrites are baked at build time).
+      reuseExistingServer: !live && !process.env.CI,
     },
   ],
 });
