@@ -4,6 +4,7 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -12,6 +13,9 @@ pub const MAX_CAPTURE: usize = 1 << 20;
 
 /// How long, after a timeout kill, the capture readers get to drain before they are abandoned.
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
+
+/// Upper bound on the `docker kill` issued after a timeout, so a hung daemon cannot hang `run`.
+const KILL_GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -103,40 +107,82 @@ impl DockerRunner {
     }
 }
 
-/// Reads to EOF but keeps at most `MAX_CAPTURE` bytes; keeps draining so the child never blocks on a full pipe.
-async fn read_capped(mut r: impl tokio::io::AsyncRead + Unpin) -> String {
-    let mut out = Vec::new();
-    let mut buf = [0u8; 8192];
+type Capture = Arc<Mutex<Vec<u8>>>;
+
+/// Reads to EOF into `buf`, keeping at most `MAX_CAPTURE` bytes; keeps draining so the child never blocks on a full pipe.
+async fn read_capped(mut r: impl tokio::io::AsyncRead + Unpin, buf: Capture) {
+    let mut chunk = [0u8; 8192];
     loop {
-        match r.read(&mut buf).await {
+        match r.read(&mut chunk).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                let room = MAX_CAPTURE.saturating_sub(out.len());
-                out.extend_from_slice(&buf[..n.min(room)]);
+                let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
+                let room = MAX_CAPTURE.saturating_sub(b.len());
+                b.extend_from_slice(&chunk[..n.min(room)]);
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Joins a reader; after a timeout the reader may be held open by a grandchild, so bound the wait and abandon it.
-async fn join_reader(h: tokio::task::JoinHandle<String>, bounded: bool) -> String {
+/// Lossy UTF-8, truncated on a char boundary so the string never exceeds `MAX_CAPTURE` bytes.
+fn finish(buf: &Capture) -> String {
+    let bytes = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut s = String::from_utf8_lossy(&bytes).into_owned();
+    if s.len() > MAX_CAPTURE {
+        let mut end = MAX_CAPTURE;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
+}
+
+/// Waits for a reader; after a timeout the pipe may be held open by a grandchild, so bound the wait and abandon it.
+/// Whatever was captured so far stays in the shared buffer.
+async fn join_reader(h: tokio::task::JoinHandle<()>, bounded: bool) {
     if !bounded {
-        return h.await.unwrap_or_default();
+        let _ = h.await;
+        return;
     }
     let abort = h.abort_handle();
-    match tokio::time::timeout(DRAIN_GRACE, h).await {
-        Ok(r) => r.unwrap_or_default(),
-        Err(_) => {
-            abort.abort();
-            String::new()
+    if tokio::time::timeout(DRAIN_GRACE, h).await.is_err() {
+        abort.abort();
+    }
+}
+
+/// Kills the container by name if the `run` future is dropped before it finishes.
+struct ContainerGuard {
+    program: String,
+    name: String,
+    armed: bool,
+}
+
+impl Drop for ContainerGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::process::Command::new(&self.program)
+                .args(["kill", &self.name])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
         }
     }
+}
+
+fn check_work(p: &std::path::Path) -> Result<(), SandboxError> {
+    let s = p.to_string_lossy();
+    if !p.is_absolute() || s.contains([':', ',', '\n']) {
+        return Err(SandboxError::Spawn(format!("unsafe work path: {s}")));
+    }
+    Ok(())
 }
 
 #[async_trait]
 impl Runner for DockerRunner {
     async fn run(&self, spec: RunSpec) -> Result<RunOutput, SandboxError> {
+        check_work(&spec.work)?;
         let name = format!("terminal-{:016x}", rand_id());
         let mut child = Command::new(&self.program)
             .args(self.args(&spec, &name))
@@ -146,23 +192,23 @@ impl Runner for DockerRunner {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| SandboxError::Spawn(format!("{}: {e}", self.program)))?;
-        let out = tokio::spawn(read_capped(child.stdout.take().expect("piped stdout")));
-        let err = tokio::spawn(read_capped(child.stderr.take().expect("piped stderr")));
+        let mut guard = ContainerGuard { program: self.program.clone(), name: name.clone(), armed: true };
+        let (out_buf, err_buf): (Capture, Capture) = Default::default();
+        let out = tokio::spawn(read_capped(child.stdout.take().expect("piped stdout"), out_buf.clone()));
+        let err = tokio::spawn(read_capped(child.stderr.take().expect("piped stderr"), err_buf.clone()));
         let (status, timed_out) = match tokio::time::timeout(spec.timeout, child.wait()).await {
             Ok(s) => (s?.code().unwrap_or(-1), false),
             Err(_) => {
                 // Stop the container itself; killing the CLI process alone would leave it running.
-                let _ = Command::new(&self.program).args(["kill", &name]).output().await;
+                let _ = tokio::time::timeout(KILL_GRACE, Command::new(&self.program).args(["kill", &name]).output()).await;
                 let _ = child.kill().await;
                 (-1, true)
             }
         };
-        Ok(RunOutput {
-            status,
-            stdout: join_reader(out, timed_out).await,
-            stderr: join_reader(err, timed_out).await,
-            timed_out,
-        })
+        guard.armed = false;
+        join_reader(out, timed_out).await;
+        join_reader(err, timed_out).await;
+        Ok(RunOutput { status, stdout: finish(&out_buf), stderr: finish(&err_buf), timed_out })
     }
 }
 
