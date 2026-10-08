@@ -4,12 +4,13 @@ import { CompilePanel } from './CompilePanel';
 import { AnalysePanel } from './AnalysePanel';
 import { TranspilePanel } from './TranspilePanel';
 import { ImagePanel } from './ImagePanel';
+import { RunPanel } from './RunPanel';
 import { StageError } from './StageError';
 import { useStageView } from '@/lib/useStageView';
 import type { Stage } from '@/lib/job';
 import type { CallForm, CompileView, ImageView, JobView, TranspileView } from '@/lib/types';
 
-export function StagePanel({ stage, job }: { stage: Stage; job: JobView | null; defaultCall: CallForm | null; onFocus: (s: Stage) => void }) {
+export function StagePanel({ stage, job, defaultCall }: { stage: Stage; job: JobView | null; defaultCall: CallForm | null; onFocus: (s: Stage) => void }) {
   const [selected, setSelected] = useState<number | null>(null);
   useEffect(() => { setSelected(null); }, [job?.id]);
   const compile = useStageView<CompileView>(job?.id, 'compile', job?.compile.status === 'done');
@@ -28,6 +29,6 @@ export function StagePanel({ stage, job }: { stage: Stage; job: JobView | null; 
     case 'analyse': return compile.data ? <AnalysePanel view={compile.data} selected={selected} onSelect={setSelected} /> : wait('the compiler view', compile);
     case 'transpile': return transpile.data ? <TranspilePanel view={transpile.data} compile={compile.data} selected={selected} onSelect={setSelected} /> : wait('the transpiler view', transpile);
     case 'image': return image.data ? <ImagePanel jobId={job.id} view={image.data} /> : wait('the RV32IM image', image);
-    case 'run': return image.data ? <p className="p-6 text-text-mute">run</p> : wait('the RV32IM image', image);
+    case 'run': return image.data ? <RunPanel job={job} compile={compile.data} transpile={transpile.data} image={image.data} defaultCall={defaultCall} /> : wait('the RV32IM image', image);
   }
 }
