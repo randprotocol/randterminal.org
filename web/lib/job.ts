@@ -21,6 +21,8 @@ export function reduce(s: JobState, e: JobStreamEvent): JobState {
     case 'stage': return s.job ? { ...s, job: { ...s.job, [e.stage]: e.state } } : s;
     case 'console': return { ...s, console: [...s.console, e.line] };
     case 'done': return s.job ? { ...s, job: { ...s.job, finished: true } } : s;
+    // The stream is gone for good: surface it and free Run (a live job is marked finished).
+    case 'error': return { ...s, error: e.message, job: s.job ? { ...s.job, finished: true } : s.job };
   }
 }
 
@@ -39,11 +41,10 @@ export function filesFor(lang: Lang, files: Record<string, string>, binary?: str
   return Object.entries(files).map(([name, content]) => ({ name, encoding: 'text' as const, content }));
 }
 
-type Action = JobStreamEvent | { type: 'reset' } | { type: 'error'; message: string };
+type Action = JobStreamEvent | { type: 'reset' };
 
 function reducer(s: JobState, a: Action): JobState {
   if (a.type === 'reset') return initial;
-  if (a.type === 'error') return { ...s, error: a.message };
   return reduce(s, a);
 }
 

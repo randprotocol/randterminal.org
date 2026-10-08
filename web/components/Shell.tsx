@@ -49,6 +49,9 @@ export function Shell() {
     return () => window.removeEventListener('resize', fit);
   }, []);
 
+  const imageReady = !!state.job?.finished && state.job.build.status === 'done';
+  useEffect(() => { if (imageReady) setFocused('image'); }, [imageReady]);
+
   const busy = creating || (!!state.job && !state.job.finished);
   const run = useCallback(() => {
     if (busy) return;
@@ -109,7 +112,7 @@ export function Shell() {
 
   const diagnostics: Diagnostic[] = useMemo(() => (state.job?.compile.error?.diagnostics ?? []).filter((d) => d.file === active || d.file.endsWith(`/${active}`)), [state.job, active]);
   const langSelect = (
-        <select aria-label="language" value={lang} onChange={(e) => { const l = e.target.value as Lang; setLang(l); setFiles(STARTER[l]); setBinary(undefined); setActive(Object.keys(STARTER[l])[0] ?? ''); setDefaultCall(null); }}
+        <select aria-label="language" value={lang} onChange={(e) => { const l = e.target.value as Lang; setLang(l); setFiles(STARTER[l]); setBinary(undefined); setActive(Object.keys(STARTER[l])[0] ?? ''); setDefaultCall(null); reset(); setUpErr(null); }}
           className="h-8 rounded-sm border border-border bg-surface px-2 text-text max-lg:h-11">
           <option value="solidity">Solidity</option><option value="solana-rust">Solana (Rust)</option><option value="solana-elf">Solana (.so upload)</option>
         </select>

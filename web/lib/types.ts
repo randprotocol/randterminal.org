@@ -65,4 +65,5 @@ export type JobStreamEvent =
   | { type: 'job'; job: JobView }
   | { type: 'stage'; stage: StageName; state: StageState }
   | { type: 'console'; line: ConsoleLine }
-  | { type: 'done' };
+  | { type: 'done' }
+  | { type: 'error'; message: string };

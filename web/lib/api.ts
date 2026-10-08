@@ -42,6 +42,10 @@ export function subscribeJob(id: string, onEvent: (e: JobStreamEvent) => void): 
   es.addEventListener('stage', (m) => { const d = data(m); onEvent({ type: 'stage', stage: d.stage, state: d.state }); });
   es.addEventListener('console', (m) => { const { type: _t, ...line } = data(m); onEvent({ type: 'console', line }); });
   es.addEventListener('done', () => { onEvent({ type: 'done' }); es.close(); });
-  es.onerror = () => { /* EventSource reconnects by itself; the snapshot event resynchronises state. */ };
+  es.onerror = () => {
+    // While CONNECTING the browser retries by itself and the `job` snapshot resynchronises state;
+    // CLOSED means it gave up (or the server closed without `done`), so end the job visibly.
+    if (es.readyState === EventSource.CLOSED) { onEvent({ type: 'error', message: 'lost connection to the job stream' }); es.close(); }
+  };
   return () => es.close();
 }

@@ -36,3 +36,11 @@ describe('job reducer', () => {
     expect(filesFor('solana-rust', { 'lib.rs': 'fn f(){}', 'Cargo.toml': '[package]' }).map((f) => f.name)).toEqual(['lib.rs', 'Cargo.toml']);
   });
 });
+
+describe('stream loss', () => {
+  it('an error event ends the job with a visible message', () => {
+    const s = reduce(reduce(empty, { type: 'job', job }), { type: 'error', message: 'lost connection to the job stream' });
+    expect(s.error).toBe('lost connection to the job stream');
+    expect(s.job!.finished).toBe(true);
+  });
+});
