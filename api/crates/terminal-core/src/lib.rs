@@ -11,3 +11,4 @@ pub mod trace;
 pub mod tiers;
 pub mod evm_call;
 pub mod sbpf_call;
+pub mod stages;

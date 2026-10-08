@@ -1,0 +1,14 @@
+{
+  "errors": [
+    {"severity": "warning", "type": "Warning", "message": "Unused local variable.",
+     "sourceLocation": {"file": "Token.sol", "start": 41, "end": 47}, "formattedMessage": "Warning: Unused local variable."}
+  ],
+  "contracts": {
+    "Token.sol": {
+      "IERC20": {"abi": [], "evm": {"bytecode": {"object": ""}, "deployedBytecode": {"object": ""}}},
+      "Token": {"abi": [{"type": "function", "name": "f", "inputs": [], "outputs": [], "stateMutability": "pure"}],
+                "evm": {"bytecode": {"object": "6080604052"}, "deployedBytecode": {"object": "60806040"}}},
+      "Helper": {"abi": [], "evm": {"bytecode": {"object": "6001"}, "deployedBytecode": {"object": "6002"}}}
+    }
+  }
+}
