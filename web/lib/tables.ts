@@ -30,27 +30,30 @@ export function tableBars(r: RunSummary, tier: number): Bar[] {
     .filter(([k, , used]) => used > 0 || ['cpu', 'memory', 'alu', 'poseidon2'].includes(k))
     .map(([key, label, used, capacity]) => ({
       key, label, used, capacity, fill: used / capacity,
-      // The server's rule for memory is strictly less than 2^24; every other table may be exactly full.
-      over: key === 'memory' ? used >= capacity : used > capacity,
+      // The server's fits rule is strict for memory (< 2^24) and the CPU table (cycles <= cpu_height - 1); the rest may be exactly full.
+      over: key === 'memory' || key === 'cpu' ? used >= capacity : used > capacity,
       explain: EXPLAIN[key]!,
     }));
 }
 
-/** The sentence above the bars. "needs tier T" only when `run.tiers` confirms T fits: the memory table is
- *  tier-independent, so the server's `tier` (cycles and Poseidon2 only) can name a tier that does not fit. */
+/** The sentence above the bars. "needs tier T" only for the smallest tier `run.tiers` marks fits:true: the
+ *  server's `tier` ignores the memory table (and ALU, Keccak, SHA-256), so it can name a tier that does not fit. */
 export function tierSentence(r: RunSummary): string {
-  const named = r.tier != null ? r.tiers.find((x) => x.tier === r.tier) : undefined;
-  if (named?.fits) {
-    return `This run needs tier ${named.tier}: the smallest whose CPU table holds ${groupDigits(cpuTotal(r))} cycles and whose Poseidon2 table holds ${groupDigits(r.rows.poseidon2_permutations)} permutations. Proving cost grows with the tier.`;
+  const fit = r.tiers.filter((x) => x.fits).sort((a, b) => a.tier - b.tier)[0];
+  if (fit) {
+    return `This run needs tier ${fit.tier}: the smallest whose CPU table holds ${groupDigits(cpuTotal(r))} CPU rows (cycles plus digest rows) and whose Poseidon2 table holds ${groupDigits(r.rows.poseidon2_permutations)} permutations. Proving cost grows with the tier.`;
   }
   const top = r.tiers.length ? Math.max(...r.tiers.map((x) => x.tier)) : 20;
-  const over = tableBars(r, r.tier ?? top).filter((b) => b.over);
-  if (r.tier != null) {
-    const mem = over.find((b) => b.key === 'memory');
-    if (mem) return `Tier ${r.tier} holds the cycles, but the memory table needs ${groupDigits(mem.used)} rows, more than any tier allows.`;
-    if (over.length) return `Tier ${r.tier} holds the cycles, but the ${over.map((b) => b.label).join(' and ')} table${over.length > 1 ? 's need' : ' needs'} more rows than any tier allows.`;
+  const mem = tableBars(r, top).find((b) => b.key === 'memory' && b.over);
+  const at = r.tier ?? top;
+  const over = tableBars(r, at).filter((b) => b.over && b.key !== 'memory');
+  const list = over.map((b) => `the ${b.label} table needs ${groupDigits(b.used)} rows, more than its capacity of ${groupDigits(b.capacity)}`).join('; ');
+  const trap = r.trap ? ` The run trapped (${r.trap}), and a trapped run is never proved.` : '';
+  if (mem) {
+    const head = over.length ? `Tier ${at} does not fit: ${list}; ` : r.tier != null ? `Tier ${at} holds the cycles, but ` : '';
+    return `${head}${over.length || r.tier != null ? 'the' : 'The'} memory table needs ${groupDigits(mem.used)} rows, more than any tier allows.${trap}`;
   }
-  // Largest tier is the most permissive: tables over there are over everywhere.
-  const names = tableBars(r, top).filter((b) => b.over).map((b) => `${b.label} (${groupDigits(b.used)} rows)`);
-  return `No tier fits this run${names.length ? `: ${names.join(', ')} exceed${names.length > 1 ? '' : 's'} the largest tier` : ''}.${r.trap ? ' The run trapped.' : ''}`;
+  if (r.tier != null && over.length) return `Tier ${at} does not fit: ${list}; no larger tier holds it either.${trap}`;
+  if (over.length) return `No tier fits: at tier ${at}, ${list}.${trap}`;
+  return `No tier fits this run.${trap}`;
 }

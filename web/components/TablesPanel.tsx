@@ -21,6 +21,7 @@ export function TablesPanel({ run }: { run: RunSummary }) {
           </button>
         ))}
       </div>
+      {!run.tiers.some((t) => t.fits) && <p className="text-xs text-text-mute">No tier fits, so none can be selected; the bars show the largest tier.</p>}
       <ul className="flex flex-col gap-3">
         {bars.map((b) => (
           <li key={b.key}>

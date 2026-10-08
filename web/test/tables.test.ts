@@ -28,9 +28,17 @@ describe('tableBars', () => {
   });
 });
 
+describe('boundaries', () => {
+  it('CPU is over at exactly cpu_height (server needs cycles <= cpu_height - 1)', () => {
+    const r = { ...run, rows: { ...run.rows, cpu: 2 ** 18 - 3200 } } as RunSummary;
+    expect(cpuTotal(r)).toBe(2 ** 18);
+    expect(tableBars(r, 18)[0]!.over).toBe(true);
+  });
+});
+
 describe('tierSentence', () => {
   it('names the tier when it fits', () => {
-    expect(tierSentence(run)).toMatch(/^This run needs tier 18: the smallest whose CPU table holds 69 435 cycles/);
+    expect(tierSentence(run)).toMatch(/^This run needs tier 18: the smallest whose CPU table holds 69 435 CPU rows \(cycles plus digest rows\)/);
   });
   it('never claims a tier whose fits is false (memory over)', () => {
     const r = { ...run, rows: { ...run.rows, memory: 2 ** 24 + 5 }, tiers: run.tiers.map((t) => ({ ...t, fits: false })) } as RunSummary;
@@ -41,5 +49,25 @@ describe('tierSentence', () => {
   it('says no tier fits when tier is null (trap)', () => {
     const r = { ...run, tier: null, trap: 'x', tiers: run.tiers.map((t) => ({ ...t, fits: false })) } as RunSummary;
     expect(tierSentence(r)).toMatch(/^No tier fits/);
+  });
+  it('ALU over at r.tier but fitting larger: names the smallest fitting tier', () => {
+    const r = { ...run, rows: { ...run.rows, alu: 2 ** 19 + 1 }, tiers: [10, 12, 14, 16, 18, 20].map((t) => ({ ...tier(t, false), fits: t === 20 })) } as RunSummary;
+    expect(tierSentence(r)).toMatch(/^This run needs tier 20:/);
+  });
+  it('ALU over everywhere is worded per tier, not "any tier"', () => {
+    const r = { ...run, rows: { ...run.rows, alu: 2 ** 22 }, tiers: run.tiers.map((t) => ({ ...t, fits: false })) } as RunSummary;
+    const s = tierSentence(r);
+    expect(s).toMatch(/Tier 18 does not fit: the ALU table needs 4 194 304 rows, more than its capacity of 524 288/);
+    expect(s).not.toMatch(/more than any tier/);
+  });
+  it('Keccak over', () => {
+    const r = { ...run, rows: { ...run.rows, keccak_permutations: 40000 }, tiers: run.tiers.map((t) => ({ ...t, fits: false })) } as RunSummary;
+    expect(tierSentence(r)).toMatch(/the Keccak table needs 40 000 rows, more than its capacity of 32 768/);
+  });
+  it('trapped run with a non-null tier mentions the trap', () => {
+    const r = { ...run, trap: 'illegal instruction', tiers: run.tiers.map((t) => ({ ...t, fits: false })) } as RunSummary;
+    const s = tierSentence(r);
+    expect(s).not.toMatch(/needs tier/);
+    expect(s).toMatch(/trapped \(illegal instruction\)/);
   });
 });
