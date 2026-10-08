@@ -1814,11 +1814,13 @@ name = "terminal-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64",
  "futures-util",
  "hex",
  "http-body-util",
+ "libc",
  "rand-guest",
  "rand_zkvm",
  "serde",

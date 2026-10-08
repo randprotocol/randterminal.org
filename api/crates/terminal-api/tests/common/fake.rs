@@ -4,14 +4,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use terminal_api::jobs::JobStore;
 use terminal_core::views::JobView;
-use terminal_sandbox::{FakeRunner, RunOutput, RunSpec, Runner, Tool};
+use terminal_sandbox::{FakeRunner, RunOutput, RunSpec, Runner, SandboxError, Tool};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub fn fixtures_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../terminal-core/tests/fixtures") }
 
 fn ok(stdout: &str) -> RunOutput { RunOutput { status: 0, stdout: stdout.into(), stderr: String::new(), timed_out: false } }
 
-pub fn fake_runner() -> Arc<dyn Runner> {
-    Arc::new(FakeRunner::new(|spec: &RunSpec| {
+pub fn fake_runner() -> Arc<dyn Runner> { Arc::new(FakeRunner::new(fake_answer)) }
+
+/// What the fake sandbox does for one step; other fakes wrap it.
+pub fn fake_answer(spec: &RunSpec) -> RunOutput {
         let w = &spec.work;
         match spec.tool {
             Tool::Solc => {
@@ -42,7 +45,6 @@ pub fn fake_runner() -> Arc<dyn Runner> {
             }
             Tool::RandGuestBuild { debug: true } => RunOutput { status: 66, stdout: String::new(), stderr: "could not add -g to build.rs".into(), timed_out: false },
         }
-    }))
 }
 
 pub async fn wait_finished(store: &JobStore, id: &str) -> JobView {
@@ -52,4 +54,31 @@ pub async fn wait_finished(store: &JobStore, id: &str) -> JobView {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     panic!("job {id} did not finish in 30 s");
+}
+
+/// Holds every step until `open` is called, then answers like `fake_answer`.
+pub struct GatedRunner { pub gate: tokio::sync::Semaphore }
+impl GatedRunner { pub fn new() -> Arc<Self> { Arc::new(Self { gate: tokio::sync::Semaphore::new(0) }) } pub fn open(&self) { self.gate.add_permits(1 << 20); } }
+#[async_trait::async_trait]
+impl Runner for GatedRunner {
+    async fn run(&self, spec: RunSpec) -> Result<RunOutput, SandboxError> {
+        let _p = self.gate.acquire().await.unwrap();
+        Ok(fake_answer(&spec))
+    }
+}
+
+/// Answers like `fake_answer` after 50 ms, recording the most steps that were ever in flight at once.
+#[derive(Default)]
+pub struct CountingRunner { pub active: AtomicUsize, pub peak: AtomicUsize, pub calls: AtomicUsize }
+#[async_trait::async_trait]
+impl Runner for CountingRunner {
+    async fn run(&self, spec: RunSpec) -> Result<RunOutput, SandboxError> {
+        let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let out = fake_answer(&spec);
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Ok(out)
+    }
 }

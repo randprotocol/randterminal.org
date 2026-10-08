@@ -1,11 +1,17 @@
 //! Jobs on disk and the pipeline that fills them. One directory per job (layout at the top of the
 //! plan); `job.json` is rewritten after every change and every change is broadcast for SSE.
+//!
+//! The sandbox is untrusted: a Solana Rust job controls its Cargo.toml, so build scripts run in the
+//! container. Each step therefore mounts only a dedicated `<stage>/sandbox/` directory, and the
+//! host takes back exactly the outputs it expects from there (regular files only, opened without
+//! following links, size-capped) into host-owned paths the container never sees.
 use crate::error::{ApiResult, AppError};
 use crate::ratelimit::unix_now;
 use crate::ApiConfig;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use terminal_core::views::*;
@@ -16,6 +22,11 @@ use tokio::sync::{broadcast, Semaphore};
 pub const MAX_TEXT_BYTES: usize = 512 * 1024;
 pub const MAX_ELF_BYTES: usize = 2 * 1024 * 1024;
 const CONSOLE_KEEP: usize = 64 * 1024;
+
+/// Size caps on what the host takes back from a sandbox step.
+const MAX_SOLC_OUTPUT: u64 = 32 << 20;
+const MAX_IMAGE: u64 = 1 << 20;
+const MAX_DEBUG_LINE: u64 = 64 << 20;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -28,12 +39,15 @@ pub struct JobStore {
     builds: Arc<Semaphore>,
     chans: Mutex<HashMap<String, broadcast::Sender<JobEvent>>>,
     access: Mutex<HashMap<String, u64>>,
+    running: Mutex<HashSet<String>>,
 }
 
 fn queued() -> StageState { StageState { status: StageStatus::Queued, started: None, ended: None, error: None } }
 fn stage_err(kind: &str, message: impl Into<String>) -> StageError { StageError { kind: kind.into(), message: message.into(), diagnostics: vec![] } }
 fn valid_name(n: &str) -> bool { !n.is_empty() && n.len() <= 64 && n.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) && !n.starts_with('.') }
+fn valid_id(id: &str) -> bool { id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit()) }
 fn tail(s: &str) -> String { if s.len() <= CONSOLE_KEEP { s.to_string() } else { let mut i = s.len() - CONSOLE_KEEP; while !s.is_char_boundary(i) { i += 1; } s[i..].to_string() } }
+fn is_regular(p: &Path) -> bool { std::fs::symlink_metadata(p).map(|m| m.file_type().is_file()).unwrap_or(false) }
 
 impl JobStore {
     pub fn new(config: Arc<ApiConfig>, runner: Arc<dyn Runner>) -> Arc<Self> {
@@ -43,26 +57,37 @@ impl JobStore {
             .or_else(|_| std::env::current_dir().map(|c| c.join(&config.data_dir)))
             .unwrap_or_else(|_| config.data_dir.clone())
             .join("jobs");
-        Arc::new(Self { root, builds: Arc::new(Semaphore::new(config.max_builds.max(1))), config, runner, chans: Mutex::new(HashMap::new()), access: Mutex::new(HashMap::new()) })
+        Arc::new(Self {
+            root, builds: Arc::new(Semaphore::new(config.max_builds.max(1))), config, runner,
+            chans: Mutex::new(HashMap::new()), access: Mutex::new(HashMap::new()), running: Mutex::new(HashSet::new()),
+        })
     }
 
-    pub fn dir(&self, id: &str) -> PathBuf { self.root.join(id) }
+    /// The directory of an existing job (validated id).
+    pub fn dir(&self, id: &str) -> ApiResult<PathBuf> { self.check_id(id) }
+    fn path(&self, id: &str) -> PathBuf { self.root.join(id) }
 
     fn check_id(&self, id: &str) -> ApiResult<PathBuf> {
-        if id.len() != 32 || !id.chars().all(|c| c.is_ascii_hexdigit()) { return Err(AppError::NotFound(format!("job {id}"))); }
-        let d = self.dir(id);
-        if !d.join("job.json").exists() { return Err(AppError::NotFound(format!("job {id}"))); }
+        if !valid_id(id) { return Err(AppError::NotFound(format!("job {id}"))); }
+        let d = self.path(id);
+        if !is_regular(&d.join("job.json")) { return Err(AppError::NotFound(format!("job {id}"))); }
         Ok(d)
     }
 
-    pub fn touch(&self, id: &str) { self.access.lock().unwrap().insert(id.to_string(), unix_now()); }
+    /// Records an access to an existing job; unknown ids are ignored.
+    pub fn touch(&self, id: &str) { if self.check_id(id).is_ok() { self.access.lock().unwrap().insert(id.to_string(), unix_now()); } }
+
+    /// How many jobs have a recorded access time.
+    pub fn tracked(&self) -> usize { self.access.lock().unwrap().len() }
 
     pub fn create(self: &Arc<Self>, req: NewJob) -> ApiResult<String> {
         if !(1..=2).contains(&req.options.stage) { return Err(AppError::BadRequest(format!("stage must be 1 or 2, not {}", req.options.stage))); }
         let mut text_total = 0usize;
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut seen = HashSet::new();
         for f in &req.files {
             if !valid_name(&f.name) { return Err(AppError::BadRequest(format!("bad file name {:?}", f.name))); }
+            if !seen.insert(f.name.as_str()) { return Err(AppError::BadRequest(format!("duplicate file name {:?}", f.name))); }
             let bytes = match f.encoding.as_str() {
                 "text" => { text_total += f.content.len(); f.content.clone().into_bytes() }
                 "base64" => base64::engine::general_purpose::STANDARD.decode(&f.content).map_err(|e| AppError::BadRequest(format!("{}: {e}", f.name)))?,
@@ -88,11 +113,13 @@ impl JobStore {
             }
         }
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let dir = self.dir(&id);
-        std::fs::create_dir_all(dir.join("source"))?;
-        for (n, b) in &files { std::fs::write(dir.join("source").join(n), b)?; }
+        let dir = self.path(&id);
+        // Marked running before its directory exists, so a concurrent sweep never sees it unmarked.
+        self.running.lock().unwrap().insert(id.clone());
+        if let Err(e) = std::fs::create_dir_all(dir.join("source")) { self.running.lock().unwrap().remove(&id); return Err(e.into()); }
         let view = JobView { id: id.clone(), lang: req.lang, options: req.options, created: unix_now(), compile: queued(), transpile: queued(), build: queued(), console: vec![], finished: false };
-        write_json(&dir.join("job.json"), &view)?;
+        let written = files.iter().try_for_each(|(n, b)| std::fs::write(dir.join("source").join(n), b)).and_then(|_| write_json(&dir.join("job.json"), &view));
+        if let Err(e) = written { self.running.lock().unwrap().remove(&id); let _ = std::fs::remove_dir_all(&dir); return Err(e.into()); }
         let (tx, _) = broadcast::channel(256);
         self.chans.lock().unwrap().insert(id.clone(), tx);
         self.touch(&id);
@@ -111,7 +138,7 @@ impl JobStore {
         let d = self.check_id(id)?;
         let sub = match stage { "compile" => "compile", "transpile" => "transpile", "image" => "build", _ => return Err(AppError::NotFound(stage.into())) };
         let p = d.join(sub).join("view.json");
-        if !p.exists() { return Err(AppError::Conflict(format!("the {stage} view is not ready"))); }
+        if !is_regular(&p) { return Err(AppError::Conflict(format!("the {stage} view is not ready"))); }
         self.touch(id);
         Ok(serde_json::from_slice(&std::fs::read(p)?)?)
     }
@@ -128,35 +155,42 @@ impl JobStore {
             _ => return Err(AppError::NotFound(name.into())),
         };
         let p = d.join(rel);
-        if !p.exists() { return Err(AppError::NotFound(name.into())); }
+        if !is_regular(&p) { return Err(AppError::NotFound(name.into())); }
         Ok((std::fs::read(p)?, ty))
     }
 
-    pub fn subscribe(&self, id: &str) -> Option<broadcast::Receiver<JobEvent>> { self.chans.lock().unwrap().get(id).map(|t| t.subscribe()) }
+    pub fn subscribe(&self, id: &str) -> Option<broadcast::Receiver<JobEvent>> {
+        if !valid_id(id) { return None; }
+        self.chans.lock().unwrap().get(id).map(|t| t.subscribe())
+    }
 
     fn last_access(&self, id: &str) -> u64 {
         if let Some(t) = self.access.lock().unwrap().get(id) { return *t; }
-        std::fs::metadata(self.dir(id).join("job.json")).and_then(|m| m.modified()).ok()
+        std::fs::symlink_metadata(self.path(id).join("job.json")).and_then(|m| m.modified()).ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0)
     }
 
     fn remove(&self, id: &str) {
-        let _ = std::fs::remove_dir_all(self.dir(id));
+        let _ = std::fs::remove_dir_all(self.path(id));
         self.access.lock().unwrap().remove(id);
         self.chans.lock().unwrap().remove(id);
     }
 
+    /// Removes expired jobs, then least recently used ones while over the disk cap. Jobs whose
+    /// pipeline is still running are never removed. Blocking: walks the job tree.
     pub fn sweep(&self, now: u64) -> usize {
         let Ok(rd) = std::fs::read_dir(&self.root) else { return 0 };
-        let mut jobs: Vec<(String, u64, u64)> = rd.filter_map(|e| e.ok()).map(|e| {
+        let mut jobs: Vec<(String, u64, u64)> = Vec::new();
+        let mut running_size = 0;
+        for e in rd.filter_map(|e| e.ok()) {
             let id = e.file_name().to_string_lossy().into_owned();
             let size = dir_size(&e.path());
-            let at = self.last_access(&id);
-            (id, at, size)
-        }).collect();
+            if self.running.lock().unwrap().contains(&id) { running_size += size; continue; }
+            jobs.push((id.clone(), self.last_access(&id), size));
+        }
         let mut removed = 0;
         jobs.retain(|(id, at, _)| if now.saturating_sub(*at) > self.config.job_ttl_secs { self.remove(id); removed += 1; false } else { true });
-        let mut total: u64 = jobs.iter().map(|j| j.2).sum();
+        let mut total: u64 = running_size + jobs.iter().map(|j| j.2).sum::<u64>();
         jobs.sort_by_key(|j| j.1);
         for (id, _, size) in jobs {
             if total <= self.config.data_cap_bytes { break; }
@@ -166,7 +200,17 @@ impl JobStore {
     }
 
     pub fn spawn_sweeper(self: Arc<Self>) {
-        tokio::spawn(async move { loop { tokio::time::sleep(std::time::Duration::from_secs(300)).await; let n = self.sweep(unix_now()); if n > 0 { tracing::info!("swept {n} job(s)"); } } });
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                let me = self.clone();
+                match tokio::task::spawn_blocking(move || me.sweep(unix_now())).await {
+                    Ok(n) if n > 0 => tracing::info!("swept {n} job(s)"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!("sweep: {e}"),
+                }
+            }
+        });
     }
 }
 
@@ -174,10 +218,46 @@ fn dir_size(p: &Path) -> u64 {
     std::fs::read_dir(p).map(|rd| rd.filter_map(|e| e.ok()).map(|e| { let m = e.metadata().ok(); if m.as_ref().map(|m| m.is_dir()).unwrap_or(false) { dir_size(&e.path()) } else { m.map(|m| m.len()).unwrap_or(0) } }).sum()).unwrap_or(0)
 }
 
+/// Writes `v` as JSON through a fresh temporary file (created with O_EXCL, so never through a
+/// pre-existing link) renamed over `p`.
 pub fn write_json<T: Serialize>(p: &Path, v: &T) -> std::io::Result<()> {
     let tmp = p.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_vec(v)?)?;
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    f.write_all(&serde_json::to_vec(v)?)?;
+    drop(f);
     std::fs::rename(tmp, p)
+}
+
+#[cfg(unix)]
+fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // O_NONBLOCK so a planted FIFO cannot hang the open; it has no effect on regular files.
+    std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(p)
+}
+
+#[cfg(not(unix))]
+fn open_nofollow(p: &Path) -> std::io::Result<std::fs::File> { std::fs::File::open(p) }
+
+/// Takes back an output the sandbox step was asked to produce: `Ok(None)` when it is absent, a
+/// stage error of `kind` when it is anything but a regular file of at most `cap` bytes.
+fn take_output(sandbox: &Path, name: &str, cap: u64, kind: &str) -> Result<Option<Vec<u8>>, StageError> {
+    let p = sandbox.join(name);
+    let invalid = |why: String| stage_err(kind, format!("the sandbox produced an invalid output {name}: {why}"));
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.file_type().is_file() => {}
+        Ok(_) => return Err(invalid("not a regular file".into())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(e)),
+    }
+    let f = open_nofollow(&p).map_err(|e| invalid(e.to_string()))?;
+    let m = f.metadata().map_err(io_err)?;
+    if !m.is_file() { return Err(invalid("not a regular file".into())); }
+    if m.len() > cap { return Err(invalid(format!("{} bytes; the limit is {cap}", m.len()))); }
+    let mut buf = Vec::new();
+    f.take(cap + 1).read_to_end(&mut buf).map_err(io_err)?;
+    if buf.len() as u64 > cap { return Err(invalid(format!("more than {cap} bytes"))); }
+    Ok(Some(buf))
 }
 
 struct Pipeline { store: Arc<JobStore>, dir: PathBuf, view: JobView }
@@ -213,11 +293,13 @@ impl Pipeline {
         self.save();
     }
 
+    /// Runs one tool step with `work` (a `sandbox/` directory) as its only mount.
     async fn sandbox(&mut self, stage: StageName, tool: Tool, work: PathBuf) -> Result<RunOutput, StageError> {
-        let _permit = self.store.builds.clone().acquire_owned().await.map_err(|_| stage_err("build", "the build queue is closed"))?;
+        let _permit = self.store.builds.clone().acquire_owned().await.map_err(|_| stage_err("internal", "the build queue is closed"))?;
         // The container runs as uid 10001 and bind mounts keep host uids: open the tree to it.
-        make_world_writable(&work).map_err(io_err)?;
-        let out = self.store.runner.run(RunSpec { tool, work, timeout: timeout_for(&tool) }).await.map_err(|e| stage_err(stage_kind(stage), e.to_string()))?;
+        let w = work.clone();
+        tokio::task::spawn_blocking(move || make_world_writable(&w)).await.map_err(join_err)?.map_err(io_err)?;
+        let out = self.store.runner.run(RunSpec { tool, work, timeout: timeout_for(&tool) }).await.map_err(|e| stage_err("internal", e.to_string()))?;
         self.console(stage, &out);
         if out.timed_out { return Err(stage_err("timeout", format!("{} took longer than {} s", tool_name(&tool), timeout_for(&tool).as_secs()))); }
         Ok(out)
@@ -239,11 +321,13 @@ impl Pipeline {
         if let Err((stage, e)) = result { self.set(stage, StageStatus::Failed, Some(e)); }
         self.view.finished = true;
         self.save();
+        self.store.running.lock().unwrap().remove(&self.view.id);
         self.emit(JobEvent::Done);
     }
 
     async fn compile(&mut self) -> Result<Compiled, StageError> {
         let cdir = self.dir.join("compile");
+        let sdir = cdir.join("sandbox");
         std::fs::create_dir_all(&cdir).map_err(io_err)?;
         let src = self.dir.join("source");
         match self.view.lang {
@@ -251,9 +335,10 @@ impl Pipeline {
                 let mut files = Vec::new();
                 for e in std::fs::read_dir(&src).map_err(io_err)? { let e = e.map_err(io_err)?; files.push((e.file_name().to_string_lossy().into_owned(), std::fs::read_to_string(e.path()).map_err(io_err)?)); }
                 files.sort();
-                std::fs::write(cdir.join("input.json"), stages::solc_input(&files).to_string()).map_err(io_err)?;
-                let out = self.sandbox(StageName::Compile, Tool::Solc, cdir.clone()).await?;
-                let output: serde_json::Value = std::fs::read(cdir.join("output.json")).ok().and_then(|b| serde_json::from_slice(&b).ok())
+                std::fs::create_dir_all(&sdir).map_err(io_err)?;
+                std::fs::write(sdir.join("input.json"), stages::solc_input(&files).to_string()).map_err(io_err)?;
+                let out = self.sandbox(StageName::Compile, Tool::Solc, sdir.clone()).await?;
+                let output: serde_json::Value = take_output(&sdir, "output.json", MAX_SOLC_OUTPUT, "compile")?.and_then(|b| serde_json::from_slice(&b).ok())
                     .ok_or_else(|| stage_err("compile", format!("solc exited {} without output: {}", out.status, out.stderr.trim())))?;
                 let r = stages::parse_solc_output(&output, &files, self.view.options.contract.as_deref())?;
                 std::fs::write(cdir.join("runtime.hex"), hex::encode(&r.runtime)).map_err(io_err)?;
@@ -265,19 +350,22 @@ impl Pipeline {
                 Ok(Compiled::Evm(code))
             }
             Lang::SolanaRust | Lang::SolanaElf => {
-                if self.view.lang == Lang::SolanaRust {
-                    std::fs::create_dir_all(cdir.join("src")).map_err(io_err)?;
-                    for n in ["lib.rs", "Cargo.toml"] { if src.join(n).exists() { std::fs::copy(src.join(n), cdir.join("src").join(n)).map_err(io_err)?; } }
-                    let out = self.sandbox(StageName::Compile, Tool::BuildSbf, cdir.clone()).await?;
-                    if out.status != 0 || !cdir.join("program.so").exists() {
+                let elf = if self.view.lang == Lang::SolanaRust {
+                    std::fs::create_dir_all(sdir.join("src")).map_err(io_err)?;
+                    for n in ["lib.rs", "Cargo.toml"] { if src.join(n).exists() { std::fs::copy(src.join(n), sdir.join("src").join(n)).map_err(io_err)?; } }
+                    let out = self.sandbox(StageName::Compile, Tool::BuildSbf, sdir.clone()).await?;
+                    let so = if out.status == 0 { take_output(&sdir, "program.so", MAX_ELF_BYTES as u64, "compile")? } else { None };
+                    let Some(so) = so else {
                         let diagnostics = stages::rustc_diagnostics(&out.stdout);
                         let message = diagnostics.iter().find(|d| d.severity == "error").map(|d| format!("{}:{}:{}: {}", d.file, d.line, d.col, d.message)).unwrap_or_else(|| format!("cargo build-sbf exited {}", out.status));
                         return Err(StageError { kind: "compile".into(), message, diagnostics });
-                    }
+                    };
+                    std::fs::write(cdir.join("program.so"), &so).map_err(io_err)?;
+                    so
                 } else {
                     std::fs::copy(src.join("program.so"), cdir.join("program.so")).map_err(io_err)?;
-                }
-                let elf = std::fs::read(cdir.join("program.so")).map_err(io_err)?;
+                    std::fs::read(cdir.join("program.so")).map_err(io_err)?
+                };
                 let a = tokio::task::spawn_blocking(move || sbpf_analysis::analyse(&elf)).await.map_err(join_err)?.map_err(|e| match e {
                     sbpf_analysis::SbpfError::Unsupported(w) => stage_err("unsupported", w.detail),
                     other => stage_err("compile", other.to_string()),
@@ -310,19 +398,25 @@ impl Pipeline {
 
     async fn build(&mut self, t: Transpiled) -> Result<(), StageError> {
         let bdir = self.dir.join("build");
-        let shim = bdir.join("shim");
+        let sdir = bdir.join("sandbox");
+        let shim = sdir.join("shim");
         let c_text = std::fs::read_to_string(self.dir.join("transpile").join(t.c_file)).map_err(io_err)?;
         if t.c_file == "contract.c" { stages::write_evm_shim(&shim, "contract", &c_text) } else { stages::write_sbpf_shim(&shim, "program", &c_text) }.map_err(io_err)?;
-        let out = self.sandbox(StageName::Build, Tool::RandGuestBuild { debug: false }, bdir.clone()).await?;
-        if out.status != 0 || !bdir.join("image.bin").exists() {
+        let out = self.sandbox(StageName::Build, Tool::RandGuestBuild { debug: false }, sdir.clone()).await?;
+        let image = if out.status == 0 { take_output(&sdir, "image.bin", MAX_IMAGE, "build")? } else { None };
+        let Some(image) = image else {
             return Err(stage_err("build", format!("rand-guest build exited {}: {}", out.status, out.stderr.lines().last().unwrap_or(""))));
-        }
-        let dbg = self.sandbox(StageName::Build, Tool::RandGuestBuild { debug: true }, bdir.clone()).await;
-        let image = std::fs::read(bdir.join("image.bin")).map_err(io_err)?;
+        };
+        std::fs::write(bdir.join("image.bin"), &image).map_err(io_err)?;
+        let dbg = self.sandbox(StageName::Build, Tool::RandGuestBuild { debug: true }, sdir.clone()).await;
         let debug_line = match dbg {
             Ok(o) if o.status == 0 => {
-                let same = std::fs::read(bdir.join("image-dbg.bin")).ok().and_then(|d| Some((rand_guest::pack::split(&image).ok()?.1, rand_guest::pack::split(&d).ok()?.1))).map(|(a, b)| a == b).unwrap_or(false);
-                if same { std::fs::read_to_string(bdir.join("debug-line.txt")).ok() } else { None }
+                let dbg_image = take_output(&sdir, "image-dbg.bin", MAX_IMAGE, "build")?;
+                let dl = take_output(&sdir, "debug-line.txt", MAX_DEBUG_LINE, "build")?;
+                if let Some(d) = &dbg_image { std::fs::write(bdir.join("image-dbg.bin"), d).map_err(io_err)?; }
+                if let Some(d) = &dl { std::fs::write(bdir.join("debug-line.txt"), d).map_err(io_err)?; }
+                let same = dbg_image.and_then(|d| Some((rand_guest::pack::split(&image).ok()?.1, rand_guest::pack::split(&d).ok()?.1))).map(|(a, b)| a == b).unwrap_or(false);
+                if same { dl.and_then(|b| String::from_utf8(b).ok()) } else { None }
             }
             _ => None,
         };
@@ -356,5 +450,4 @@ pub fn make_world_writable(_: &Path) -> std::io::Result<()> { Ok(()) }
 
 fn io_err(e: std::io::Error) -> StageError { stage_err("internal", e.to_string()) }
 fn join_err(e: tokio::task::JoinError) -> StageError { stage_err("internal", e.to_string()) }
-fn stage_kind(s: StageName) -> &'static str { match s { StageName::Compile => "compile", StageName::Transpile => "transpile", StageName::Build => "build" } }
 fn tool_name(t: &Tool) -> &'static str { match t { Tool::Solc => "solc", Tool::BuildSbf => "cargo build-sbf", Tool::RandGuestBuild { .. } => "rand-guest build" } }

@@ -4,10 +4,23 @@ use std::sync::Arc;
 use terminal_api::{jobs::JobStore, ApiConfig};
 use terminal_core::views::*;
 
-fn store() -> (Arc<JobStore>, tempfile::TempDir) {
+fn store() -> (Arc<JobStore>, tempfile::TempDir) { store_with(fake_runner()) }
+
+fn store_with(runner: Arc<dyn terminal_sandbox::Runner>) -> (Arc<JobStore>, tempfile::TempDir) {
     let d = tempfile::tempdir().unwrap();
     let cfg = ApiConfig { data_dir: d.path().into(), ..ApiConfig::default() };
-    (JobStore::new(Arc::new(cfg), fake_runner()), d)
+    (JobStore::new(Arc::new(cfg), runner), d)
+}
+
+fn store_cfg(runner: Arc<dyn terminal_sandbox::Runner>, f: impl FnOnce(&mut ApiConfig)) -> (Arc<JobStore>, tempfile::TempDir) {
+    let d = tempfile::tempdir().unwrap();
+    let mut cfg = ApiConfig { data_dir: d.path().into(), ..ApiConfig::default() };
+    f(&mut cfg);
+    (JobStore::new(Arc::new(cfg), runner), d)
+}
+
+fn rust_job(src: &str) -> NewJob {
+    NewJob { lang: Lang::SolanaRust, files: vec![FileIn { name: "lib.rs".into(), encoding: "text".into(), content: src.into() }], options: JobOptions::default() }
 }
 
 fn sol(src: &str) -> NewJob {
@@ -94,6 +107,11 @@ fn validation() {
     assert!(bad(NewJob { lang: Lang::SolanaRust, files: vec![FileIn { name: "main.rs".into(), encoding: "text".into(), content: "".into() }], options: JobOptions::default() }).contains("lib.rs"));
     let mut j = sol("contract A {}"); j.options.stage = 3;
     assert!(bad(j).contains("stage"));
+    let mut j = sol("contract A {}"); j.files.push(j.files[0].clone());
+    assert!(bad(j).contains("duplicate"));
+    use base64::Engine;
+    let elf = base64::engine::general_purpose::STANDARD.encode(vec![0u8; terminal_api::jobs::MAX_ELF_BYTES + 1]);
+    assert!(bad(NewJob { lang: Lang::SolanaElf, files: vec![FileIn { name: "program.so".into(), encoding: "base64".into(), content: elf }], options: JobOptions::default() }).contains("too large"));
 }
 
 #[tokio::test]
@@ -106,24 +124,174 @@ async fn sweep_drops_expired_jobs() {
     assert!(s.view(&id).is_err());
 }
 
-/// The container runs as uid 10001 while bind mounts keep host uids, so every stage work
-/// directory (and what is in it) must be world-writable before the sandbox step runs.
+/// The container runs as uid 10001 while bind mounts keep host uids, so each step's sandbox/
+/// directory (and what is in it) must be world-writable; the host-owned directories must not be.
 #[cfg(unix)]
 #[tokio::test]
-async fn sandbox_work_dirs_are_world_writable() {
+async fn only_the_sandbox_dirs_are_world_writable() {
     use std::os::unix::fs::PermissionsExt;
     let (s, _d) = store();
     let id = s.create(sol("contract ERC20 {}")).unwrap();
     let v = wait_finished(&s, &id).await;
     assert_eq!(v.build.status, StageStatus::Done, "{v:?}");
     let mode = |p: std::path::PathBuf| std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
-    let dir = s.dir(&id);
-    assert_eq!(mode(dir.join("compile")), 0o777);
-    assert_eq!(mode(dir.join("compile/input.json")) & 0o666, 0o666);
-    assert_eq!(mode(dir.join("build")), 0o777);
-    assert_eq!(mode(dir.join("build/shim")), 0o777);
-    assert_eq!(mode(dir.join("build/shim/src")), 0o777);
-    assert_eq!(mode(dir.join("build/shim/contract.c")) & 0o666, 0o666);
-    assert_eq!(mode(dir.join("build/shim/src/main.rs")) & 0o666, 0o666);
+    let dir = s.dir(&id).unwrap();
     assert!(dir.is_absolute(), "the docker runner rejects relative work paths");
+    assert_eq!(mode(dir.join("compile/sandbox")), 0o777);
+    assert_eq!(mode(dir.join("compile/sandbox/input.json")) & 0o666, 0o666);
+    assert_eq!(mode(dir.join("build/sandbox")), 0o777);
+    assert_eq!(mode(dir.join("build/sandbox/shim")), 0o777);
+    assert_eq!(mode(dir.join("build/sandbox/shim/src")), 0o777);
+    assert_eq!(mode(dir.join("build/sandbox/shim/contract.c")) & 0o666, 0o666);
+    assert_eq!(mode(dir.join("build/sandbox/shim/src/main.rs")) & 0o666, 0o666);
+    for host in ["", "compile", "transpile", "build", "source", "compile/abi.json", "build/image.bin", "job.json"] {
+        assert_eq!(mode(dir.join(host)) & 0o002, 0, "{host} must not be world-writable");
+    }
+}
+
+/// A Solana Rust job controls Cargo.toml, so code runs in the container: a program.so planted as a
+/// symlink to a host file must fail the stage, and nothing of the target may be served.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_sandbox_output_fails_the_stage() {
+    let secret = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(secret.path(), "host secret").unwrap();
+    let target = secret.path().to_path_buf();
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(move |spec: &terminal_sandbox::RunSpec| {
+        if spec.tool == terminal_sandbox::Tool::BuildSbf {
+            std::os::unix::fs::symlink(&target, spec.work.join("program.so")).unwrap();
+            return terminal_sandbox::RunOutput { status: 0, stdout: String::new(), stderr: String::new(), timed_out: false };
+        }
+        fake_answer(spec)
+    }));
+    let (s, _d) = store_with(runner);
+    let id = s.create(rust_job("pub fn x() {}")).unwrap();
+    let v = wait_finished(&s, &id).await;
+    let e = v.compile.error.clone().unwrap_or_else(|| panic!("{v:?}"));
+    assert_eq!(e.kind, "compile");
+    assert!(e.message.contains("invalid output"), "{}", e.message);
+    assert!(matches!(s.file(&id, "program.so"), Err(terminal_api::error::AppError::NotFound(_))));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_solc_output_fails_the_stage() {
+    let secret = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(secret.path(), "{}").unwrap();
+    let target = secret.path().to_path_buf();
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(move |spec: &terminal_sandbox::RunSpec| {
+        if spec.tool == terminal_sandbox::Tool::Solc {
+            std::os::unix::fs::symlink(&target, spec.work.join("output.json")).unwrap();
+            return terminal_sandbox::RunOutput::default();
+        }
+        fake_answer(spec)
+    }));
+    let (s, _d) = store_with(runner);
+    let id = s.create(sol("contract ERC20 {}")).unwrap();
+    let v = wait_finished(&s, &id).await;
+    assert!(v.compile.error.unwrap().message.contains("invalid output"));
+}
+
+/// Links named like host artifacts inside sandbox/ are ignored: nothing is written through them.
+#[cfg(unix)]
+#[tokio::test]
+async fn links_planted_in_the_sandbox_are_never_written_through() {
+    let victim = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(victim.path(), "untouched").unwrap();
+    let target = victim.path().to_path_buf();
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(move |spec: &terminal_sandbox::RunSpec| {
+        let out = fake_answer(spec);
+        for n in ["abi.json", "view.json", "view.tmp", "abi.tmp", "runtime.hex", "creation.hex", "job.json", "job.tmp", "source_map.json", "op_map.json", "contract.c"] {
+            let _ = std::os::unix::fs::symlink(&target, spec.work.join(n));
+        }
+        out
+    }));
+    let (s, _d) = store_with(runner);
+    let id = s.create(sol("contract ERC20 {}")).unwrap();
+    let v = wait_finished(&s, &id).await;
+    assert_eq!(v.build.status, StageStatus::Done, "{v:?}");
+    assert_eq!(std::fs::read_to_string(victim.path()).unwrap(), "untouched");
+    let dir = s.dir(&id).unwrap();
+    for host in ["compile/abi.json", "compile/view.json", "compile/runtime.hex", "build/view.json", "job.json"] {
+        assert!(std::fs::symlink_metadata(dir.join(host)).unwrap().file_type().is_file(), "{host}");
+    }
+}
+
+/// `file` and `stage_view` serve regular files only.
+#[cfg(unix)]
+#[tokio::test]
+async fn served_files_must_be_regular() {
+    let (s, _d) = store();
+    let id = s.create(sol("contract ERC20 {}")).unwrap();
+    wait_finished(&s, &id).await;
+    let dir = s.dir(&id).unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    for rel in ["compile/abi.json", "compile/view.json"] {
+        std::fs::remove_file(dir.join(rel)).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.join(rel)).unwrap();
+    }
+    assert!(s.file(&id, "abi.json").is_err());
+    assert!(s.stage_view(&id, "compile").is_err());
+}
+
+#[tokio::test]
+async fn sweep_leaves_running_jobs_alone() {
+    let gated = GatedRunner::new();
+    let (s, _d) = store_with(gated.clone());
+    let id = s.create(sol("contract ERC20 {}")).unwrap();
+    while s.view(&id).unwrap().compile.status != StageStatus::Running { tokio::time::sleep(std::time::Duration::from_millis(5)).await; }
+    assert_eq!(s.sweep(terminal_api::ratelimit::unix_now() + 3601), 0, "a running job is never swept");
+    assert!(s.view(&id).is_ok());
+    gated.open();
+    let v = wait_finished(&s, &id).await;
+    assert_eq!(v.build.status, StageStatus::Done, "{v:?}");
+    assert_eq!(s.sweep(terminal_api::ratelimit::unix_now() + 3601), 1);
+}
+
+#[tokio::test]
+async fn ids_are_validated() {
+    let (s, _d) = store();
+    assert!(s.dir("../etc").is_err());
+    assert!(s.dir(&"0".repeat(32)).is_err(), "no such job");
+    assert!(s.subscribe("../etc").is_none());
+    for i in 0..100 { s.touch(&format!("junk{i}")); }
+    assert_eq!(s.sweep(terminal_api::ratelimit::unix_now()), 0);
+    assert_eq!(s.tracked(), 0, "touching unknown ids does not grow the access map");
+}
+
+async fn peak_with(max_builds: usize) -> usize {
+    let counting = Arc::new(CountingRunner::default());
+    let (s, _d) = store_cfg(counting.clone(), |c| c.max_builds = max_builds);
+    let a = s.create(sol("contract ERC20 {}")).unwrap();
+    let b = s.create(sol("contract ERC20 {}")).unwrap();
+    for id in [a, b] { assert_eq!(wait_finished(&s, &id).await.build.status, StageStatus::Done); }
+    assert_eq!(counting.calls.load(std::sync::atomic::Ordering::SeqCst), 6);
+    counting.peak.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn max_builds_bounds_sandbox_concurrency() {
+    assert_eq!(peak_with(1).await, 1);
+    assert_eq!(peak_with(2).await, 2, "the bound is the semaphore, not the test");
+}
+
+#[tokio::test]
+async fn a_reproducing_debug_build_gives_a_pc_source_map() {
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(|spec: &terminal_sandbox::RunSpec| {
+        if spec.tool == (terminal_sandbox::Tool::RandGuestBuild { debug: true }) {
+            std::fs::copy(spec.work.join("image.bin"), spec.work.join("image-dbg.bin")).unwrap();
+            std::fs::write(spec.work.join("debug-line.txt"), "file_names[  0]:\n name: \"contract.c\"\nAddress Line Column File ISA Discriminator OpIndex Flags\n0x0000000000010000 7 5 0 0 0 0 is_stmt\n").unwrap();
+            return terminal_sandbox::RunOutput::default();
+        }
+        fake_answer(spec)
+    }));
+    let (s, _d) = store_with(runner);
+    let id = s.create(sol("contract ERC20 {}")).unwrap();
+    let v = wait_finished(&s, &id).await;
+    assert_eq!(v.build.status, StageStatus::Done, "{v:?}");
+    let i: ImageView = serde_json::from_value(s.stage_view(&id, "image").unwrap()).unwrap();
+    assert!(i.source_map_note.is_none(), "{:?}", i.source_map_note);
+    assert_eq!(i.source_map.unwrap().pc_to_c, vec![(0x10000, 7)]);
+    let dir = s.dir(&id).unwrap();
+    assert!(dir.join("build/debug-line.txt").is_file() && dir.join("build/image-dbg.bin").is_file());
 }
