@@ -8,3 +8,4 @@ pub mod source_map;
 pub mod sbpf_analysis;
 pub mod image;
 pub mod trace;
+pub mod tiers;

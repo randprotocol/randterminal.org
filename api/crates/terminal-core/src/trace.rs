@@ -235,3 +235,39 @@ impl Trace {
         Ok(out)
     }
 }
+
+use crate::tiers;
+use crate::views::{DiscoveryStep, RunSummary, TableRows};
+use rand_zkvm::emulator::ExecError;
+use rand_zkvm::isa::Program;
+
+pub fn summarize(rid: &str, program: &Program, n_in: usize, n_pub: usize, exec: &Execution, discovery: Vec<DiscoveryStep>) -> RunSummary {
+    let rows = tiers::rows(program, n_in, n_pub, exec);
+    let total = tiers::cycles_total(&rows);
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut hits: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    for e in &exec.events {
+        if let Some(s) = &e.sys { *counts.entry(syscall_view(0, s).kind).or_default() += 1; }
+        *hits.entry(e.pc).or_default() += 1;
+    }
+    let mut hot: Vec<(u32, usize)> = hits.into_iter().collect();
+    hot.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    hot.truncate(32);
+    RunSummary {
+        rid: rid.into(), cycles: exec.cycles(), halted: exec.halted, trap: None, trap_clk: None,
+        outputs: exec.outputs, status: exec.outputs[0], tier: tiers::pick(&rows, total),
+        tiers: tiers::capacities(&rows, total), rows,
+        syscall_counts: counts.into_iter().collect(), hot_pcs: hot,
+        input_words: n_in, public_words: n_pub, discovery,
+    }
+}
+
+pub fn trapped(rid: &str, err: &ExecError, n_in: usize, n_pub: usize, discovery: Vec<DiscoveryStep>) -> RunSummary {
+    let rows = TableRows { cpu: 0, memory: 0, alu: 0, poseidon2_permutations: 0, keccak_permutations: 0, sha256_compressions: 0, digest_rows: 0 };
+    RunSummary {
+        rid: rid.into(), cycles: 0, halted: false, trap: Some(format!("{err:?}")),
+        trap_clk: match err { ExecError::OutOfCycles(n) => Some(*n as u32), _ => None },
+        outputs: [0; 8], status: 2, tier: None, tiers: tiers::capacities(&rows, 0), rows,
+        syscall_counts: vec![], hot_pcs: vec![], input_words: n_in, public_words: n_pub, discovery,
+    }
+}
