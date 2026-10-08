@@ -337,10 +337,26 @@ impl JobStore {
             .unwrap_or(0)
     }
 
-    fn remove(&self, id: &str) {
-        let _ = std::fs::remove_dir_all(self.path(id));
+    /// Deletes a job's tree; false (logged) when some of it could not be deleted. A read-only
+    /// directory this process owns is opened up and the delete retried once; what the container
+    /// left that we can neither change nor delete stays for a later sweep.
+    fn remove(&self, id: &str) -> bool {
+        let p = self.path(id);
+        let mut r = std::fs::remove_dir_all(&p);
+        if r.is_err() && p.exists() {
+            let _ = make_world_writable(&p);
+            r = std::fs::remove_dir_all(&p);
+        }
         self.access.lock().unwrap().remove(id);
         self.chans.lock().unwrap().remove(id);
+        match r {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(e) => {
+                tracing::warn!("sweep: could not delete all of job {id}: {e}");
+                false
+            }
+        }
     }
 
     /// Removes expired jobs, then least recently used ones while over the disk cap. Jobs whose
@@ -866,12 +882,10 @@ impl Pipeline {
                 sdir.clone(),
             )
             .await?;
-        let image = if out.status == 0 {
-            take_output(&sdir, "image.bin", MAX_IMAGE, "build")?
-        } else {
-            None
-        };
-        let Some(image) = image else {
+        // rand-guest still writes image.bin when its checker rejects the image (over the cap, a
+        // forbidden instruction) and then exits 1: that image is shown, with fits and findings
+        // from image::view. Only a build that wrote no image fails the stage.
+        let Some(image) = take_output(&sdir, "image.bin", MAX_IMAGE, "build")? else {
             return Err(stage_err(
                 "build",
                 format!(
@@ -882,13 +896,17 @@ impl Pipeline {
             ));
         };
         std::fs::write(bdir.join("image.bin"), &image).map_err(io_err)?;
-        let dbg = self
-            .sandbox(
+        // A rejected image's -g twin would be rejected too, before its line table is dumped.
+        let dbg = if out.status == 0 {
+            self.sandbox(
                 StageName::Build,
                 Tool::RandGuestBuild { debug: true },
                 sdir.clone(),
             )
-            .await;
+            .await
+        } else {
+            Err(stage_err("build", "the release image was rejected"))
+        };
         let debug_line = match dbg {
             Ok(o) if o.status == 0 => {
                 let dbg_image = take_output(&sdir, "image-dbg.bin", MAX_IMAGE, "build")?;
@@ -935,12 +953,55 @@ impl Pipeline {
 
 /// `chmod -R a+rwX`: everyone may read and write, directories (and files already executable by
 /// someone) may be entered or executed. Symlinks are left alone, never followed.
+///
+/// The container runs as uid 10001, so a previous step can leave entries this process does not
+/// own: those are skipped (only their owner may chmod them; the container's `umask 000` and its
+/// closing `chmod -R a+rwX` already opened them), as is anything that vanishes or refuses while
+/// walking. Only a missing or unreadable `p` itself is an error.
 #[cfg(unix)]
 pub fn make_world_writable(p: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    make_world_writable_as(p, unsafe { libc::geteuid() })
+}
+
+/// [`make_world_writable`] as if this process ran as `euid` (tests use it to stand in for the
+/// container's uid, which an unprivileged test cannot create files as).
+#[cfg(unix)]
+pub fn make_world_writable_as(p: &Path, euid: u32) -> std::io::Result<()> {
     let m = std::fs::symlink_metadata(p)?;
-    if m.file_type().is_symlink() {
-        return Ok(());
+    open_up(p, &m, euid);
+    if m.is_dir() {
+        for e in std::fs::read_dir(p)? {
+            match e {
+                Ok(e) => walk_open_up(&e.path(), euid),
+                Err(e) => tracing::warn!("make_world_writable: {}: {e}", p.display()),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn walk_open_up(p: &Path, euid: u32) {
+    let Ok(m) = std::fs::symlink_metadata(p) else {
+        return;
+    };
+    open_up(p, &m, euid);
+    if !m.is_dir() {
+        return;
+    }
+    match std::fs::read_dir(p) {
+        Ok(rd) => rd.flatten().for_each(|e| walk_open_up(&e.path(), euid)),
+        Err(e) => tracing::debug!("make_world_writable: skipping {}: {e}", p.display()),
+    }
+}
+
+/// Adds a+rw (and a+x where anyone has x, or on directories) to an entry this uid owns.
+#[cfg(unix)]
+fn open_up(p: &Path, m: &std::fs::Metadata, euid: u32) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    if m.file_type().is_symlink() || m.uid() != euid {
+        return;
     }
     let mode = m.permissions().mode();
     let x = if m.is_dir() || mode & 0o111 != 0 {
@@ -950,14 +1011,10 @@ pub fn make_world_writable(p: &Path) -> std::io::Result<()> {
     };
     let want = mode | 0o666 | x;
     if want != mode {
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(want))?;
-    }
-    if m.is_dir() {
-        for e in std::fs::read_dir(p)? {
-            make_world_writable(&e?.path())?;
+        if let Err(e) = std::fs::set_permissions(p, std::fs::Permissions::from_mode(want)) {
+            tracing::warn!("make_world_writable: {}: {e}", p.display());
         }
     }
-    Ok(())
 }
 
 #[cfg(not(unix))]

@@ -481,3 +481,106 @@ async fn a_reproducing_debug_build_gives_a_pc_source_map() {
         dir.join("build/debug-line.txt").is_file() && dir.join("build/image-dbg.bin").is_file()
     );
 }
+
+/// C1: the container (another uid) leaves entries the API user cannot chmod. Those are skipped,
+/// never an error, so the next sandbox step (the -g debug build) still runs.
+#[cfg(unix)]
+#[test]
+fn make_world_writable_skips_entries_it_does_not_own() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let d = tempfile::tempdir().unwrap();
+    let sub = d.path().join("target/release");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("prog"), "x").unwrap();
+    std::fs::set_permissions(sub.join("prog"), std::fs::Permissions::from_mode(0o444)).unwrap();
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let me = std::fs::metadata(d.path()).unwrap().uid();
+    // As if every entry belonged to the container's uid: nothing is changed, nothing fails.
+    terminal_api::jobs::make_world_writable_as(d.path(), me.wrapping_add(1)).unwrap();
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&sub), 0o555);
+    assert_eq!(mode(&sub.join("prog")), 0o444);
+    // As the owner: read-only entries (a file in a read-only dir) are opened up.
+    terminal_api::jobs::make_world_writable(d.path()).unwrap();
+    assert_eq!(mode(&sub), 0o777);
+    assert_eq!(mode(&sub.join("prog")), 0o666);
+}
+
+/// C1: sweep deletes a job whose tree holds read-only directories (as a cargo target/ left by the
+/// container can), and a removal error never stops the sweep.
+#[cfg(unix)]
+#[tokio::test]
+async fn sweep_removes_job_dirs_with_read_only_nested_dirs() {
+    use std::os::unix::fs::PermissionsExt;
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(
+        |spec: &terminal_sandbox::RunSpec| {
+            if spec.tool == (terminal_sandbox::Tool::RandGuestBuild { debug: true }) {
+                let deps = spec.work.join("shim-dbg/target/release/deps");
+                std::fs::create_dir_all(&deps).unwrap();
+                std::fs::write(deps.join("libx.rlib"), "x").unwrap();
+                for p in [deps.clone(), deps.parent().unwrap().to_path_buf()] {
+                    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o555)).unwrap();
+                }
+            }
+            fake_answer(spec)
+        },
+    ));
+    let (s, _d) = store_with(runner);
+    let id = s.create(sol("contract ERC20 {}")).unwrap();
+    assert_eq!(wait_finished(&s, &id).await.build.status, StageStatus::Done);
+    let dir = s.dir(&id).unwrap();
+    assert!(dir
+        .join("build/sandbox/shim-dbg/target/release/deps/libx.rlib")
+        .exists());
+    assert_eq!(s.sweep(terminal_api::ratelimit::unix_now() + 3601), 1);
+    assert!(!dir.exists(), "the whole job tree is gone");
+}
+
+/// I1: rand-guest writes image.bin and exits 1 when the checker rejects it (or it is over the
+/// cap). The build is done and the image view reports fits:false; only a missing image fails.
+#[tokio::test]
+async fn a_rejected_image_is_built_and_shown_as_not_fitting() {
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(
+        |spec: &terminal_sandbox::RunSpec| {
+            let out = fake_answer(spec);
+            if spec.tool == (terminal_sandbox::Tool::RandGuestBuild { debug: false }) {
+                return terminal_sandbox::RunOutput {
+                    status: 1,
+                    stderr: "Error: the image is rejected by the checker (it was still written)"
+                        .into(),
+                    ..out
+                };
+            }
+            out
+        },
+    ));
+    let (s, _d) = store_cfg(runner, |c| c.max_program_words = 1000);
+    let id = s.create(sol("contract ERC20 {}")).unwrap();
+    let v = wait_finished(&s, &id).await;
+    assert_eq!(v.build.status, StageStatus::Done, "{v:?}");
+    let i: ImageView = serde_json::from_value(s.stage_view(&id, "image").unwrap()).unwrap();
+    assert_eq!((i.words, i.cap_words, i.fits), (11_686, 1000, false));
+    assert!(!i.findings.is_empty(), "the cap finding is listed");
+}
+
+#[tokio::test]
+async fn a_build_without_an_image_fails() {
+    let runner: Arc<dyn terminal_sandbox::Runner> = Arc::new(terminal_sandbox::FakeRunner::new(
+        |spec: &terminal_sandbox::RunSpec| {
+            if spec.tool == (terminal_sandbox::Tool::RandGuestBuild { debug: false }) {
+                return terminal_sandbox::RunOutput {
+                    status: 101,
+                    stderr: "error: cargo build failed".into(),
+                    ..Default::default()
+                };
+            }
+            fake_answer(spec)
+        },
+    ));
+    let (s, _d) = store_with(runner);
+    let id = s.create(sol("contract ERC20 {}")).unwrap();
+    let v = wait_finished(&s, &id).await;
+    let e = v.build.error.clone().unwrap_or_else(|| panic!("{v:?}"));
+    assert_eq!(e.kind, "build");
+    assert!(e.message.contains("exited 101"), "{}", e.message);
+}
