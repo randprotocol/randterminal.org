@@ -15,6 +15,12 @@ pub fn create_router(state: AppState) -> Router {
         .route("/jobs/:id/transpile", get(handlers::jobs::transpile))
         .route("/jobs/:id/image", get(handlers::jobs::image))
         .route("/jobs/:id/files/:name", get(handlers::jobs::file))
+        .route("/jobs/:id/runs", post(handlers::runs::create))
+        .route("/runs/:rid", get(handlers::runs::summary))
+        .route("/runs/:rid/cycles", get(handlers::runs::cycles))
+        .route("/runs/:rid/state", get(handlers::runs::state))
+        .route("/runs/:rid/memory", get(handlers::runs::memory))
+        .route("/runs/:rid/syscalls", get(handlers::runs::syscalls))
         .fallback(handlers::not_found)
         .layer(middleware::from_fn_with_state(state.clone(), ratelimit::limit));
     Router::new()

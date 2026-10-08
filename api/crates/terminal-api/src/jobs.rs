@@ -49,6 +49,12 @@ fn valid_id(id: &str) -> bool { id.len() == 32 && id.chars().all(|c| c.is_ascii_
 fn tail(s: &str) -> String { if s.len() <= CONSOLE_KEEP { s.to_string() } else { let mut i = s.len() - CONSOLE_KEEP; while !s.is_char_boundary(i) { i += 1; } s[i..].to_string() } }
 fn is_regular(p: &Path) -> bool { std::fs::symlink_metadata(p).map(|m| m.file_type().is_file()).unwrap_or(false) }
 
+/// Reads a host-owned file, refusing anything that is not a regular file (never a link).
+pub fn read_regular(p: &Path) -> std::io::Result<Vec<u8>> {
+    if !is_regular(p) { return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} is not a regular file", p.display()))); }
+    std::fs::read(p)
+}
+
 impl JobStore {
     pub fn new(config: Arc<ApiConfig>, runner: Arc<dyn Runner>) -> Arc<Self> {
         // The docker runner only mounts absolute paths, so resolve the data dir once here.
