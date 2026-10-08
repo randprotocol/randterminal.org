@@ -210,7 +210,10 @@ fn stores_record_the_written_word_and_the_old_one() {
                     .iter()
                     .find(|a| a.space == SPACE_RAM && a.is_write)
                     .unwrap();
-                assert_eq!((c.mem_addr, c.mem_val, c.mem_old), (w.addr, w.value, e.mem_val));
+                assert_eq!(
+                    (c.mem_addr, c.mem_val, c.mem_old),
+                    (w.addr, w.value, e.mem_val)
+                );
                 // The new word is what memory holds after the cycle.
                 assert_eq!(t.memory_at(e.clk + 1, c.mem_addr, 1).unwrap()[0], c.mem_val);
                 assert_eq!(t.memory_at(e.clk, c.mem_addr, 1).unwrap()[0], c.mem_old);
