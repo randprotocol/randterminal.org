@@ -12,3 +12,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+terminal-core = { workspace = true }
+rand-guest = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }

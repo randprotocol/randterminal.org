@@ -1858,7 +1858,11 @@ name = "terminal-sandbox"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "hex",
+ "rand-guest",
+ "serde_json",
  "tempfile",
+ "terminal-core",
  "thiserror 1.0.69",
  "tokio",
 ]
