@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Rand Terminal's sandbox: every untrusted tool step runs here, without network.
 # Build: sandbox/build.sh  (docker build --platform linux/amd64 -f sandbox/Dockerfile -t terminal-sandbox:<rev> .)
-FROM --platform=linux/amd64 debian:bookworm-slim
+FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl xz-utils bzip2 build-essential pkg-config libssl-dev libudev-dev git \
     && rm -rf /var/lib/apt/lists/*
@@ -34,7 +34,8 @@ RUN cd /opt/solana-template && HOME=/opt/sbf-home cargo vendor /opt/solana-vendo
 COPY circuits /circuits
 RUN cd /circuits/rand-guest && cargo build --release --locked && install -m 0755 target/release/rand-guest /usr/local/bin/rand-guest \
  && cd /circuits/evm2rv && cargo build --release --locked && cd /circuits/sbpf2rv && cargo build --release --locked
-RUN set -e; mkdir -p /circuits/jobs/warm; \
+# The shim builds use their own CARGO_HOME so only their registry ships to run time.
+RUN set -e; export CARGO_HOME=/opt/shim-cargo; mkdir -p /circuits/jobs/warm; \
     /circuits/evm2rv/target/release/evm2rv /circuits/guests-compiled/evm/contracts/erc20.runtime.hex --out /circuits/jobs/warm/erc20 --chain-id 13; \
     rand-guest build /circuits/jobs/warm/erc20 --max-words 65535 | tee /tmp/erc20.txt; \
     grep -q "hc a0feae92a7311c9562495717100eb7aea71270a38ed435d06dc31387e0ea8ff6" /tmp/erc20.txt; \
@@ -42,7 +43,7 @@ RUN set -e; mkdir -p /circuits/jobs/warm; \
     rand-guest build /circuits/jobs/warm/spl --max-words 65535 | tee /tmp/spl.txt; \
     grep -q "hc 8ca905ae3c62f503de7de86829040f323e098b53dba5fffe09b42f1aad16758b" /tmp/spl.txt; \
     rm -rf /circuits/jobs/warm /circuits/*/target; \
-    cp -r /opt/cargo/registry /opt/cargo-registry
+    cp -r /opt/shim-cargo/registry /opt/shim-cargo-registry
 
 COPY sandbox/entrypoints /opt/entrypoints
 RUN chmod 0755 /opt/entrypoints/*.sh && mkdir -p /circuits/jobs/job && chown 10001:10001 /circuits/jobs/job \
