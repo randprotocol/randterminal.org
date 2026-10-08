@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Rand Terminal's sandbox: every untrusted tool step runs here, without network.
-# Build: sandbox/build.sh  (docker build --platform linux/amd64 -f sandbox/Dockerfile -t terminal-sandbox:<rev> .)
+# Build: sandbox/build.sh  (docker build --platform linux/amd64 -f sandbox/Dockerfile -t "$(sandbox/tag.sh)" .)
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl xz-utils bzip2 build-essential pkg-config libssl-dev libudev-dev git \

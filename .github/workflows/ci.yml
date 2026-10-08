@@ -65,7 +65,7 @@ jobs:
           set -o pipefail
           out=$(sandbox/build.sh | tee /dev/stderr)
           tag=$(printf '%s\n' "$out" | tail -n 1)
-          case "$tag" in terminal-sandbox:*) ;; *) echo "build.sh did not end with an image tag: $tag" >&2; exit 1;; esac
+          [ "$tag" = "$(sandbox/tag.sh)" ] || { echo "build.sh did not end with the image tag sandbox/tag.sh names: $tag" >&2; exit 1; }
           echo "TAG=$tag" >> "$GITHUB_ENV"
       - name: gated sandbox tests
         working-directory: api

@@ -5,16 +5,16 @@ IP="${1:?usage: deploy/deploy.sh <droplet-ip>}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 SSH="ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 terminal@$IP"
 SRC=/opt/terminal/src
-REV=$(git -C "$HERE/circuits" rev-parse --short=7 HEAD)
+TAG=$("$HERE/sandbox/tag.sh")
 rsync -az --delete --exclude target --exclude node_modules --exclude .next --exclude data --exclude 'web/e2e/fixtures' \
   "$HERE/" "terminal@$IP:$SRC/"
 
 # shellcheck disable=SC2086
-$SSH REV="$REV" bash -se <<'REMOTE'
+$SSH TAG="$TAG" bash -se <<'REMOTE'
 set -euo pipefail
 source "$HOME/.cargo/env"
 cd /opt/terminal/src
-docker image inspect "terminal-sandbox:$REV" >/dev/null 2>&1 || sandbox/build.sh
+docker image inspect "$TAG" >/dev/null 2>&1 || sandbox/build.sh
 (cd api && cargo build --release -p terminal-api)
 mkdir -p /opt/terminal/bin /var/lib/terminal/.docker
 install -m 0755 api/target/release/terminal-api /opt/terminal/bin/terminal-api.new
@@ -36,7 +36,7 @@ if [ -d /opt/terminal/web ]; then
   mv /opt/terminal/web /opt/terminal/web.old
 fi
 mv /opt/terminal/web.new /opt/terminal/web
-grep -q "TERMINAL_SANDBOX_IMAGE=terminal-sandbox:$REV" /etc/terminal/api.env || echo "WARNING: /etc/terminal/api.env names a different sandbox image than terminal-sandbox:$REV"
+grep -qx "TERMINAL_SANDBOX_IMAGE=$TAG" /etc/terminal/api.env || echo "WARNING: /etc/terminal/api.env must set TERMINAL_SANDBOX_IMAGE=$TAG (the image just checked or built)"
 sudo systemctl restart terminal-api terminal-web
 for _ in $(seq 15); do
   curl -fsS http://127.0.0.1:8080/api/v1/health && curl -fsS -o /dev/null http://127.0.0.1:3002/ && { echo; echo "web: up"; exit 0; }

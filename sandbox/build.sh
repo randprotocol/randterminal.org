@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build the sandbox image tagged with the circuits revision it embeds.
+# Build the sandbox image tagged by sandbox/tag.sh (circuits revision + hash of sandbox/).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-REV=$(git -C circuits rev-parse --short=7 HEAD)
-docker build --platform linux/amd64 -f sandbox/Dockerfile -t "terminal-sandbox:$REV" .
-echo "terminal-sandbox:$REV"
+TAG=$(sandbox/tag.sh)
+docker build --platform linux/amd64 -f sandbox/Dockerfile -t "$TAG" .
+echo "$TAG"

@@ -16,6 +16,12 @@ async fn main() -> anyhow::Result<()> {
         terminal_api::CIRCUITS_REV,
         cfg.listen_addr
     );
+    if std::env::var_os("TERMINAL_SANDBOX_IMAGE").is_none() {
+        tracing::warn!(
+            "TERMINAL_SANDBOX_IMAGE is not set; using the development default {} (production sets the tag sandbox/tag.sh prints)",
+            cfg.sandbox_image
+        );
+    }
     let runner: std::sync::Arc<dyn terminal_sandbox::Runner> = std::sync::Arc::new(
         terminal_sandbox::DockerRunner::new(cfg.sandbox_image.clone()),
     );

@@ -19,6 +19,9 @@ pub struct ApiConfig {
     pub listen_addr: SocketAddr,
     pub data_dir: PathBuf,
     pub samples_dir: PathBuf,
+    /// The sandbox image (`TERMINAL_SANDBOX_IMAGE`). Production must set it to the tag
+    /// `sandbox/tag.sh` prints, `terminal-sandbox:<circuits rev>-<hash of sandbox/>`: the default,
+    /// `terminal-sandbox:<circuits rev>`, cannot know the hash and is for development only.
     pub sandbox_image: String,
     pub max_program_words: usize,
     pub max_builds: usize,
