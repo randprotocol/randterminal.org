@@ -2,9 +2,11 @@
 # source-based coverage) and uploaded to Codecov, which draws the badge in README.md. The web
 # app's vitest suite is not measured here.
 #
-# Needs two secrets: `CIRCUITS_TOKEN` (read access to the private circuits submodule) and
-# `CODECOV_TOKEN`. Until they exist the job fails at checkout / at the upload step. Every `uses:`
-# is pinned by commit sha with its tag in the trailing comment.
+# Needs `CIRCUITS_TOKEN` (read access to the private circuits submodule, which the api builds
+# against); until it exists the job fails at checkout. This repository is public, so the upload
+# goes through the Codecov app: `CODECOV_TOKEN` is optional, and an unset secret expands to an
+# empty token, which the action sends as a tokenless upload. Every `uses:` is pinned by commit sha
+# with its tag in the trailing comment.
 name: coverage
 
 on:
