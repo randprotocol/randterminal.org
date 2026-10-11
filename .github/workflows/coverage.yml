@@ -2,8 +2,8 @@
 # source-based coverage) and uploaded to Codecov, which draws the badge in README.md. The web
 # app's vitest suite is not measured here.
 #
-# Needs `CIRCUITS_TOKEN` (read access to the private circuits submodule, which the api builds
-# against); until it exists the job fails at checkout. This repository is public, so the upload
+# The circuits submodule (which the api builds against) is public, so checkout falls back to the
+# workflow's own token when `CIRCUITS_TOKEN` is unset. This repository is public, so the upload
 # goes through the Codecov app: `CODECOV_TOKEN` is optional, and an unset secret expands to an
 # empty token, which the action sends as a tokenless upload. Every `uses:` is pinned by commit sha
 # with its tag in the trailing comment.
@@ -34,7 +34,7 @@ jobs:
         with:
           submodules: true
           persist-credentials: false
-          token: ${{ secrets.CIRCUITS_TOKEN }}
+          token: ${{ secrets.CIRCUITS_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable (branch head, 2026-10-05)
       - name: llvm-tools for the pinned toolchain
         run: rustup component add llvm-tools-preview

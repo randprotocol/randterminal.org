@@ -27,7 +27,7 @@ jobs:
     defaults: { run: { working-directory: api } }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with: { submodules: true, token: "${{ secrets.CIRCUITS_TOKEN }}", persist-credentials: false }
+        with: { submodules: true, token: "${{ secrets.CIRCUITS_TOKEN || github.token }}", persist-credentials: false }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable (branch head, 2026-10-05)
       - name: components for the pinned toolchain
         run: rustup component add rustfmt clippy
@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with: { submodules: true, token: "${{ secrets.CIRCUITS_TOKEN }}", persist-credentials: false }
+        with: { submodules: true, token: "${{ secrets.CIRCUITS_TOKEN || github.token }}", persist-credentials: false }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable (branch head, 2026-10-05)
       - name: build the image (its own hc checks run inside)
         run: |
