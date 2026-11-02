@@ -55,6 +55,7 @@ export function Shell() {
   const [sheet, setSheet] = useState(false);
   const [stageW, setStageW] = useState(DEFAULT_W);
   const [upErr, setUpErr] = useState<string | null>(null);
+  const [sampleLoading, setSampleLoading] = useState(false);
   const [maxW, setMaxW] = useState(1200);
   const stageWRef = useRef(DEFAULT_W);
   stageWRef.current = stageW;
@@ -71,7 +72,8 @@ export function Shell() {
   const imageReady = !!state.job?.finished && state.job.build.status === 'done';
   useEffect(() => { if (imageReady) setFocused('image'); }, [imageReady]);
 
-  const busy = creating || (!!state.job && !state.job.finished);
+  // A sample on its way replaces the source and resets the job, so Compile waits for it.
+  const busy = creating || sampleLoading || (!!state.job && !state.job.finished);
   const run = useCallback(() => {
     if (busy) return;
     setFocused('compile'); setView('stage');
@@ -168,7 +170,7 @@ export function Shell() {
       <div className="relative grid min-h-0 lg:grid-cols-[240px_minmax(0,1fr)_var(--stage-w)]">
         <aside className={`${sheet ? 'max-lg:absolute max-lg:inset-x-0 max-lg:top-0 max-lg:z-10 max-lg:max-h-[70%] max-lg:border-b max-lg:bg-bg' : 'max-lg:hidden'} flex min-h-0 flex-col gap-4 overflow-auto border-r border-border-soft p-2`}>
           <div className="sm:hidden">{langSelect}</div>
-          <SamplesPanel onLoad={load} />
+          <SamplesPanel onLoad={load} onLoading={setSampleLoading} />
           <section aria-label="files">
             <h2 className="px-2 pb-1 text-xs uppercase tracking-wide text-text-mute">Files</h2>
             {Object.keys(files).map((n) => <button key={n} onClick={() => { setActive(n); setSheet(false); }} className={`mono block min-h-8 w-full rounded-sm px-2 text-left text-xs max-lg:min-h-11 ${n === active ? 'bg-surface-2 text-text-strong' : 'text-text-soft hover:bg-surface'}`}>{n}</button>)}
