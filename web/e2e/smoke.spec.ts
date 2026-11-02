@@ -2,6 +2,19 @@ import { expect, test, type Page } from '@playwright/test';
 
 const stage = (page: Page, name: RegExp) => page.getByRole('list', { name: 'pipeline' }).getByRole('button', { name });
 
+test('Compile waits for a sample on its way: the sample is what gets built, and the job survives', async ({ page }) => {
+  await page.route('**/api/v1/samples/erc20', async (route) => { await new Promise((r) => setTimeout(r, 800)); await route.continue(); });
+  const job = page.waitForRequest((r) => r.method() === 'POST' && r.url().endsWith('/api/v1/jobs'));
+  await page.goto('/');
+  await page.getByRole('button', { name: /ERC-20 token/ }).click();
+  const compile = page.getByRole('button', { name: /Compile & Run|Working/ });
+  await expect(compile).toBeDisabled();
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await page.getByRole('button', { name: 'Compile & Run' }).click();
+  expect((await job).postDataJSON().files[0].name).toBe('ERC20.sol');
+  await expect(page.getByText('11 686 words')).toBeVisible();
+});
+
 test('ERC-20: sample → five stages → a stepped run → the tables', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: /ERC-20 token/ }).click();
