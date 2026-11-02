@@ -17,13 +17,15 @@ export function Listing({ state, image, transpile, compile }: { state: StateView
   const line = state.c_line ?? cLineAt(image.source_map?.pc_to_c, state.cycle.pc);
   const src = srcText(compile, state.src_pc);
   const label = compile?.lang === 'sbpf' ? 'sBPF instruction' : 'EVM opcode';
+  // With a map, an unmapped cycle is the guest's own startup or runtime, not a missing map.
+  const none = image.source_map ? 'guest runtime code, no source here' : 'no source map for this build';
   return (
     <div className="flex flex-col gap-3 p-3 text-xs">
-      <section><h3 className="text-text-mute">{label}</h3><p className="mono text-sm text-text-strong">{src ?? <span className="text-text-mute">no source map for this build</span>}</p></section>
-      <section><h3 className="text-text-mute">generated C{line ? ` · line ${line}` : ''}</h3>
+      <section><h3 className="mb-1 text-text-mute">{label}</h3><p className="mono text-sm text-text-strong">{src ?? <span className="text-text-mute">{none}</span>}</p></section>
+      <section><h3 className="mb-1 text-text-mute">generated C{line ? ` · line ${line}` : ''}</h3>
         {line ? <pre className="mono">{cLines.slice(Math.max(0, line - 4), line + 3).map((l, k) => { const n = Math.max(0, line - 4) + k + 1; return <div key={n} className={n === line ? 'bg-hl' : 'text-text-soft'}><span className="inline-block w-10 text-right text-text-mute">{n}</span>  {l}</div>; })}</pre>
-          : <p className="text-text-mute">no source map for this build</p>}</section>
-      <section><h3 className="text-text-mute">RV32IM · cycle {state.clk}</h3>
+          : <p className="text-text-mute">{none}</p>}</section>
+      <section><h3 className="mb-1 text-text-mute">RV32IM · cycle {state.clk}</h3>
         <pre className="mono">{rv.map((d) => <div key={d.pc} className={d.pc === state.cycle.pc ? 'bg-hl text-text-strong' : 'text-text-soft'}><span className="inline-block w-20 text-text-mute">{hexAddr(d.pc)}</span>{d.text}{d.ecall && <span className="text-accent"> ; {d.ecall}</span>}</div>)}</pre></section>
     </div>
   );

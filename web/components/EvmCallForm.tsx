@@ -12,7 +12,7 @@ export function EvmCallForm({ abi, value, onChange }: { abi: AbiItem[]; value: F
   const set = (p: Partial<Form>) => onChange({ ...form, ...p });
   const setSeed = (i: number, s: StorageSeed | null) => set({ storage: s ? storage.map((x, k) => (k === i ? s : x)) : storage.filter((_, k) => k !== i) });
   return (
-    <div className="flex flex-col gap-2 text-xs">
+    <div className="flex flex-col gap-2 text-xs text-text-soft">
       <label>function <select className={input} value={form.function} onChange={(e) => set({ function: e.target.value, args: evmFormFromAbi(abi, e.target.value, form.caller).args })}>{fns.map((a) => <option key={abiSignature(a)}>{abiSignature(a)}</option>)}</select></label>
       {(item?.inputs ?? []).map((p, i) => <label key={i}>{p.name || `arg${i}`}: <span className="text-text-mute">{p.type}</span><input className={input} value={form.args[i] ?? ''} placeholder="0x… or decimal" onChange={(e) => set({ args: form.args.map((a, k) => (k === i ? e.target.value : a)) })} /></label>)}
       <label>caller <input className={input} value={form.caller} onChange={(e) => set({ caller: e.target.value })} /></label>

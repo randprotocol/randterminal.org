@@ -7,7 +7,7 @@ export function SbpfCallForm({ value, onChange }: { value: Form | null; onChange
   const form = value ?? { lang: 'sbpf', program_id: '', accounts: [blank], data: '0x' };
   const setAcc = (i: number, a: AccountForm | null) => onChange({ ...form, accounts: a ? form.accounts.map((x, k) => (k === i ? a : x)) : form.accounts.filter((_, k) => k !== i) });
   return (
-    <div className="flex flex-col gap-2 text-xs">
+    <div className="flex flex-col gap-2 text-xs text-text-soft">
       <label>program id (base58) <input className={input} value={form.program_id} onChange={(e) => onChange({ ...form, program_id: e.target.value })} /></label>
       {form.accounts.map((a, i) => (
         <fieldset key={i} className="grid grid-cols-2 gap-1 rounded-sm border border-border-soft p-2"><legend className="px-1 text-text-mute">account {i}</legend>

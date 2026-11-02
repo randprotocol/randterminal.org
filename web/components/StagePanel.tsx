@@ -8,17 +8,14 @@ import { RunPanel } from './RunPanel';
 import { StageError } from './StageError';
 import { ContractPicker } from './ContractPicker';
 import { contractChoices } from '@/lib/job';
-import { useStageView } from '@/lib/useStageView';
 import type { Stage } from '@/lib/job';
-import type { CallForm, CompileView, ImageView, JobView, TranspileView } from '@/lib/types';
+import type { CallForm, CompileView, ImageView, JobView, RunSummary, TranspileView } from '@/lib/types';
 
-export function StagePanel({ stage, job, defaultCall, onPickContract }: { stage: Stage; job: JobView | null; defaultCall: CallForm | null; onFocus: (s: Stage) => void; onPickContract?: (c: string) => void }) {
+interface Loaded<T> { data: T | null; error: string | null; retry: () => void }
+
+export function StagePanel({ stage, job, compile, transpile, image, defaultCall, onRun, onPickContract }: { stage: Stage; job: JobView; compile: Loaded<CompileView>; transpile: Loaded<TranspileView>; image: Loaded<ImageView>; defaultCall: CallForm | null; onRun: (r: RunSummary) => void; onPickContract?: (c: string) => void }) {
   const [selected, setSelected] = useState<number | null>(null);
-  useEffect(() => { setSelected(null); }, [job?.id]);
-  const compile = useStageView<CompileView>(job?.id, 'compile', job?.compile.status === 'done');
-  const transpile = useStageView<TranspileView>(job?.id, 'transpile', job?.transpile.status === 'done');
-  const image = useStageView<ImageView>(job?.id, 'image', job?.build.status === 'done');
-  if (!job) return <p className="p-6 text-text-mute">Pick a sample or write a contract, then press Compile &amp; Run (⌘/Ctrl + Enter).</p>;
+  useEffect(() => { setSelected(null); }, [job.id]);
   // A stage shows its own failure, or the failure of an earlier stage that kept it from ever running.
   const upto = { compile: 1, analyse: 1, transpile: 2, image: 3, run: 3 }[stage];
   const failed = (['compile', 'transpile', 'build'] as const).slice(0, upto).find((s) => job[s].status === 'failed');
@@ -32,7 +29,7 @@ export function StagePanel({ stage, job, defaultCall, onPickContract }: { stage:
   // The run panel stays mounted (hidden) on the other stages, so its call form, run and debugger position survive a tab switch.
   const runPanel = image.data && (
     <div className={stage === 'run' ? 'h-full' : 'hidden'}>
-      <RunPanel key={job.id} job={job} compile={compile.data} transpile={transpile.data} image={image.data} defaultCall={defaultCall} />
+      <RunPanel key={job.id} job={job} compile={compile.data} transpile={transpile.data} image={image.data} defaultCall={defaultCall} onRun={onRun} />
     </div>
   );
   const shown = (() => {

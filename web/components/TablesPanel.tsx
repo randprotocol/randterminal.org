@@ -9,19 +9,19 @@ export function TablesPanel({ run }: { run: RunSummary }) {
   const bars = tableBars(run, tier);
   return (
     <div className="flex h-full flex-col gap-4 overflow-auto p-4">
-      <p className="text-sm text-text-soft">{tierSentence(run)}</p>
+      <p className="max-w-2xl text-text-soft">{tierSentence(run)}</p>
       <div className="flex flex-wrap items-center gap-1" role="radiogroup" aria-label="tier">
         <span className="mr-1 text-xs text-text-mute">tier</span>
         {run.tiers.map((t) => (
           <button key={t.tier} role="radio" aria-checked={tier === t.tier} disabled={!t.fits} onClick={() => setTier(t.tier)}
             title={t.fits ? `tier ${t.tier}` : `tier ${t.tier}: does not fit`}
-            className={`mono tabular-nums h-8 rounded-sm px-3 text-xs ${tier === t.tier ? 'bg-surface-2 text-text-strong' : t.fits ? 'text-text-soft' : 'cursor-not-allowed text-text-mute line-through'}`}>
+            className={`mono tabular-nums h-8 rounded-sm px-3 text-xs ${tier === t.tier ? 'bg-accent text-on-accent' : t.fits ? 'text-text-soft' : 'cursor-not-allowed text-text-mute line-through'}`}>
             {t.tier}{!t.fits && <span className="sr-only"> does not fit</span>}
           </button>
         ))}
       </div>
       {!run.tiers.some((t) => t.fits) && <p className="text-xs text-text-mute">No tier fits, so none can be selected; the bars show the largest tier.</p>}
-      <ul className="flex flex-col gap-3">
+      <ul className="flex max-w-3xl flex-col gap-3">
         {bars.map((b) => (
           <li key={b.key}>
             <div className="flex items-baseline justify-between gap-3 text-xs">

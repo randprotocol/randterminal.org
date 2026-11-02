@@ -1,8 +1,9 @@
 'use client';
 import { useMemo, useState } from 'react';
 import { VirtualList } from './VirtualList';
+import { Facts, Identity } from './ui';
 import { api } from '@/lib/api';
-import { groupDigits, hex32, hexAddr, short } from '@/lib/format';
+import { groupDigits, hex32, hexAddr } from '@/lib/format';
 import type { ImageView } from '@/lib/types';
 
 export function cLineAt(map: [number, number][] | undefined, pc: number): number | null {
@@ -22,7 +23,6 @@ export function parseHexPc(q: string): number | null {
   const m = /^\s*(?:0x)?([0-9a-f]{1,8})\s*$/i.exec(q);
   return m ? parseInt(m[1]!, 16) : null;
 }
-const copy = (t: string) => { try { void navigator.clipboard.writeText(t).catch(() => {}); } catch { /* clipboard unavailable */ } };
 
 export function ImagePanel({ jobId, view }: { jobId: string; view: ImageView }) {
   const [q, setQ] = useState('');
@@ -30,17 +30,17 @@ export function ImagePanel({ jobId, view }: { jobId: string; view: ImageView }) 
   const pct = Math.min(100, (view.words / view.cap_words) * 100);
   return (
     <div className="grid h-full grid-rows-[auto_1fr]">
-      <div className="flex flex-col gap-2 p-4 text-sm">
-        <div className="flex items-center gap-3"><span className="mono">{groupDigits(view.words)} words</span><span className="text-text-mute">of a {groupDigits(view.cap_words)}-word cap</span>
+      <div className="flex flex-col gap-3 p-4">
+        <div className="flex items-baseline gap-2"><span className="mono text-text-strong [word-spacing:-.25em]">{groupDigits(view.words)} words</span><span className="text-text-mute">of a {groupDigits(view.cap_words)}-word cap</span>
           <span className={view.fits ? 'text-positive' : 'text-negative'}>{view.fits ? 'fits' : 'does not fit'}</span>
-          <a href={api.fileUrl(jobId, 'image.bin')} className="ml-auto text-xs text-accent">download image.bin</a></div>
-        <div className="h-1.5 w-full rounded-full bg-surface-2"><div className={`h-1.5 rounded-full ${view.fits ? 'bg-accent' : 'bg-negative'}`} style={{ width: `${pct}%` }} /></div>
-        <p className="mono text-xs text-text-soft">text {groupDigits(view.text_words)} · data {groupDigits(view.data_words)} · prologue {view.prologue_words} · base pc {hexAddr(view.base_pc)}</p>
-        <p className="text-xs"><span className="text-text-mute">hc</span> <span className="mono" title={view.hc}>{short(view.hc, 16)}</span> <button className="text-accent" onClick={() => copy(view.hc)}>copy</button> <span className="text-text-mute">· the zkVM's commitment to this exact program</span></p>
-        <p className="text-xs"><span className="text-text-mute">program id</span> <span className="mono" title={view.program_id}>{short(view.program_id, 16)}</span> <button className="text-accent" onClick={() => copy(view.program_id)}>copy</button> <span className="text-text-mute">· how the chain names it</span></p>
+          <a href={api.fileUrl(jobId, 'image.bin')} className="quiet ml-auto">Download image.bin</a></div>
+        <div className="h-1 w-full rounded-full bg-surface-2"><div className={`h-1 rounded-full ${view.fits ? 'bg-accent' : 'bg-negative'}`} style={{ width: `${pct}%` }} /></div>
+        <Facts items={[['Text', groupDigits(view.text_words)], ['Data', groupDigits(view.data_words)], ['Prologue', view.prologue_words], ['Base pc', hexAddr(view.base_pc)]]} />
+        <Identity name="hc" meaning="the zkVM's commitment to this exact program" value={view.hc} />
+        <Identity name="Program id" meaning="how the chain names it" value={view.program_id} />
         {view.findings.map((f, i) => <p key={i} className="mono text-xs text-warning">{hexAddr(f.addr)} {f.rule}: {f.what}</p>)}
         {view.source_map_note && <p className="text-xs text-text-mute">{view.source_map_note}</p>}
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="jump to pc (hex)" aria-label="jump to pc" className="mono h-8 w-48 rounded-sm border border-border bg-surface px-2 text-xs" />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Jump to pc (hex)" aria-label="jump to pc" className="mono h-8 w-48 rounded-sm border border-border bg-surface px-2 text-xs" />
       </div>
       <VirtualList className="mono border-t border-border-soft text-xs" rows={view.disasm.length} scrollTo={target} render={(i) => {
         const d = view.disasm[i]!;
