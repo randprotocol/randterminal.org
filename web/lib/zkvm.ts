@@ -26,13 +26,17 @@ export const group = (n: number) => n.toString().replace(/\B(?=(\d{3})+(?!\d))/g
 export const nextPow2 = (n: number) => { let p = 1; while (p < n) p *= 2; return p; };
 export const log2 = (n: number) => Math.round(Math.log2(n));
 
-// ---- the machine's parameters (circuits/research/src/machine.rs at the pinned 9bf3844) --------
+// ---- the machine's parameters (circuits/research/src/machine.rs at the pinned 85b6f46) --------
+// Re-read at 85b6f46: TIERS, Tier's heights, FriParameters and poseidon2::BLOCK are as they were at
+// 9bf3844. The FRI rate-1/4 profile (92 queries, 24 bits) is the recursion machine's own
+// (`recursion::machine::RvmFri`); `FriProfile::Production` still sizes every program's proof.
 
 /** `machine::TIERS`: a tier `t` fixes the CPU table at 2^t rows. */
 export const TIERS = [10, 12, 14, 16, 18, 20] as const;
-/** `FriParameters` in `generic_config`, and `FriProfile::Production`. */
+/** `FriParameters` in `generic_config` (log_blowup 3, max_log_arity 3, log_final_poly_len 0), and
+ *  `FriProfile::Production` (80 queries, 20 query PoW bits; machine.rs's own test pins both). */
 export const FRI = { logBlowup: 3, maxLogArity: 3, logFinalPolyLen: 0, queries: 80, powBits: 20 } as const;
-/** `poseidon2::BLOCK`: rows per Poseidon2 permutation. */
+/** `poseidon2::BLOCK` (circuits/research/src/tables/poseidon2.rs): rows per Poseidon2 permutation. */
 export const POSEIDON2_BLOCK = 32;
 
 /** `Tier::for_workload`: the smallest tier whose CPU table holds the cycles (2^t − 1, one row is
@@ -167,6 +171,8 @@ export const SAMPLES: Record<SampleFacts['id'], SampleFacts> = {
     cycles: 66235,
     tier: 18,
     rows: { cpu: 66235, alu: 73159, memory: 216916, poseidon2_permutations: 3908, keccak_permutations: 17, digest_rows: 3155 },
+    // cycles and rows: terminal-core tests/tiers.rs erc20_transfer_lands_in_tier_18_like_rand_guest_run
+    // asserts every one at 85b6f46 (the image, contract.c and hc are byte-identical to 9bf3844's).
     cyclesNote: 'transfer(BOB, 250), the sample’s default call, as the API ran it.',
   },
   spl: {
@@ -199,6 +205,8 @@ Transfer { amount: 250 }`,
     cycles: 765851,
     tier: 20,
     rows: { cpu: 765851, alu: 887100, memory: 2365304, poseidon2_permutations: 32288, keccak_permutations: 0, digest_rows: 25678 },
+    // cycles and rows: terminal-core tests/tiers.rs spl_transfer_lands_in_tier_20 asserts every one
+    // at 85b6f46 (the image, program.c and hc are byte-identical to 9bf3844's).
     cyclesNote: 'Transfer(250) on the translated image, as terminal-core’s tiers test runs it.',
   },
 };

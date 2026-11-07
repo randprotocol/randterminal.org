@@ -12,6 +12,17 @@ fn erc20_transfer_lands_in_tier_18_like_rand_guest_run() {
     let exec = execute(&program, &inputs, &[], 1 << 20).unwrap();
     let r = rows(&program, inputs.len(), 0, &exec);
     assert_eq!(r.cpu, 66_235);
+    // Every row count web/lib/zkvm.ts shows for the ERC-20 sample (circuits 85b6f46).
+    assert_eq!(
+        (
+            r.alu,
+            r.memory,
+            r.poseidon2_permutations,
+            r.keccak_permutations,
+            r.digest_rows
+        ),
+        (73_159, 216_916, 3_908, 17, 3_155)
+    );
     assert_eq!(
         r.digest_rows,
         program.digest_rows()
@@ -50,6 +61,18 @@ fn spl_transfer_lands_in_tier_20() {
     let exec = execute(&program, &inputs, &public, 1 << 20).unwrap();
     let r = rows(&program, inputs.len(), public.len(), &exec);
     assert_eq!(r.cpu, 765_851);
+    // Every row count web/lib/zkvm.ts shows for the SPL sample (circuits 85b6f46).
+    assert_eq!(
+        (
+            r.alu,
+            r.memory,
+            r.poseidon2_permutations,
+            r.keccak_permutations,
+            r.digest_rows
+        ),
+        (887_100, 2_365_304, 32_288, 0, 25_678)
+    );
+    assert_eq!(r.sha256_compressions, 30);
     assert_eq!(pick(&r, cycles_total(&r)), Some(20));
     let s = summarize("r1", &program, inputs.len(), public.len(), &exec, vec![]);
     assert_eq!(s.cycles, 765_851);

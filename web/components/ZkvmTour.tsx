@@ -71,7 +71,7 @@ export function ZkvmTour() {
         <div className="flex flex-wrap items-end justify-between gap-x-10 gap-y-4">
           <div className="max-w-[62ch]">
             <h1 className="text-[28px] leading-tight font-medium tracking-tight text-text-strong sm:text-[34px]">How the zkVM works</h1>
-            <p className="mt-2 text-[15px] leading-relaxed text-text-soft">One program, from source to a verified proof, the way the terminal and the circuits it pins (9bf3844) really do it. Every number here comes from their code or a recorded run.</p>
+            <p className="mt-2 text-[15px] leading-relaxed text-text-soft">One program, from source to a verified proof, the way the terminal and the circuits it pins (85b6f46) really do it. Every number here comes from their code or a recorded run.</p>
           </div>
           <div role="radiogroup" aria-label="sample" className="flex gap-1 rounded-md border border-border-soft bg-bg-soft p-1">
             {Object.values(SAMPLES).map((x) => (
@@ -141,7 +141,7 @@ function Explain({ id, s }: { id: StepId; s: SampleFacts }) {
       <p>Nothing about the program is built into the prover. The proof will say only that some program with commitment hc ran on some inputs and produced these outputs.</p>
     </>;
     case 'compile': return <>
-      <p>{evm ? <>solc 0.8.37 compiles it in the sandbox for the fork you pick (shanghai unless you choose another). The transpiler takes the runtime bytecode: what the chain stores, not the constructor.</> : <>The ELF is what <code>cargo build-sbf</code> produced upstream: sBPF instructions in <code>.text</code>, constants in <code>.rodata</code>. Its compile stage is skipped.</>}</p>
+      <p>{evm ? <>solc 0.8.37 compiles it in the sandbox for the fork you pick (shanghai unless you choose another); the zkVM’s EVM runs every fork through osaka, TLOAD, TSTORE, MCOPY and CLZ included. The transpiler takes the runtime bytecode: what the chain stores, not the constructor.</> : <>The ELF is what <code>cargo build-sbf</code> produced upstream: sBPF instructions in <code>.text</code>, constants in <code>.rodata</code>. Its compile stage is skipped.</>}</p>
       <Facts items={s.compiledFacts} />
     </>;
     case 'transpile': return <>
@@ -160,7 +160,8 @@ function Explain({ id, s }: { id: StepId; s: SampleFacts }) {
       <Code path="circuits/research/src/emulator.rs" />
     </>;
     case 'tables': return <>
-      <p>The record becomes tables, one per chip, that exchange facts over sixteen LogUp buses instead of calling each other. A tier t fixes their heights to powers of two: CPU 2<sup>t</sup>, ALU 2<sup>t+1</sup>, Memory and Poseidon2 at least 2<sup>t+2</sup>. Unused rows are padding.</p>
+      {/* Nineteen: the bus constants in circuits/research/src/tables/mod.rs at 85b6f46 (MODQ and MODQ_WIRE joined after BLIND); docs/02-tables-and-buses.md counts the same. */}
+      <p>The record becomes tables, one per chip, that exchange facts over nineteen LogUp buses instead of calling each other. A tier t fixes their heights to powers of two: CPU 2<sup>t</sup>, ALU 2<sup>t+1</sup>, Memory and Poseidon2 at least 2<sup>t+2</sup>. Unused rows are padding.</p>
       <p>The smallest tier that holds every table wins: here, tier {s.tier}. Range and nibble tables are fixed at 256 rows; {evm ? `${s.rows.keccak_permutations} Keccak permutations add a Keccak table.` : 'SHA-256 compressions add a SHA-256 table.'}</p>
       <Code path="circuits/research/src/machine.rs (Tier), api/crates/terminal-core/src/tiers.rs" />
     </>;
@@ -182,8 +183,9 @@ function Explain({ id, s }: { id: StepId; s: SampleFacts }) {
     </>;
     case 'verify': return <>
       <p>The verifier never sees the trace. It replays the transcript, checks the proof of work, checks that every bus balances and every AIR holds at one random point, and opens {FRI.queries} random positions down the FRI layers along their Merkle paths.</p>
-      <p>The production profile (80 queries, 20 bits of grinding, blowup 8) gives about 86 proven bits of soundness. The terminal itself stops at the tier: it runs and measures programs; proving is the node’s prover.</p>
-      <Code path="FriProfile::Production, circuits/research/src/machine.rs" />
+      <p>The production profile (80 queries, 20 bits of grinding, blowup 8) gives about 86 proven bits of soundness. The recursion machine, which proves that proofs verify, uses its own profile for the same bound: blowup 4, 92 queries, 24 bits. The terminal itself stops at the tier: it runs and measures programs; proving is the node’s prover.</p>
+      {/* 86.38 against 86.41 proven bits: circuits/recursion/docs/07-rvm-rate-quarter.md; RvmFri::of in circuits/recursion/src/machine.rs (85b6f46). */}
+      <Code path="FriProfile::Production, circuits/research/src/machine.rs; RvmFri, circuits/recursion/src/machine.rs" />
     </>;
   }
 }
@@ -356,7 +358,7 @@ function Verify({ s }: { s: SampleFacts }) {
   const checks = [
     'Replay the Fiat–Shamir transcript: same commitments, same challenges',
     `Check the ${FRI.powBits}-bit proof-of-work nonce`,
-    'Every one of the sixteen LogUp buses balances across the tables',
+    'Every one of the nineteen LogUp buses balances across the tables',
     'Every AIR, through its quotient, holds at the random point',
     `${FRI.queries} queries open the commitments along Merkle paths and fold down to the final polynomial`,
     'The public values match: hc and the outputs',
