@@ -133,10 +133,11 @@ sample reproduces `erc20.runtime.hex` byte for byte. The fork is the job's
 `options.evm_version`, one of the fourteen solc 0.8.37 accepts (homestead … osaka; the
 experimental amsterdam is refused), shanghai when absent; anything else is a 400. The compile
 view records the fork (`evm_version`) and lists, as `warnings`, every opcode the zkVM traps on:
-evm2rv's own (block context, cross-contract, calls) plus every byte the interpreter does not
-implement (Cancun's TLOAD/TSTORE/MCOPY, Osaka's CLZ, undefined bytes), skipping solc's metadata
-trailer. The web picker sits beside the language picker, lasts for the browser session, and
-warns that Cancun+ opcodes trap at the current circuits pin. The user picks the contract to
+evm2rv's own (block context, BLOBHASH/BLOBBASEFEE included, cross-contract, calls) plus every
+byte no fork defines, skipping solc's metadata trailer. Since circuits 85b6f46 the zkVM's EVM
+implements Cancun's TLOAD/TSTORE/MCOPY and Osaka's CLZ, so a cancun/prague/osaka contract that
+uses them gets no warning. The web picker sits beside the language picker and lasts for the
+browser session. The user picks the contract to
 transpile when a file defines several. Diagnostics (`errors[]` with
 `sourceLocation`) are mapped to editor markers.
 

@@ -52,9 +52,9 @@ test('the EVM fork: picked beside the language, sent with the job, remembered, s
   await expect(page.getByLabel('source editor')).toContainText('contract ERC20');
   const fork = page.getByLabel('EVM fork');
   await expect(fork).toHaveValue('shanghai');
-  await expect(page.getByRole('note')).toHaveCount(0);
   await fork.selectOption('cancun');
-  await expect(page.getByRole('note')).toContainText('MCOPY, TLOAD/TSTORE, CLZ');
+  // The zkVM runs Cancun and Osaka opcodes (circuits 85b6f46): no pin hint under the editor.
+  await expect(page.getByRole('note')).toHaveCount(0);
   const job = page.waitForRequest((r) => r.method() === 'POST' && r.url().endsWith('/api/v1/jobs'));
   await page.getByRole('button', { name: 'Compile & Run' }).click();
   expect((await job).postDataJSON().options.evm_version).toBe('cancun');

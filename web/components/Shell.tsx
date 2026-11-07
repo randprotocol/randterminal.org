@@ -9,7 +9,7 @@ import { ThemeSwitch } from './ThemeSwitch';
 import { StagePanel } from './StagePanel';
 import { Icon } from './ui';
 import { newJob, useJob, type Stage } from '@/lib/job';
-import { EVM_VERSIONS, forkHint, isEvmVersion, jobOptions, loadFork, saveFork, type EvmVersion } from '@/lib/evm';
+import { EVM_VERSIONS, isEvmVersion, jobOptions, loadFork, saveFork, type EvmVersion } from '@/lib/evm';
 import { useStageView } from '@/lib/useStageView';
 import type { CallForm, CompileView, Diagnostic, ImageView, JobOptions, Lang, RunSummary, SampleView, TranspileView } from '@/lib/types';
 
@@ -184,7 +184,6 @@ export function Shell() {
       {EVM_VERSIONS.map((v) => <option key={v} value={v}>{v}</option>)}
     </select>
   );
-  const hint = lang === 'solidity' ? forkHint(fork) : null;
   const tab = (id: 'editor' | 'stage', label: string) => (
     <button role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} tabIndex={view === id ? 0 : -1} aria-selected={view === id} onKeyDown={tabKeys} onClick={() => setView(id)} className={`h-11 flex-1 text-sm ${view === id ? 'border-b-2 border-accent text-text-strong' : 'text-text-soft'}`}>{label}</button>
   );
@@ -214,7 +213,6 @@ export function Shell() {
               {forkSelect}
               {langSelect}
             </div>
-            {hint && <p role="note" className="px-3 pb-1.5 text-xs text-warning">{hint}</p>}
           </div>
           {lang === 'solana-elf'
             ? <div className="p-6"><p className="text-text-soft">{program ? `${program.title}: a program bundled with the terminal, run as deployed. Press Compile & Run.` : 'Pick a Solana sample.'}</p>

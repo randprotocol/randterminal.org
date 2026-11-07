@@ -4,19 +4,11 @@ import type { JobOptions, Lang, WarningView } from './types';
  *  terminal-core's `stages::EVM_VERSIONS`; the API rejects anything else. */
 export const EVM_VERSIONS = ['homestead', 'tangerineWhistle', 'spuriousDragon', 'byzantium', 'constantinople', 'petersburg', 'istanbul', 'berlin', 'london', 'paris', 'shanghai', 'cancun', 'prague', 'osaka'] as const;
 export type EvmVersion = (typeof EVM_VERSIONS)[number];
-/** The fork the zkVM's EVM implements, and what a job naming none compiles for. */
+/** What a job naming no fork compiles for. The zkVM's EVM runs every fork through osaka (TLOAD,
+ *  TSTORE, MCOPY and CLZ since circuits 85b6f46); the compile view's warnings name what traps. */
 export const DEFAULT_EVM_VERSION: EvmVersion = 'shanghai';
 
-/** Remove once the circuits pin (9bf3844) moves to the one that adds these opcodes. */
-export const FORK_PIN_HINT = 'Cancun+ opcodes (MCOPY, TLOAD/TSTORE, CLZ) need a circuits pin newer than 9bf3844; at this one they trap.';
-
 export const isEvmVersion = (v: unknown): v is EvmVersion => typeof v === 'string' && (EVM_VERSIONS as readonly string[]).includes(v);
-
-/** The hint for a fork newer than shanghai, else null. */
-export function forkHint(v: string): string | null {
-  const i = EVM_VERSIONS.indexOf(v as EvmVersion);
-  return i > EVM_VERSIONS.indexOf(DEFAULT_EVM_VERSION) ? FORK_PIN_HINT : null;
-}
 
 /** The options a job request carries: the fork for Solidity, never for Solana. */
 export function jobOptions(lang: Lang, options: JobOptions, fork: string): JobOptions {

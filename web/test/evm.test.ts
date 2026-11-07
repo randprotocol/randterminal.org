@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_EVM_VERSION, EVM_VERSIONS, FORK_PIN_HINT, forkHint, isEvmVersion, jobOptions, loadFork, saveFork, warnedPcs } from '@/lib/evm';
+import { DEFAULT_EVM_VERSION, EVM_VERSIONS, isEvmVersion, jobOptions, loadFork, saveFork, warnedPcs } from '@/lib/evm';
 
 describe('EVM forks', () => {
   it('lists the fourteen forks solc 0.8.37 accepts, shanghai by default', () => {
@@ -7,11 +7,6 @@ describe('EVM forks', () => {
     expect(DEFAULT_EVM_VERSION).toBe('shanghai');
     expect(isEvmVersion('cancun')).toBe(true);
     expect(isEvmVersion('amsterdam')).toBe(false);
-  });
-  it('hints only for forks newer than shanghai', () => {
-    for (const f of ['homestead', 'london', 'paris', 'shanghai']) expect(forkHint(f)).toBeNull();
-    for (const f of ['cancun', 'prague', 'osaka']) expect(forkHint(f)).toBe(FORK_PIN_HINT);
-    expect(FORK_PIN_HINT).toMatch(/MCOPY, TLOAD\/TSTORE, CLZ/);
   });
   it('puts the fork into a Solidity request and keeps it out of every other', () => {
     expect(jobOptions('solidity', { chain_id: 20, stage: 2 }, 'cancun')).toEqual({ chain_id: 20, stage: 2, evm_version: 'cancun' });
