@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { Editor } from './Editor';
 import { SamplesPanel } from './SamplesPanel';
 import { PipelineStrip } from './PipelineStrip';
@@ -196,6 +197,7 @@ export function Shell() {
           <button aria-expanded={menu} onClick={() => setMenu(!menu)} className="inline-flex h-8 items-center gap-1 rounded-sm px-2 text-text-soft hover:bg-surface-2 hover:text-text-strong max-lg:h-11">Samples <Icon name="chevron" /></button>
           {menu && <div className="absolute top-full left-0 mt-1 w-[min(380px,calc(100vw-16px))] rounded-lg border border-border bg-surface p-1"><SamplesPanel onLoad={load} onLoading={setSampleLoading} /></div>}
         </div>
+        <Link href="/zkvm" className="inline-flex h-8 items-center rounded-sm px-2 whitespace-nowrap text-text-soft hover:bg-surface-2 hover:text-text-strong max-lg:h-11 max-sm:hidden">How the zkVM works</Link>
         <button onClick={run} disabled={busy} title="Ctrl/Cmd + Enter" className="ml-auto h-8 rounded-sm bg-accent px-4 font-medium whitespace-nowrap text-on-accent hover:brightness-110 disabled:opacity-50 max-lg:h-11 max-sm:px-3">{busy ? 'Working…' : 'Compile & Run'}</button>
         <ThemeSwitch />
       </header>
@@ -227,7 +229,7 @@ export function Shell() {
             ? <StagePanel stage={focused} job={job} compile={compile} transpile={transpile} image={image} defaultCall={defaultCall} onRun={setRun} onPickContract={busy ? undefined : pickContract} />
             : <div className="mx-auto max-w-lg p-6">
                 <h1 className="text-2xl leading-tight font-medium text-text-strong">Follow a contract down to zkVM cycles.</h1>
-                <p className="mt-2 mb-5 text-text-soft">Pick a sample below or write your own in the editor, then press Compile &amp; Run (⌘ or Ctrl + Enter).</p>
+                <p className="mt-2 mb-5 text-text-soft">Pick a sample below or write your own in the editor, then press Compile &amp; Run (⌘ or Ctrl + Enter). New to it? <Link href="/zkvm" className="text-accent-2 underline-offset-2 hover:underline">See how the zkVM works</Link>, step by step.</p>
                 {!menu && <SamplesPanel onLoad={load} onLoading={setSampleLoading} />}
               </div>}
         </section>

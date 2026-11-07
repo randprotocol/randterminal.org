@@ -9,7 +9,7 @@ on the Rand zkVM.
 
 - `api/` — Rust service (axum). `cd api && cargo test`.
   Run it with `TERMINAL_SAMPLES=../samples cargo run -p terminal-api` from `api/`.
-- `web/` — Next.js app. `cd web && npm ci && npm run dev`.
+- `web/` — Next.js app. `cd web && npm ci && npm run dev`. `/zkvm` walks one program from source to a verified proof.
 - `sandbox/` — the container image the untrusted tool steps run in.
 - `circuits/` — pinned submodule supplying the transpilers and the zkVM.
 

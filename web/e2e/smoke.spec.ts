@@ -90,3 +90,46 @@ test('no horizontal scroll at phone width', async ({ page }) => {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test('/zkvm: linked from the terminal, steps through the pipeline, and fits a phone', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('link', { name: 'How the zkVM works' }).first().click();
+  await expect(page).toHaveURL(/\/zkvm$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'How the zkVM works' })).toBeVisible();
+  const stages = page.getByRole('navigation', { name: 'stages' }).getByRole('button');
+  await expect(stages).toHaveCount(10);
+  await expect(page.getByRole('heading', { level: 2 })).toHaveText('Source');
+  await page.getByRole('button', { name: 'Next' }).click();
+  await expect(page.getByRole('heading', { level: 2 })).toHaveText('Compiler');
+  await expect(page.getByText('1 296 bytes').first()).toBeVisible();
+  await page.keyboard.press('ArrowRight');
+  await stages.filter({ hasText: 'Constraints' }).click();
+  await expect(page.getByText('t.assert_zero(n(IS_REAL) * (n(PC) - v(NEXT_PC)));')).toBeVisible();
+  await page.getByRole('button', { name: 'Skip an instruction at row 5' }).click();
+  await expect(page.getByRole('status')).toContainText('no proof can be made');
+  await stages.filter({ hasText: 'Trace tables' }).click();
+  await page.getByRole('radio', { name: 'SPL Token transfer' }).click();
+  await expect(page.getByText('765 851', { exact: false }).first()).toBeVisible();
+  await expect(page.locator('.zk-tiers li[data-pick]')).toContainText('20');
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const n of [0, 4, 7, 9]) {
+    await stages.nth(n).click();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+  }
+});
+
+test('/zkvm respects reduced motion: nothing ticks on its own', async ({ browser }) => {
+  const ctx = await browser.newContext({ reducedMotion: 'reduce' });
+  const page = await ctx.newPage();
+  await page.goto('/zkvm');
+  await page.getByRole('navigation', { name: 'stages' }).getByRole('button').filter({ hasText: 'Execute' }).click();
+  await expect(page.locator('.zk-clk').first()).toContainText('0');
+  await page.waitForTimeout(2000);
+  await expect(page.locator('.zk-clk').first()).toContainText('0');
+  await page.getByRole('button', { name: 'Step one cycle' }).click();
+  await expect(page.locator('.zk-clk').first()).toContainText('1');
+  await ctx.close();
+});
