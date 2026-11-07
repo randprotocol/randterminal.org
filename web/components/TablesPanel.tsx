@@ -31,8 +31,8 @@ export function TablesPanel({ run }: { run: RunSummary }) {
                 {groupDigits(b.used)} / {groupDigits(b.capacity)} · {(b.fill * 100).toFixed(b.fill < 0.1 ? 1 : 0)}%
               </span>
             </div>
-            <div className="mt-1 h-2 overflow-hidden rounded-full bg-surface-2" role="meter" aria-valuemin={0} aria-valuemax={b.capacity} aria-valuenow={b.used} aria-label={b.label}>
-              <div className={`h-2 rounded-full ${b.over ? 'bg-negative' : 'bg-accent'}`}
+            <div className="mt-1 h-2 overflow-hidden border border-rule bg-surface" role="meter" aria-valuemin={0} aria-valuemax={b.capacity} aria-valuenow={b.used} aria-label={b.label}>
+              <div className={`h-full ${b.over ? 'bg-negative' : 'bg-ink'}`}
                 style={{ width: `${Math.min(100, b.fill * 100)}%`, ...(b.over ? { backgroundImage: 'repeating-linear-gradient(135deg, transparent 0 4px, rgb(0 0 0 / .35) 4px 6px)' } : {}) }} />
             </div>
             <p className="mt-1 text-xs text-text-mute">{b.explain}</p>

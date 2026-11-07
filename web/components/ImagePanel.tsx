@@ -34,7 +34,7 @@ export function ImagePanel({ jobId, view }: { jobId: string; view: ImageView }) 
         <div className="flex items-baseline gap-2"><span className="mono text-text-strong [word-spacing:-.25em]">{groupDigits(view.words)} words</span><span className="text-text-mute">of a {groupDigits(view.cap_words)}-word cap</span>
           <span className={view.fits ? 'text-positive' : 'text-negative'}>{view.fits ? 'fits' : 'does not fit'}</span>
           <a href={api.fileUrl(jobId, 'image.bin')} className="quiet ml-auto">Download image.bin</a></div>
-        <div className="h-1 w-full rounded-full bg-surface-2"><div className={`h-1 rounded-full ${view.fits ? 'bg-accent' : 'bg-negative'}`} style={{ width: `${pct}%` }} /></div>
+        <div className="h-1 w-full bg-rule"><div className={`h-1 ${view.fits ? 'bg-ink' : 'bg-negative'}`} style={{ width: `${pct}%` }} /></div>
         <Facts items={[['Text', groupDigits(view.text_words)], ['Data', groupDigits(view.data_words)], ['Prologue', view.prologue_words], ['Base pc', hexAddr(view.base_pc)]]} />
         <Identity name="hc" meaning="the zkVM's commitment to this exact program" value={view.hc} />
         <Identity name="Program id" meaning="how the chain names it" value={view.program_id} />

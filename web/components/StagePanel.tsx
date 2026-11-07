@@ -24,7 +24,7 @@ export function StagePanel({ stage, job, compile, transpile, image, defaultCall,
     return <><StageError title={failed} error={job[failed].error!} />{choices.length > 0 && <div className="mx-4"><ContractPicker contracts={choices} value={job.options.contract ?? null} onPick={onPickContract} /></div>}</>;
   }
   const wait = (what: string, v: { error: string | null; retry: () => void }) => v.error
-    ? <div role="alert" className="m-4 rounded-md border border-negative/60 bg-surface p-4"><p className="text-negative">Could not load {what}: {v.error}</p><button onClick={v.retry} className="mt-2 h-8 rounded-sm bg-surface-2 px-3 text-xs text-text-strong">Retry</button></div>
+    ? <div role="alert" className="m-4 rounded-md border border-negative/60 bg-surface p-4"><p className="text-negative">Could not load {what}: {v.error}</p><button onClick={v.retry} className="mt-2 h-8 rounded-sm border border-ink px-3 text-xs text-ink hover:bg-hl">Retry</button></div>
     : <p className="p-6 text-text-mute">Waiting for {what}…</p>;
   // The run panel stays mounted (hidden) on the other stages, so its call form, run and debugger position survive a tab switch.
   const runPanel = image.data && (

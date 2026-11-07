@@ -43,7 +43,7 @@ export function RunPanel({ job, compile, transpile, image, defaultCall, onRun }:
         <summary className="cursor-pointer text-text-soft">{run ? 'Change the call' : 'Call'}</summary>
         <div className="mt-3 max-w-2xl">
           {evm ? <EvmCallForm abi={abi} value={form as EF} onChange={setForm} /> : <SbpfCallForm value={form as SF} onChange={setForm} />}
-          <button onClick={go} disabled={busy || invalid} className="mt-3 h-8 rounded-sm bg-accent px-4 font-medium text-on-accent hover:brightness-110 disabled:opacity-50">{busy ? 'Running…' : 'Run on the zkVM'}</button>
+          <button onClick={go} disabled={busy || invalid} className="btn btn-primary mt-3">{busy ? 'Running…' : 'Run on the zkVM'}</button>
           {err && <p role="alert" className="mt-2 text-xs text-negative">{err}</p>}
         </div>
       </details>

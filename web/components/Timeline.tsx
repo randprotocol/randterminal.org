@@ -3,7 +3,8 @@ import { useRef } from 'react';
 import { groupDigits } from '@/lib/format';
 import type { SyscallView } from '@/lib/types';
 
-const TICK: Record<string, string> = { read_input: 'var(--text-mute)', read_public: 'var(--text-mute)', poseidon2: 'var(--accent)', poseidon2_len: 'var(--accent)', keccak: 'var(--accent)', sha256: 'var(--accent)', write_output: 'var(--positive)', halt: 'var(--positive)' };
+// Greys by role: input reads lightest, hashing mid, output and halt in full ink.
+const TICK: Record<string, string> = { read_input: 'var(--ink-4)', read_public: 'var(--ink-4)', poseidon2: 'var(--ink-2)', poseidon2_len: 'var(--ink-2)', keccak: 'var(--ink-2)', sha256: 'var(--ink-2)', write_output: 'var(--ink)', halt: 'var(--ink)' };
 
 export function Timeline({ total, clk, syscalls, onSeek }: { total: number; clk: number; syscalls: SyscallView[]; onSeek: (c: number) => void }) {
   const el = useRef<HTMLDivElement>(null);
@@ -12,9 +13,9 @@ export function Timeline({ total, clk, syscalls, onSeek }: { total: number; clk:
     <div className="flex items-center gap-2 px-4 py-2">
       <div ref={el} role="slider" aria-label="cycle" aria-valuemin={0} aria-valuemax={total - 1} aria-valuenow={clk} tabIndex={0}
         onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); seek(e.clientX); }} onPointerMove={(e) => e.buttons && seek(e.clientX)}
-        className="relative h-6 min-w-0 flex-1 cursor-pointer rounded-sm bg-surface-2">
+        className="relative h-6 min-w-0 flex-1 cursor-pointer rounded-sm border border-rule bg-surface">
         <svg className="absolute inset-0 h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${Math.max(total, 1)} 28`}>
-          {syscalls.map((s, i) => <rect key={i} x={s.clk} y={4} width={Math.max(1, total / 800)} height={20} fill={TICK[s.kind] ?? 'var(--text-mute)'} />)}
+          {syscalls.map((s, i) => <rect key={i} x={s.clk} y={4} width={Math.max(1, total / 800)} height={20} fill={TICK[s.kind] ?? 'var(--ink-3)'} />)}
         </svg>
         <div className="absolute top-0 h-full w-0.5 bg-text-strong" style={{ left: `${(clk / Math.max(total - 1, 1)) * 100}%` }} />
       </div>

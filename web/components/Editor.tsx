@@ -14,24 +14,27 @@ import type { Diagnostic } from '@/lib/types';
 const theme = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'var(--bg)', color: 'var(--text)' },
   '.cm-scroller': { fontFamily: 'var(--mono)', lineHeight: '1.6' },
-  '.cm-content': { fontSize: '13px', caretColor: 'var(--accent)' },
-  '.cm-gutters': { backgroundColor: 'var(--bg)', color: 'var(--text-mute)', border: 'none' },
+  '.cm-content': { fontSize: '13px', caretColor: 'var(--ink)' },
+  '.cm-gutters': { backgroundColor: 'var(--bg)', color: 'var(--ink-4)', border: 'none', borderRight: '1px solid var(--rule-soft)' },
   '.cm-activeLine': { backgroundColor: 'transparent' },
   '&.cm-focused .cm-activeLine': { backgroundColor: 'var(--hl)' },
-  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--text-strong)' },
-  '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': { backgroundColor: 'var(--hl)' },
-  '&.cm-focused .cm-cursor': { borderLeftColor: 'var(--accent)' },
+  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--ink)' },
+  '.cm-matchingBracket, &.cm-focused .cm-matchingBracket': { backgroundColor: 'var(--hl-strong)', outline: '1px solid var(--rule)' },
+  '.cm-selectionMatch': { backgroundColor: 'var(--hl)' },
+  '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': { backgroundColor: 'var(--hl-strong)' },
+  '&.cm-focused .cm-cursor': { borderLeftColor: 'var(--ink)' },
 });
 
-// Colours are variables, so one definition follows the theme switch without rebuilding the editor.
+// A monochrome theme: the ink scale plus weight and slant tell the classes apart. Colours are
+// variables, so one definition follows the theme switch without rebuilding the editor.
 const highlight = HighlightStyle.define([
-  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: 'var(--syn-comment)' },
-  { tag: [t.keyword, t.modifier, t.controlKeyword, t.operatorKeyword, t.definitionKeyword, t.moduleKeyword], color: 'var(--syn-keyword)' },
+  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: 'var(--syn-comment)', fontStyle: 'italic' },
+  { tag: [t.keyword, t.modifier, t.controlKeyword, t.operatorKeyword, t.definitionKeyword, t.moduleKeyword], color: 'var(--syn-keyword)', fontWeight: '600' },
   { tag: [t.string, t.special(t.string), t.character], color: 'var(--syn-string)' },
   { tag: [t.number, t.bool, t.null, t.atom], color: 'var(--syn-number)' },
-  { tag: [t.typeName, t.className, t.namespace, t.standard(t.typeName)], color: 'var(--syn-type)' },
+  { tag: [t.typeName, t.className, t.namespace, t.standard(t.typeName)], color: 'var(--syn-type)', fontWeight: '500' },
   { tag: [t.function(t.variableName), t.function(t.definition(t.variableName)), t.macroName], color: 'var(--syn-fn)', fontWeight: '500' },
-  { tag: t.invalid, color: 'var(--negative)' },
+  { tag: t.invalid, color: 'var(--negative)', textDecoration: 'underline wavy' },
 ]);
 
 export function Editor({ value, onChange, language, diagnostics, onRun, readOnly = false }: {
