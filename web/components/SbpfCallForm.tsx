@@ -19,7 +19,7 @@ export function SbpfCallForm({ value, onChange }: { value: Form | null; onChange
             <button className="ml-auto text-text-mute" onClick={() => setAcc(i, null)}>remove</button></div>
         </fieldset>
       ))}
-      <button className="self-start text-accent" onClick={() => onChange({ ...form, accounts: [...form.accounts, blank] })}>+ account</button>
+      <button className="link self-start underline" onClick={() => onChange({ ...form, accounts: [...form.accounts, blank] })}>+ account</button>
       <label>instruction data (hex) <input className={input} value={form.data} onChange={(e) => onChange({ ...form, data: e.target.value })} /></label>
     </div>
   );

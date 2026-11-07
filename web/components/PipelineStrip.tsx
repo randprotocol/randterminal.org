@@ -19,7 +19,7 @@ export function PipelineStrip({ job, views, focused, onFocus }: { job: JobView |
         return (
           <li key={s.id} data-status={status}>
             <button ref={focused === s.id ? current : undefined} onClick={() => onFocus(s.id)} aria-current={focused === s.id ? 'step' : undefined} className="rail-stage">
-              <span className="rail-title"><span className="rail-n">{s.n}</span>{s.title}</span>
+              <span className="rail-title"><span className="rail-n">{String(s.n).padStart(2, '0')}<span aria-hidden> —</span></span>{s.title}</span>
               {f && status !== 'failed'
                 ? <span className="rail-figure"><span className="rail-value">{f.value}</span> <span className="rail-unit">{f.unit}{f.note ? `, ${f.note}` : ''}</span></span>
                 : <span className="rail-caption">{status === 'failed' && f?.note ? `Failed: ${f.note}` : railCaption(status, s.id)}</span>}
