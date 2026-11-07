@@ -1,123 +1,175 @@
 @import "tailwindcss";
 
-/* Rand Terminal — the wallet's ink/bone palette (clients/design/tokens.json) with
-   randprotocol.org's cobalt as the one accent. Dark by default; light under data-theme="light"
-   or a light OS when data-theme="system". Stage colours are the only other hues, and each is
-   paired with a label, never colour alone. */
+/* Rand Terminal — institutional monochrome (DESIGN-SPEC 2026-11-07). No hue in the chrome: the
+   ink scale carries hierarchy, and line weight / dash / fill carry state. The three status tints
+   appear only where they mean something (a failed stage, a trap, an unsupported syscall).
+   Light by default; dark under data-theme="dark" or a dark OS when data-theme="system". */
 :root {
-  color-scheme: dark;
-  --bg: #0E1220; --bg-soft: #121726; --surface: #161C2C; --surface-2: #1E2538;
-  --border: #2B3350; --border-soft: #20283D;
-  --text: #ECE9E2; --text-soft: #ABAFBF; --text-mute: #8C91A5; --text-strong: #FFFDF8;
-  --accent: #5B8DEF; --accent-2: #8FB0FF; --on-accent: #0E1220;
-  --positive: #3DDC97; --negative: #FF7A59; --warning: #F5C451;
-  --hl: rgba(91, 141, 239, .16);
-  --r-sm: 5px; --r-md: 8px; --r-lg: 12px;
-  --syn-comment: #7F879F; --syn-keyword: #8FB0FF; --syn-string: #7FD6AE; --syn-number: #F5C451; --syn-type: #C9B8F5; --syn-fn: #ECE9E2;
-  --font: var(--font-plex-sans, "IBM Plex Sans"), ui-sans-serif, system-ui, sans-serif;
-  --mono: var(--font-plex-mono, "IBM Plex Mono"), ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-:root[data-theme="light"] {
   color-scheme: light;
-  --bg: #F2F3F7; --bg-soft: #E9EBF1; --surface: #FFFFFF; --surface-2: #F1F2F6;
-  --border: #D9DCE6; --border-soft: #E6E8EF;
-  --text: #121521; --text-soft: #474C5E; --text-mute: #62677A; --text-strong: #07090F;
-  --accent: #2F5FCC; --accent-2: #244CA3; --on-accent: #FFFFFF;
-  --positive: #0B7A51; --negative: #C2410C; --warning: #8F6200;
-  --hl: rgba(47, 95, 204, .12);
-  --syn-comment: #62677A; --syn-keyword: #2F5FCC; --syn-string: #0B7A51; --syn-number: #8F6200; --syn-type: #6B3FA8; --syn-fn: #121521;
+  --bg: #f7f7f6; --bg-alt: #efefed; --surface: #ffffff; --surface-2: #efefed;
+  --ink: #111111; --ink-2: #3a3a3a; --ink-3: #6b6b6b; --ink-4: #9a9a9a;
+  --rule: #d7d7d4; --rule-soft: #e6e6e3; --invert-bg: #0e0e0e; --invert-ink: #f5f5f4;
+  --positive: #2f6f4f; --negative: #9b2c2c; --warning: #8a6d1f;
+  --hl: rgba(17, 17, 17, .06); --hl-strong: rgba(17, 17, 17, .12);
+  --r-sm: 2px; --r-md: 2px; --r-lg: 2px;
+  --font: var(--font-geist-sans, "Geist"), ui-sans-serif, system-ui, sans-serif;
+  --mono: var(--font-geist-mono, "Geist Mono"), ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-@media (prefers-color-scheme: light) {
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0b0b; --bg-alt: #121212; --surface: #151515; --surface-2: #1c1c1c;
+  --ink: #f2f2f2; --ink-2: #c9c9c9; --ink-3: #8e8e8e; --ink-4: #5e5e5e;
+  --rule: #262626; --rule-soft: #1c1c1c; --invert-bg: #f2f2f2; --invert-ink: #0b0b0b;
+  --positive: #8fbfa3; --negative: #e09a9a; --warning: #d2b878;
+  --hl: rgba(242, 242, 242, .08); --hl-strong: rgba(242, 242, 242, .16);
+}
+@media (prefers-color-scheme: dark) {
   :root[data-theme="system"] {
-    color-scheme: light;
-    --bg: #F2F3F7; --bg-soft: #E9EBF1; --surface: #FFFFFF; --surface-2: #F1F2F6;
-    --border: #D9DCE6; --border-soft: #E6E8EF;
-    --text: #121521; --text-soft: #474C5E; --text-mute: #62677A; --text-strong: #07090F;
-    --accent: #2F5FCC; --accent-2: #244CA3; --on-accent: #FFFFFF;
-    --positive: #0B7A51; --negative: #C2410C; --warning: #8F6200;
-    --hl: rgba(47, 95, 204, .12);
-    --syn-comment: #62677A; --syn-keyword: #2F5FCC; --syn-string: #0B7A51; --syn-number: #8F6200; --syn-type: #6B3FA8; --syn-fn: #121521;
+    color-scheme: dark;
+    --bg: #0b0b0b; --bg-alt: #121212; --surface: #151515; --surface-2: #1c1c1c;
+    --ink: #f2f2f2; --ink-2: #c9c9c9; --ink-3: #8e8e8e; --ink-4: #5e5e5e;
+    --rule: #262626; --rule-soft: #1c1c1c; --invert-bg: #f2f2f2; --invert-ink: #0b0b0b;
+    --positive: #8fbfa3; --negative: #e09a9a; --warning: #d2b878;
+    --hl: rgba(242, 242, 242, .08); --hl-strong: rgba(242, 242, 242, .16);
   }
 }
+/* The component vocabulary predates the spec: every older name resolves to the ink scale. */
+:root {
+  --bg-soft: var(--bg-alt); --border: var(--rule); --border-soft: var(--rule-soft);
+  --text: var(--ink-2); --text-soft: var(--ink-2); --text-mute: var(--ink-3); --text-strong: var(--ink);
+  --accent: var(--ink); --accent-2: var(--ink-2); --on-accent: var(--bg);
+  /* Syntax in greys: weight and slant separate the classes, not hue. */
+  --syn-comment: var(--ink-3); --syn-keyword: var(--ink); --syn-string: var(--ink-2); --syn-number: var(--ink);
+  --syn-type: var(--ink); --syn-fn: var(--ink);
+}
 @theme inline {
-  --color-bg: var(--bg); --color-bg-soft: var(--bg-soft); --color-surface: var(--surface); --color-surface-2: var(--surface-2);
-  --color-border: var(--border); --color-border-soft: var(--border-soft);
+  --color-bg: var(--bg); --color-bg-soft: var(--bg-soft); --color-bg-alt: var(--bg-alt); --color-surface: var(--surface); --color-surface-2: var(--surface-2);
+  --color-border: var(--border); --color-border-soft: var(--border-soft); --color-rule: var(--rule);
   --color-text: var(--text); --color-text-soft: var(--text-soft); --color-text-mute: var(--text-mute); --color-text-strong: var(--text-strong);
+  --color-ink: var(--ink); --color-ink-2: var(--ink-2); --color-ink-3: var(--ink-3); --color-ink-4: var(--ink-4);
+  --color-invert-bg: var(--invert-bg); --color-invert-ink: var(--invert-ink);
   --color-accent: var(--accent); --color-accent-2: var(--accent-2); --color-on-accent: var(--on-accent);
   --color-positive: var(--positive); --color-negative: var(--negative); --color-warning: var(--warning); --color-hl: var(--hl);
   --font-sans: var(--font); --font-mono: var(--mono);
   --radius-sm: var(--r-sm); --radius-md: var(--r-md); --radius-lg: var(--r-lg);
 }
 @layer base {
-  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
-  code, pre, .mono { font-family: var(--mono); font-variant-ligatures: none; }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; letter-spacing: -.01em; }
+  h1, h2, h3 { letter-spacing: -.04em; }
+  code, pre, .mono { font-family: var(--mono); font-variant-ligatures: none; letter-spacing: 0; }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
   button { cursor: pointer; }
   button:disabled { cursor: not-allowed; }
-  code, pre, .mono, .rail-value { font-variant-numeric: tabular-nums slashed-zero; }
+  ::placeholder { color: var(--ink-4); }
+  code, pre, .mono, .rail-value, td, dd { font-variant-numeric: tabular-nums slashed-zero; }
+  a, button, input, select { transition: color .15s, background-color .15s, border-color .15s, opacity .15s; }
 }
 @layer components {
-  /* The rail: the one bold thing on the page. A stage is a tab on the program's way down, and the
-     thread through the nodes fills as the stages finish. */
-  .rail { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); overflow-x: auto; background: var(--bg-soft); border-bottom: 1px solid var(--border-soft); scrollbar-width: none; }
-  .rail > li { position: relative; --thread: var(--border); --node: var(--border); }
-  .rail > li[data-status="done"], .rail > li[data-status="ready"] { --thread: var(--accent); --node: var(--accent); }
-  .rail > li[data-status="ready"] { --thread: var(--border); }
-  .rail > li[data-status="running"] { --node: var(--accent); }
+  .wordmark { font-family: var(--font-plex-mono, "IBM Plex Mono"), ui-monospace, SFMono-Regular, Menlo, monospace; }
+  /* Eyebrow: the spec's mono label. 11px, uppercase, tracked, ink-3. */
+  .eyebrow { font-family: var(--mono); font-size: 11px; line-height: 16px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); font-weight: 400; }
+  .eyebrow-sq::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 8px; vertical-align: 1px; background: currentColor; }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 40px; padding: 0 18px; border-radius: 2px; font-size: 14px; font-weight: 500; white-space: nowrap; letter-spacing: -.01em; }
+  .btn-primary { background: var(--ink); color: var(--bg); border: 1px solid var(--ink); }
+  .btn-primary:hover:not(:disabled) { opacity: .86; }
+  .btn-primary:disabled { opacity: .45; }
+  .btn-secondary { background: transparent; color: var(--ink); border: 1px solid var(--ink); }
+  .btn-secondary:hover { background: var(--hl); }
+  .btn-invert { background: var(--invert-ink); color: var(--invert-bg); border: 1px solid var(--invert-ink); }
+  .btn-invert:hover { opacity: .86; }
+  .btn-invert:focus-visible { outline-color: var(--invert-ink); }
+  .link { color: var(--ink); text-underline-offset: 3px; }
+  .link:hover { text-decoration: underline; }
+
+  /* The rail: the program's way down, stage by stage. Monochrome: a finished stage draws a solid
+     ink thread and a filled square; the stage in hand draws a dashed thread; a waiting one is a
+     hairline and an open square. Only a failure takes the status tint. */
+  .rail { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); overflow-x: auto; background: var(--bg); border-bottom: 1px solid var(--rule); scrollbar-width: none; }
+  .rail > li { position: relative; --thread: var(--rule); --node: var(--ink-4); border-left: 1px solid var(--rule-soft); }
+  .rail > li:first-child { border-left: 0; }
+  .rail > li[data-status="done"], .rail > li[data-status="ready"] { --thread: var(--ink); --node: var(--ink); }
+  .rail > li[data-status="ready"] { --thread: var(--rule); }
+  .rail > li[data-status="running"] { --node: var(--ink); }
   .rail > li[data-status="failed"] { --thread: var(--negative); --node: var(--negative); }
-  .rail > li::before { content: ""; position: absolute; top: 15px; left: 0; right: 0; height: 2px; background: var(--thread); }
+  .rail > li::before { content: ""; position: absolute; top: 15px; left: 0; right: 0; height: 0; border-top: 1px solid var(--thread); }
+  .rail > li[data-status="done"]::before, .rail > li[data-status="failed"]::before { border-top-width: 2px; top: 14px; }
   .rail > li:first-child::before { left: 18px; }
-  .rail > li:last-child::before { right: calc(100% - 28px); }
-  .rail > li[data-status="running"]::before { background: linear-gradient(90deg, var(--accent), var(--border) 60%, var(--accent)); background-size: 200% 100%; animation: thread 1.2s linear infinite; }
-  .rail > li::after { content: ""; position: absolute; top: 11px; left: 18px; width: 10px; height: 10px; border-radius: 50%; background: var(--bg-soft); box-shadow: inset 0 0 0 2px var(--node); pointer-events: none; }
+  .rail > li:last-child::before { right: calc(100% - 26px); }
+  .rail > li[data-status="running"]::before { border-top: 1px dashed var(--ink); }
+  .rail > li::after { content: ""; position: absolute; top: 11px; left: 18px; width: 8px; height: 8px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--node); pointer-events: none; }
   .rail > li[data-status="done"]::after, .rail > li[data-status="failed"]::after, .rail > li[data-status="running"]::after { background: var(--node); }
-  @keyframes thread { from { background-position: 200% 0; } to { background-position: 0 0; } }
-  .rail-stage { display: flex; flex-direction: column; gap: 2px; width: 100%; height: 100%; padding: 30px 18px 10px; text-align: left; color: var(--text-soft); box-shadow: inset 0 -2px 0 transparent; }
+  .rail-stage { display: flex; flex-direction: column; gap: 4px; width: 100%; height: 100%; padding: 30px 18px 12px; text-align: left; color: var(--ink-2); box-shadow: inset 0 -2px 0 transparent; }
   .rail-stage:hover { background: var(--hl); }
-  .rail-stage[aria-current="step"] { background: var(--bg); color: var(--text-strong); box-shadow: inset 0 -2px 0 var(--accent); }
-  .rail-title { font-size: 12px; white-space: nowrap; }
-  .rail-n { color: var(--text-mute); margin-right: 6px; font-family: var(--mono); }
-  .rail-figure { display: flex; align-items: baseline; gap: 5px; min-width: 0; white-space: nowrap; overflow: hidden; }
-  .rail-value { word-spacing: -.4em; font-family: var(--mono); font-size: 19px; font-weight: 500; line-height: 26px; color: var(--text-strong); letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis; }
-  .rail-unit { font-size: 12px; color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; }
-  .rail-caption { font-size: 12.5px; line-height: 26px; color: var(--text-mute); white-space: nowrap; }
+  .rail-stage[aria-current="step"] { background: var(--surface); color: var(--ink); box-shadow: inset 0 -2px 0 var(--ink); }
+  .rail-title { font-family: var(--mono); font-size: 11px; line-height: 16px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); white-space: nowrap; }
+  .rail-stage[aria-current="step"] .rail-title { color: var(--ink); }
+  .rail-n { color: var(--ink-4); margin-right: 8px; font-family: var(--mono); }
+  .rail-figure { display: flex; align-items: baseline; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; }
+  .rail-value { word-spacing: -.4em; font-family: var(--mono); font-size: 20px; font-weight: 500; line-height: 26px; color: var(--ink); letter-spacing: -.03em; overflow: hidden; text-overflow: ellipsis; }
+  .rail-unit { font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+  .rail-caption { font-size: 13px; line-height: 26px; color: var(--ink-3); white-space: nowrap; }
   li[data-status="failed"] .rail-caption { color: var(--negative); }
-  li[data-status="running"] .rail-caption { color: var(--accent-2); }
-  li[data-status="ready"] .rail-caption { color: var(--accent-2); }
+  li[data-status="running"] .rail-caption, li[data-status="ready"] .rail-caption { color: var(--ink); }
 
-  .workspace { transition: grid-template-columns .22s cubic-bezier(.2, .7, .2, 1); }
-  .workspace[data-dragging] { transition: none; }
-
-  .facts { display: flex; flex-wrap: wrap; gap: 8px 28px; }
-  .facts dt { font-size: 12px; color: var(--text-mute); }
-  .facts dd { word-spacing: -.4em; font-family: var(--mono); font-size: 14px; color: var(--text-strong); font-variant-numeric: tabular-nums slashed-zero; }
+  .facts { display: flex; flex-wrap: wrap; gap: 10px 0; }
+  .facts > div { padding: 0 24px 0 0; margin-right: 24px; border-right: 1px solid var(--rule); }
+  .facts > div:last-child { border-right: 0; margin-right: 0; }
+  .facts dt { font-family: var(--mono); font-size: 11px; line-height: 16px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); }
+  .facts dd { word-spacing: -.4em; font-family: var(--mono); font-size: 15px; color: var(--ink); font-variant-numeric: tabular-nums slashed-zero; }
   .identity { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 
-  .quiet { flex: none; font-size: 12px; color: var(--accent-2); border-radius: var(--r-sm); }
+  .quiet { flex: none; font-size: 12px; color: var(--ink); border-radius: 2px; text-underline-offset: 3px; }
   .quiet:hover { text-decoration: underline; }
-  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: var(--r-sm); color: var(--text-soft); }
-  .icon-btn:hover { background: var(--surface-2); color: var(--text-strong); }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 2px; color: var(--ink-2); }
+  .icon-btn:hover { background: var(--hl); color: var(--ink); }
   @media (max-width: 1023px) { .icon-btn { width: 44px; height: 44px; } }
 
-  .seg { height: 28px; padding: 0 10px; border-radius: var(--r-sm); font-size: 12px; color: var(--text-soft); }
-  .seg:hover { color: var(--text-strong); }
-  .seg[aria-selected="true"] { background: var(--surface-2); color: var(--text-strong); }
+  .seg { height: 28px; padding: 0 10px; border-radius: 2px; font-size: 12px; color: var(--ink-3); box-shadow: inset 0 -1px 0 transparent; }
+  .seg:hover { color: var(--ink); }
+  .seg[aria-selected="true"] { color: var(--ink); box-shadow: inset 0 -2px 0 var(--ink); }
 
-  .file-tab { height: 36px; padding: 0 12px; font-family: var(--mono); font-size: 12px; color: var(--text-mute); box-shadow: inset 0 -2px 0 transparent; white-space: nowrap; }
-  .file-tab:hover { color: var(--text-strong); }
-  .file-tab[aria-pressed="true"] { color: var(--text-strong); box-shadow: inset 0 -2px 0 var(--accent); }
+  .file-tab { height: 36px; padding: 0 12px; font-family: var(--mono); font-size: 12px; color: var(--ink-3); box-shadow: inset 0 -2px 0 transparent; white-space: nowrap; }
+  .file-tab:hover { color: var(--ink); }
+  .file-tab[aria-pressed="true"] { color: var(--ink); box-shadow: inset 0 -2px 0 var(--ink); }
 
+  /* Samples: a ruled list, no fills. */
   .samples { display: flex; flex-direction: column; }
-  .samples button { display: grid; grid-template-columns: 1fr auto; gap: 1px 12px; width: 100%; padding: 10px 12px; text-align: left; border-radius: var(--r-md); }
+  .samples > li + li { border-top: 1px solid var(--rule); }
+  .samples button { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; width: 100%; padding: 14px 12px; text-align: left; border-radius: 2px; }
   .samples button:hover { background: var(--hl); }
-  .sample-title { color: var(--text-strong); font-weight: 500; }
-  .sample-kind { font-size: 12px; color: var(--text-mute); }
-  .sample-about { grid-column: 1 / -1; font-size: 12.5px; color: var(--text-soft); }
+  .sample-title { color: var(--ink); font-weight: 500; }
+  .sample-kind { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); }
+  .sample-about { grid-column: 1 / -1; font-size: 13px; color: var(--ink-3); }
 
   .data-table { width: 100%; font-size: 12px; border-collapse: collapse; }
-  .data-table caption { text-align: left; padding-bottom: 6px; color: var(--text-mute); }
-  .data-table th { text-align: left; font-weight: 400; color: var(--text-mute); padding: 4px 16px 4px 0; border-bottom: 1px solid var(--border-soft); }
-  .data-table td { padding: 4px 16px 4px 0; border-bottom: 1px solid var(--border-soft); }
+  .data-table caption { text-align: left; padding-bottom: 8px; font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); }
+  .data-table th { text-align: left; font-family: var(--mono); font-size: 11px; font-weight: 400; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); padding: 6px 16px 6px 0; border-bottom: 1px solid var(--rule); }
+  .data-table td { padding: 6px 16px 6px 0; border-bottom: 1px solid var(--rule-soft); }
+
+  /* The landing state of an empty workspace. Lives in the stage panel, so it sizes to the panel. */
+  .intro { container-type: inline-size; }
+  .intro-h1 { font-size: 38px; line-height: 1.08; font-weight: 500; letter-spacing: -.04em; color: var(--ink); }
+  @container (min-width: 640px) { .intro-h1 { font-size: 52px; } }
+  .intro-lede { font-size: 16px; line-height: 1.5; color: var(--ink-3); }
+  .panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 2px; }
+  .panel-row { display: grid; grid-template-columns: minmax(84px, auto) minmax(0, 1fr) auto; gap: 12px; align-items: baseline; padding: 10px 14px; font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .panel-row + .panel-row { border-top: 1px solid var(--rule-soft); }
+  .panel-row dt { text-transform: uppercase; letter-spacing: .08em; font-size: 11px; color: var(--ink-3); }
+  .panel-row dd:first-of-type { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .panel-row dd:last-of-type { color: var(--ink-3); }
+  .pillars { display: grid; grid-template-columns: minmax(0, 1fr); border: 1px solid var(--rule); background: var(--surface); }
+  .pillars > li { padding: 20px; }
+  .pillars > li + li { border-top: 1px solid var(--rule); }
+  @container (min-width: 680px) {
+    .pillars { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .pillars > li + li { border-top: 0; border-left: 1px solid var(--rule); }
+  }
+  .pillar-h { margin-top: 18px; font-size: 20px; line-height: 1.15; font-weight: 500; letter-spacing: -.04em; color: var(--ink); }
+  .pillar-p { margin-top: 8px; font-size: 13.5px; line-height: 1.5; color: var(--ink-3); }
+  .band-invert { background: var(--invert-bg); color: var(--invert-ink); }
+  .band-invert .eyebrow { color: color-mix(in srgb, var(--invert-ink) 60%, transparent); }
+  .kbd { font-family: var(--mono); font-size: 11px; padding: 1px 5px; border: 1px solid currentColor; border-radius: 2px; opacity: .8; }
 
   /* /zkvm: the walkthrough. The one bold thing is the thread with the token riding it; the rest is
      the stage panel's quiet ink. */
@@ -227,6 +279,6 @@
   .zk-accept { margin-top: 18px; padding: 10px 14px; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--positive); color: var(--positive); font-family: var(--mono); font-size: 13px; word-spacing: -.2em; animation: zk-in .5s both; }
 
   /* CodeMirror's diagnostics and panels sit on the same ink. */
-  .cm-tooltip { background: var(--surface) !important; border-color: var(--border) !important; color: var(--text); }
+  .cm-tooltip { background: var(--surface) !important; border-color: var(--rule) !important; color: var(--ink-2); border-radius: 2px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }

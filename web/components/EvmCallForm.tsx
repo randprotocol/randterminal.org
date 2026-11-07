@@ -30,7 +30,7 @@ export function EvmCallForm({ abi, value, onChange }: { abi: AbiItem[]; value: F
             <button aria-label="remove" className="px-2 text-text-mute" onClick={() => setSeed(i, null)}>×</button>
           </div>
         ))}
-        <button className="text-accent" onClick={() => set({ storage: [...storage, { kind: 'slot', slot: '0', value: '0' }] })}>+ add</button>
+        <button className="link underline" onClick={() => set({ storage: [...storage, { kind: 'slot', slot: '0', value: '0' }] })}>+ add</button>
         <p className="mt-1 text-text-mute">Storage you don’t set reads as zero. The terminal finds the slots the call touches by dry-running the EVM interpreter, so you never write Merkle witnesses.</p>
       </fieldset>
     </div>

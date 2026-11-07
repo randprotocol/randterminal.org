@@ -86,7 +86,7 @@ export function Debugger({ run, image, transpile, compile }: { run: RunSummary; 
         {note && <span role="status" className="text-xs text-text-mute">{note}</span>}
       </div>
       <div className="min-h-0 overflow-auto">
-      {stateErr && <div role="alert" className="mx-4 rounded-md border border-negative/60 p-3 text-xs"><span className="text-negative">Could not load cycle {clk}: {stateErr}</span> <button className="ml-2 text-accent" onClick={() => setRetry((n) => n + 1)}>Retry</button></div>}
+      {stateErr && <div role="alert" className="mx-4 rounded-md border border-negative/60 p-3 text-xs"><span className="text-negative">Could not load cycle {clk}: {stateErr}</span> <button className="link ml-2 underline" onClick={() => setRetry((n) => n + 1)}>Retry</button></div>}
       {!state && !stateErr && <p className="px-4 text-xs text-text-mute">loading cycle {clk}…</p>}
       {state && (
         <div className="grid min-h-0 grid-cols-1 border-t border-border-soft @2xl:h-full @2xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,1fr)] @5xl:grid-cols-[minmax(0,1fr)_330px_minmax(0,1fr)]">
