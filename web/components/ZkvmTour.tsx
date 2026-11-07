@@ -239,6 +239,7 @@ function Image({ s }: { s: SampleFacts }) {
       </div>
       <Facts items={[['Program', `${group(total)} RV32IM words`], ['Cap', '65 535 words'], ['Fits', 'yes']]} />
       <Identity name="hc" meaning="the zkVM's commitment to this exact program" value={s.hc} />
+      {s.buildNote && <p className="zk-cap">{s.buildNote}</p>}
     </figure>
   );
 }

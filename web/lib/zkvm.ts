@@ -110,6 +110,8 @@ export interface SampleFacts {
   tier: number;
   rows: Rows;
   cyclesNote: string;
+  /** What the image was built with, when that differs from the terminal's defaults. */
+  buildNote?: string;
 }
 
 /** The first ten cycles of the recorded ERC-20 transfer run (web/e2e/fixtures/cycles-0.json and
@@ -173,7 +175,9 @@ export const SAMPLES: Record<SampleFacts['id'], SampleFacts> = {
     rows: { cpu: 66235, alu: 73159, memory: 216916, poseidon2_permutations: 3908, keccak_permutations: 17, digest_rows: 3155 },
     // cycles and rows: terminal-core tests/tiers.rs erc20_transfer_lands_in_tier_18_like_rand_guest_run
     // asserts every one at 85b6f46 (the image, contract.c and hc are byte-identical to 9bf3844's).
-    cyclesNote: 'transfer(BOB, 250), the sample’s default call, as the API ran it.',
+    cyclesNote: 'transfer(BOB, 250), the sample’s default call, on the chain-id-13 reference image.',
+    // randterminal.org at 85b6f46 builds the same source for chain id 20: hc 1d9896c9…, 11 691 words, 66 240 cycles, tier 18.
+    buildNote: 'This is circuits’ reference build, translated for chain id 13. The chain id is compiled into the image, so the terminal’s default of 20 gives another hc, 5 more words and 5 more cycles.',
   },
   spl: {
     id: 'spl',
