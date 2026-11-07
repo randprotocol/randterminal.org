@@ -4,18 +4,35 @@ import { EditorView, basicSetup } from 'codemirror';
 import { EditorState, Compartment } from '@codemirror/state';
 import { keymap } from '@codemirror/view';
 import { Prec } from '@codemirror/state';
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { tags as t } from '@lezer/highlight';
 import { lintGutter, setDiagnostics, type Diagnostic as CmDiagnostic } from '@codemirror/lint';
 import { rust } from '@codemirror/lang-rust';
 import { solidity } from '@replit/codemirror-lang-solidity';
 import type { Diagnostic } from '@/lib/types';
 
 const theme = EditorView.theme({
-  '&': { height: '100%', backgroundColor: 'var(--bg-soft)', color: 'var(--text)' },
-  '.cm-content': { fontFamily: 'var(--mono)', fontSize: '13px' },
-  '.cm-gutters': { backgroundColor: 'var(--bg-soft)', color: 'var(--text-mute)', borderRight: '1px solid var(--border-soft)' },
-  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'var(--hl)' },
+  '&': { height: '100%', backgroundColor: 'var(--bg)', color: 'var(--text)' },
+  '.cm-scroller': { fontFamily: 'var(--mono)', lineHeight: '1.6' },
+  '.cm-content': { fontSize: '13px', caretColor: 'var(--accent)' },
+  '.cm-gutters': { backgroundColor: 'var(--bg)', color: 'var(--text-mute)', border: 'none' },
+  '.cm-activeLine': { backgroundColor: 'transparent' },
+  '&.cm-focused .cm-activeLine': { backgroundColor: 'var(--hl)' },
+  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--text-strong)' },
+  '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': { backgroundColor: 'var(--hl)' },
   '&.cm-focused .cm-cursor': { borderLeftColor: 'var(--accent)' },
 });
+
+// Colours are variables, so one definition follows the theme switch without rebuilding the editor.
+const highlight = HighlightStyle.define([
+  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: 'var(--syn-comment)' },
+  { tag: [t.keyword, t.modifier, t.controlKeyword, t.operatorKeyword, t.definitionKeyword, t.moduleKeyword], color: 'var(--syn-keyword)' },
+  { tag: [t.string, t.special(t.string), t.character], color: 'var(--syn-string)' },
+  { tag: [t.number, t.bool, t.null, t.atom], color: 'var(--syn-number)' },
+  { tag: [t.typeName, t.className, t.namespace, t.standard(t.typeName)], color: 'var(--syn-type)' },
+  { tag: [t.function(t.variableName), t.function(t.definition(t.variableName)), t.macroName], color: 'var(--syn-fn)', fontWeight: '500' },
+  { tag: t.invalid, color: 'var(--negative)' },
+]);
 
 export function Editor({ value, onChange, language, diagnostics, onRun, readOnly = false }: {
   value: string; onChange: (v: string) => void; language: 'solidity' | 'rust' | 'toml'; diagnostics: Diagnostic[]; onRun: () => void; readOnly?: boolean;
@@ -32,7 +49,7 @@ export function Editor({ value, onChange, language, diagnostics, onRun, readOnly
       state: EditorState.create({
         doc: value,
         extensions: [
-          basicSetup, theme, lintGutter(),
+          syntaxHighlighting(highlight), basicSetup, theme, lintGutter(),
           lang.current.of(language === 'solidity' ? solidity : language === 'rust' ? rust() : []),
           // Highest precedence: the default keymap binds Mod-Enter to insertBlankLine. Returning true makes
           // CodeMirror preventDefault, so Shell's window handler skips the event: exactly one run fires.

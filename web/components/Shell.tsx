@@ -6,8 +6,10 @@ import { PipelineStrip } from './PipelineStrip';
 import { Console } from './Console';
 import { ThemeSwitch } from './ThemeSwitch';
 import { StagePanel } from './StagePanel';
+import { Icon } from './ui';
 import { filesFor, useJob, type Stage } from '@/lib/job';
-import type { CallForm, Diagnostic, JobOptions, Lang, SampleView } from '@/lib/types';
+import { useStageView } from '@/lib/useStageView';
+import type { CallForm, CompileView, Diagnostic, ImageView, JobOptions, Lang, RunSummary, SampleView, TranspileView } from '@/lib/types';
 
 const TEMPLATE_CARGO = `[package]
 name = "program"
@@ -34,14 +36,19 @@ const STARTER: Record<Lang, Record<string, string>> = {
   'solana-elf': {},
 };
 
-const WIDTH_KEY = 'randterminal.stageWidth';
-const MIN_W = 480;
-const DEFAULT_W = 560;
-const RAIL_W = 240;
+// The workspace follows the work: reading the C or stepping a run takes the width from the source.
+// Each mode remembers its own split.
+type Mode = 'reading' | 'wide';
+const WIDTH_KEY: Record<Mode, string> = { reading: 'randterminal.stageWidth', wide: 'randterminal.stageWidthWide' };
+const MIN_W = 460;
+const MIN_EDITOR = 340;
+const WIDE_EDITOR = 400;
+const DEFAULT_W = 620;
 const MAX_UPLOAD = 2 * 1024 * 1024;
-const maxStage = () => Math.max(MIN_W, window.innerWidth - RAIL_W - MIN_W);
+const maxStage = () => Math.max(MIN_W, window.innerWidth - MIN_EDITOR);
 const clampW = (w: number) => Math.max(MIN_W, Math.min(w, maxStage()));
-const saveW = (w: number) => { try { localStorage.setItem(WIDTH_KEY, String(w)); } catch { /* ignore */ } };
+const saveW = (m: Mode, w: number) => { try { localStorage.setItem(WIDTH_KEY[m], String(w)); } catch { /* ignore */ } };
+const modeOf = (s: Stage): Mode => (s === 'run' || s === 'transpile' ? 'wide' : 'reading');
 
 export function Shell() {
   const [lang, setLang] = useState<Lang>('solidity');
@@ -51,19 +58,41 @@ export function Shell() {
   const [options, setOptions] = useState<JobOptions>({ chain_id: 20, stage: 2 });
   const [defaultCall, setDefaultCall] = useState<CallForm | null>(null);
   const [focused, setFocused] = useState<Stage>('compile');
-  const [view, setView] = useState<'editor' | 'stage'>('editor');
-  const [sheet, setSheet] = useState(false);
-  const [stageW, setStageW] = useState(DEFAULT_W);
+  // Phones open on the samples; the editor tab is one tap away.
+  const [view, setView] = useState<'editor' | 'stage'>('stage');
+  const [menu, setMenu] = useState(false);
+  const [widths, setWidths] = useState<Record<Mode, number>>({ reading: DEFAULT_W, wide: 960 });
+  const [dragging, setDragging] = useState(false);
   const [upErr, setUpErr] = useState<string | null>(null);
   const [sampleLoading, setSampleLoading] = useState(false);
+  const [run_, setRun] = useState<RunSummary | null>(null);
   const [maxW, setMaxW] = useState(1200);
-  const stageWRef = useRef(DEFAULT_W);
-  stageWRef.current = stageW;
   const { state, creating, submit, reset } = useJob();
+  const mode = modeOf(focused);
+  const stageW = widths[mode];
+  const stageWRef = useRef(stageW);
+  stageWRef.current = stageW;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const job = state.job;
+  const compile = useStageView<CompileView>(job?.id, 'compile', job?.compile.status === 'done');
+  const transpile = useStageView<TranspileView>(job?.id, 'transpile', job?.transpile.status === 'done');
+  const image = useStageView<ImageView>(job?.id, 'image', job?.build.status === 'done');
+  useEffect(() => { setRun(null); }, [job?.id]);
+  const views = useMemo(() => ({ compile: compile.data, transpile: transpile.data, image: image.data, run: run_ }), [compile.data, transpile.data, image.data, run_]);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const out = (e: PointerEvent) => { if (!menuRef.current?.contains(e.target as Node)) setMenu(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(false); };
+    window.addEventListener('pointerdown', out); window.addEventListener('keydown', esc);
+    return () => { window.removeEventListener('pointerdown', out); window.removeEventListener('keydown', esc); };
+  }, [menu]);
 
   useEffect(() => {
-    try { const w = Number(localStorage.getItem(WIDTH_KEY)); if (w >= MIN_W) setStageW(clampW(w)); } catch { /* storage blocked */ }
-    const fit = () => { setMaxW(maxStage()); setStageW((w) => clampW(w)); };
+    const stored = (m: Mode, fallback: number) => { try { const w = Number(localStorage.getItem(WIDTH_KEY[m])); if (w >= MIN_W) return clampW(w); } catch { /* storage blocked */ } return clampW(fallback); };
+    setWidths({ reading: stored('reading', DEFAULT_W), wide: stored('wide', window.innerWidth - WIDE_EDITOR) });
+    const fit = () => { setMaxW(maxStage()); setWidths((w) => ({ reading: clampW(w.reading), wide: clampW(w.wide) })); };
     fit();
     window.addEventListener('resize', fit);
     return () => window.removeEventListener('resize', fit);
@@ -73,7 +102,7 @@ export function Shell() {
   useEffect(() => { if (imageReady) setFocused('image'); }, [imageReady]);
 
   // A sample on its way replaces the source and resets the job, so Compile waits for it.
-  const busy = creating || sampleLoading || (!!state.job && !state.job.finished);
+  const busy = creating || sampleLoading || (!!job && !job.finished);
   const run = useCallback(() => {
     if (busy) return;
     setFocused('compile'); setView('stage');
@@ -108,7 +137,7 @@ export function Shell() {
     setDefaultCall(s.meta.default_call ?? null);
     if (s.meta.lang === 'solana-elf') { setFiles({}); setBinary(s.files[0]?.content); setActive(''); }
     else { const f = Object.fromEntries(s.files.map((x) => [x.name, x.content])); setFiles(f); setBinary(undefined); setActive(s.files[0]?.name ?? ''); }
-    reset(); setUpErr(null); setSheet(false); setView('editor');
+    reset(); setUpErr(null); setMenu(false); setView('editor');
   };
 
   const onUpload = async (input: HTMLInputElement) => {
@@ -126,17 +155,19 @@ export function Shell() {
 
   const drag = (e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
-    const move = (ev: PointerEvent) => setStageW(clampW(window.innerWidth - ev.clientX));
+    setDragging(true);
+    const m = modeRef.current;
+    const move = (ev: PointerEvent) => setWidths((w) => ({ ...w, [m]: clampW(window.innerWidth - ev.clientX) }));
     const up = () => {
       window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
-      saveW(stageWRef.current);
+      setDragging(false); saveW(m, stageWRef.current);
     };
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
   };
   const nudge = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     const w = clampW(stageW + (e.key === 'ArrowLeft' ? 24 : -24));
-    setStageW(w); saveW(w);
+    setWidths((x) => ({ ...x, [mode]: w })); saveW(mode, w);
   };
   const tabKeys = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
@@ -147,48 +178,54 @@ export function Shell() {
 
   const diagnostics: Diagnostic[] = useMemo(() => (state.job?.compile.error?.diagnostics ?? []).filter((d) => d.file === active || d.file.endsWith(`/${active}`)), [state.job, active]);
   const langSelect = (
-        <select aria-label="language" value={lang} onChange={(e) => { const l = e.target.value as Lang; setLang(l); setFiles(STARTER[l]); setBinary(undefined); setActive(Object.keys(STARTER[l])[0] ?? ''); setOptions((o) => ({ chain_id: o.chain_id, stage: 2 })); setDefaultCall(null); reset(); setUpErr(null); }}
-          className="h-8 rounded-sm border border-border bg-surface px-2 text-text max-lg:h-11">
-          <option value="solidity">Solidity</option><option value="solana-rust">Solana (Rust)</option><option value="solana-elf">Solana (.so upload)</option>
-        </select>
+    <select aria-label="language" value={lang} onChange={(e) => { const l = e.target.value as Lang; setLang(l); setFiles(STARTER[l]); setBinary(undefined); setActive(Object.keys(STARTER[l])[0] ?? ''); setOptions((o) => ({ chain_id: o.chain_id, stage: 2 })); setDefaultCall(null); reset(); setUpErr(null); }}
+      className="h-7 rounded-sm border border-border bg-surface px-1.5 text-xs text-text max-lg:h-11">
+      <option value="solidity">Solidity</option><option value="solana-rust">Solana (Rust)</option><option value="solana-elf">Solana (.so upload)</option>
+    </select>
   );
   const tab = (id: 'editor' | 'stage', label: string) => (
     <button role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} tabIndex={view === id ? 0 : -1} aria-selected={view === id} onKeyDown={tabKeys} onClick={() => setView(id)} className={`h-11 flex-1 text-sm ${view === id ? 'border-b-2 border-accent text-text-strong' : 'text-text-soft'}`}>{label}</button>
   );
 
   return (
-    <div className="grid h-dvh grid-rows-[48px_auto_1fr_auto] lg:grid-rows-[48px_1fr_auto]" style={{ ['--stage-w' as string]: `${Math.min(stageW, maxW)}px` }}>
-      <header className="flex items-center gap-3 border-b border-border-soft px-4 max-sm:gap-2 max-sm:px-2">
-        <button className="h-11 rounded-sm px-2 text-xs text-text-soft lg:hidden" aria-expanded={sheet} onClick={() => setSheet(!sheet)}>Menu</button>
-        <span className="mono whitespace-nowrap font-semibold text-text-strong">rand terminal</span>
-        <span className="max-sm:hidden">{langSelect}</span>
-        {lang === 'solidity' && <label className="text-xs text-text-mute max-sm:hidden">chain id <input type="number" value={options.chain_id} onChange={(e) => setOptions({ ...options, chain_id: Number(e.target.value) })} className="mono ml-1 h-8 w-20 rounded-sm border border-border bg-surface px-2 text-text" /></label>}
-        <button onClick={run} disabled={busy} title="Ctrl/Cmd + Enter" className="ml-auto h-8 whitespace-nowrap rounded-sm bg-accent px-4 font-medium max-sm:px-3 text-on-accent disabled:opacity-50 max-lg:h-11">{busy ? 'Working…' : 'Compile & Run'}</button>
+    <div className="grid h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[48px_auto_auto_minmax(0,1fr)_auto] lg:grid-rows-[48px_auto_minmax(0,1fr)_auto]" style={{ ['--stage-w' as string]: `${Math.min(stageW, maxW)}px` }}>
+      <header className="relative z-20 flex items-center gap-2 border-b border-border-soft px-4 max-sm:px-2">
+        <span className="mono mr-2 font-semibold whitespace-nowrap text-text-strong">Rand Terminal</span>
+        <div ref={menuRef} className="relative">
+          <button aria-expanded={menu} onClick={() => setMenu(!menu)} className="inline-flex h-8 items-center gap-1 rounded-sm px-2 text-text-soft hover:bg-surface-2 hover:text-text-strong max-lg:h-11">Samples <Icon name="chevron" /></button>
+          {menu && <div className="absolute top-full left-0 mt-1 w-[min(380px,calc(100vw-16px))] rounded-lg border border-border bg-surface p-1"><SamplesPanel onLoad={load} onLoading={setSampleLoading} /></div>}
+        </div>
+        <button onClick={run} disabled={busy} title="Ctrl/Cmd + Enter" className="ml-auto h-8 rounded-sm bg-accent px-4 font-medium whitespace-nowrap text-on-accent hover:brightness-110 disabled:opacity-50 max-lg:h-11 max-sm:px-3">{busy ? 'Working…' : 'Compile & Run'}</button>
         <ThemeSwitch />
       </header>
+      <PipelineStrip job={job} views={views} focused={focused} onFocus={(s) => { setFocused(s); setView('stage'); }} />
       <div role="tablist" className="flex border-b border-border-soft lg:hidden">{tab('editor', 'Editor')}{tab('stage', 'Stages')}</div>
-      <div className="relative grid min-h-0 lg:grid-cols-[240px_minmax(0,1fr)_var(--stage-w)]">
-        <aside className={`${sheet ? 'max-lg:absolute max-lg:inset-x-0 max-lg:top-0 max-lg:z-10 max-lg:max-h-[70%] max-lg:border-b max-lg:bg-bg' : 'max-lg:hidden'} flex min-h-0 flex-col gap-4 overflow-auto border-r border-border-soft p-2`}>
-          <div className="sm:hidden">{langSelect}</div>
-          <SamplesPanel onLoad={load} onLoading={setSampleLoading} />
-          <section aria-label="files">
-            <h2 className="px-2 pb-1 text-xs uppercase tracking-wide text-text-mute">Files</h2>
-            {Object.keys(files).map((n) => <button key={n} onClick={() => { setActive(n); setSheet(false); }} className={`mono block min-h-8 w-full rounded-sm px-2 text-left text-xs max-lg:min-h-11 ${n === active ? 'bg-surface-2 text-text-strong' : 'text-text-soft hover:bg-surface'}`}>{n}</button>)}
-            {lang === 'solana-elf' && <label className="block px-2 text-xs text-text-soft">Upload .so <input type="file" accept=".so" onChange={(e) => void onUpload(e.target)} className="mt-1 block w-full text-xs" /></label>}
-            {upErr && <p className="px-2 text-xs text-negative" role="alert">{upErr}</p>}
-          </section>
-          <section aria-label="stages"><h2 className="px-2 pb-1 text-xs uppercase tracking-wide text-text-mute">Pipeline</h2><PipelineStrip job={state.job} focused={focused} onFocus={(s) => { setFocused(s); setView('stage'); setSheet(false); }} /></section>
-        </aside>
-        <main id="panel-editor" role="tabpanel" aria-labelledby="tab-editor" className={`min-h-0 border-r border-border-soft ${view === 'editor' ? '' : 'max-lg:hidden'}`}>
+      <div data-dragging={dragging || undefined} className="workspace relative grid min-h-0 lg:grid-cols-[minmax(0,1fr)_var(--stage-w)]">
+        <main id="panel-editor" role="tabpanel" aria-labelledby="tab-editor" className={`grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] overflow-hidden ${view === 'editor' ? '' : 'max-lg:hidden'}`}>
+          <div className="flex min-w-0 items-center gap-2 border-b border-border-soft pr-2">
+            <div className="flex min-w-0 flex-1 overflow-x-auto" aria-label="files">
+              {Object.keys(files).map((n) => <button key={n} aria-pressed={n === active} onClick={() => setActive(n)} className="file-tab max-lg:h-11">{n}</button>)}
+            </div>
+            {lang === 'solidity' && <label className="flex items-center gap-1 text-xs whitespace-nowrap text-text-mute">Chain <input aria-label="chain id" type="number" value={options.chain_id} onChange={(e) => setOptions({ ...options, chain_id: Number(e.target.value) })} className="mono h-7 w-14 rounded-sm border border-border bg-surface px-1.5 text-text max-lg:h-11" /></label>}
+            {langSelect}
+          </div>
           {lang === 'solana-elf'
-            ? <div className="p-6 text-text-soft">{binary ? `program.so loaded (${Math.round((binary.length * 3) / 4 / 1024)} KB). Press Compile & Run.` : 'Upload a Solana program (.so) built with cargo build-sbf, or pick the SPL Token sample.'}</div>
-            : <Editor key={`${lang}:${active}`} value={files[active] ?? ''} onChange={onEdit} language={active.endsWith('.sol') ? 'solidity' : active.endsWith('.rs') ? 'rust' : 'toml'} diagnostics={diagnostics} onRun={run} />}
+            ? <div className="p-6"><p className="mb-3 text-text-soft">{binary ? `program.so loaded, ${Math.round((binary.length * 3) / 4 / 1024)} KB. Press Compile & Run.` : 'Upload a Solana program built with cargo build-sbf, up to 2 MB.'}</p>
+                <label className="block text-text-soft">Program file <input type="file" accept=".so" onChange={(e) => void onUpload(e.target)} className="mt-1 block w-full text-xs" /></label>
+                {upErr && <p className="mt-2 text-xs text-negative" role="alert">{upErr}</p>}</div>
+            : <div className="min-h-0"><Editor key={`${lang}:${active}`} value={files[active] ?? ''} onChange={onEdit} language={active.endsWith('.sol') ? 'solidity' : active.endsWith('.rs') ? 'rust' : 'toml'} diagnostics={diagnostics} onRun={run} /></div>}
         </main>
-        <section id="panel-stage" role="tabpanel" aria-labelledby="tab-stage" className={`relative min-h-0 overflow-auto ${view === 'stage' ? '' : 'max-lg:hidden'}`} aria-label="stage panel">
+        <section id="panel-stage" role="tabpanel" aria-labelledby="tab-stage" className={`relative min-h-0 min-w-0 overflow-auto border-l border-border-soft bg-bg max-lg:border-l-0 ${view === 'stage' ? '' : 'max-lg:hidden'}`} aria-label="stage panel">
           <div role="separator" aria-orientation="vertical" aria-label="resize stage panel" aria-valuenow={stageW} aria-valuemin={MIN_W} aria-valuemax={maxW} tabIndex={0} onPointerDown={drag} onKeyDown={nudge}
             className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-accent focus-visible:bg-accent focus-visible:outline-2 focus-visible:outline-accent max-lg:hidden" />
           {state.error && <p className="m-3 rounded-sm border border-negative p-3 text-negative" role="alert">{state.error}</p>}
-          <StagePanel stage={focused} job={state.job} defaultCall={defaultCall} onFocus={setFocused} onPickContract={busy ? undefined : pickContract} />
+          {job
+            ? <StagePanel stage={focused} job={job} compile={compile} transpile={transpile} image={image} defaultCall={defaultCall} onRun={setRun} onPickContract={busy ? undefined : pickContract} />
+            : <div className="mx-auto max-w-lg p-6">
+                <h1 className="text-2xl leading-tight font-medium text-text-strong">Follow a contract down to zkVM cycles.</h1>
+                <p className="mt-2 mb-5 text-text-soft">Pick a sample below or write your own in the editor, then press Compile &amp; Run (⌘ or Ctrl + Enter).</p>
+                {!menu && <SamplesPanel onLoad={load} onLoading={setSampleLoading} />}
+              </div>}
         </section>
       </div>
       <Console lines={state.console} />
