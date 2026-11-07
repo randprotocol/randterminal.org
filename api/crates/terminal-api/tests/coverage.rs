@@ -299,6 +299,7 @@ fn job(lang: Lang, files: Vec<FileIn>) -> NewJob {
         lang,
         files,
         options: JobOptions::default(),
+        sample: None,
     }
 }
 
@@ -386,8 +387,9 @@ async fn job_requests_are_validated_before_anything_is_written() {
         rust
     );
 
-    // Solana ELF shape
-    let elf = "a Solana ELF job is one base64 file named program.so";
+    // Solana ELF shape: a bundled sample by id, or (older clients) a sample's exact bytes.
+    let elf =
+        "a Solana ELF job runs a bundled sample program: send {\"sample\": \"<id>\"} and no files";
     assert_eq!(
         bad(s
             .store
@@ -401,6 +403,35 @@ async fn job_requests_are_validated_before_anything_is_written() {
         elf
     );
     assert_eq!(bad(s.store.create(job(Lang::SolanaElf, vec![]))), elf);
+    let refused =
+        "uploaded programs are not accepted: a Solana ELF job runs a bundled sample (spl-token)";
+    assert_eq!(
+        bad(s.store.create(job(
+            Lang::SolanaElf,
+            vec![file("program.so", "base64", "f0VMRgIBAQ==")]
+        ))),
+        refused
+    );
+    let mut by_id = job(Lang::SolanaElf, vec![]);
+    by_id.sample = Some("nope".into());
+    assert_eq!(
+        bad(s.store.create(by_id)),
+        "no bundled Solana program \"nope\"; the bundled ones are spl-token"
+    );
+    // A sample id is never sent alongside files, nor for another language.
+    let mut both = job(Lang::SolanaElf, vec![file("program.so", "base64", "AAAA")]);
+    both.sample = Some("spl-token".into());
+    assert_eq!(bad(s.store.create(both)), elf);
+    let mut sol_sample = job(Lang::Solidity, vec![sol("A.sol")]);
+    sol_sample.sample = Some("spl-token".into());
+    assert_eq!(
+        bad(s.store.create(sol_sample)),
+        "sample applies to Solana ELF jobs only"
+    );
+    // A Solidity sample is not a bundled program.
+    let mut erc = job(Lang::SolanaElf, vec![]);
+    erc.sample = Some("erc20".into());
+    assert!(bad(s.store.create(erc)).starts_with("no bundled Solana program"));
 
     // Nothing reached the disk, and nothing is tracked as running.
     let jobs = d.path().join("jobs");
@@ -773,21 +804,26 @@ async fn a_build_that_exits_zero_without_a_program_fails_the_compile_stage() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn bytes_that_are_not_an_elf_fail_the_compile_stage_before_any_sandbox_step() {
+async fn bytes_that_are_not_a_bundled_program_are_refused_before_anything_runs() {
     use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(b"definitely not an ELF file");
-    let v = run_with(
-        Lang::SolanaElf,
-        vec![file("program.so", "base64", &b64)],
-        |_| panic!("an uploaded ELF needs no sandbox step"),
-    )
-    .await;
-    assert!(v.finished);
-    assert_eq!(v.compile.status, StageStatus::Failed);
-    let e = v.compile.error.unwrap();
-    assert!(e.kind == "compile" || e.kind == "unsupported", "{}", e.kind);
-    assert!(!e.message.is_empty());
-    assert_eq!(v.transpile.status, StageStatus::Queued);
+    let (_app, s, d) = test_app(Arc::new(terminal_sandbox::FakeRunner::new(
+        |_: &RunSpec| panic!("a refused ELF reaches no sandbox step"),
+    )));
+    let mut elf = std::fs::read(fixtures_dir().join("spl_token.so")).unwrap();
+    // Not an ELF at all, and the bundled program with one byte changed: both refused.
+    for bytes in [b"definitely not an ELF file".to_vec(), {
+        let n = elf.len() / 2;
+        elf[n] ^= 1;
+        elf.clone()
+    }] {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let m = bad(s.store.create(job(
+            Lang::SolanaElf,
+            vec![file("program.so", "base64", &b64)],
+        )));
+        assert!(m.starts_with("uploaded programs are not accepted"), "{m}");
+    }
+    assert_eq!(std::fs::read_dir(d.path().join("jobs")).unwrap().count(), 0);
 }
 
 async fn transpile_of(runtime_hex: String, chain_id: u64) -> JobView {

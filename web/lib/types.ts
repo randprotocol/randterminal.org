@@ -58,7 +58,8 @@ export interface SampleMeta { id: string; title: string; lang: Lang; files: stri
 export interface SampleFile { name: string; encoding: 'text' | 'base64'; content: string }
 export interface SampleView { meta: SampleMeta; files: SampleFile[] }
 export interface FileIn { name: string; encoding?: 'text' | 'base64'; content: string }
-export interface NewJob { lang: Lang; files: FileIn[]; options?: JobOptions }
+/** `sample`: solana-elf only, the bundled sample whose program runs (programs are never uploaded). */
+export interface NewJob { lang: Lang; files: FileIn[]; options?: JobOptions; sample?: string }
 
 /** What `subscribeJob` delivers. The wire events are `job` (a JobView snapshot, first and again after
  *  a lag), `stage` ({type:"stage",stage,state}), `console` ({type:"console",stage,stream,text}), `done`. */

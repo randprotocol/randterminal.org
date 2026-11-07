@@ -50,12 +50,12 @@ impl AppState {
             }),
         );
         Self {
+            store: JobStore::with_samples(config.clone(), runner.clone(), &samples),
             samples,
             sandbox: Arc::new(SandboxProbe {
                 runner: runner.clone(),
                 last: tokio::sync::Mutex::new(None),
             }),
-            store: JobStore::new(config.clone(), runner),
             runs: Arc::new(Semaphore::new(config.max_runs.max(1))),
             scans: Arc::new(Semaphore::new(config.max_scans.max(1))),
             limiter: Arc::new(RateLimiter::new()),

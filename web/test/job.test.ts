@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contractChoices, filesFor, reduce, stageStatus, type JobState } from '@/lib/job';
+import { contractChoices, filesFor, newJob, reduce, stageStatus, type JobState } from '@/lib/job';
 import type { JobView } from '@/lib/types';
 
 const q = { status: 'queued' as const };
@@ -32,8 +32,21 @@ describe('job reducer', () => {
   });
   it('builds request files', () => {
     expect(filesFor('solidity', { 'A.sol': 'x' })).toEqual([{ name: 'A.sol', encoding: 'text', content: 'x' }]);
-    expect(filesFor('solana-elf', {}, 'QUJD')).toEqual([{ name: 'program.so', encoding: 'base64', content: 'QUJD' }]);
+    // A bundled program is named, never uploaded: no files at all.
+    expect(filesFor('solana-elf', { 'program.so': 'QUJD' })).toEqual([]);
     expect(filesFor('solana-rust', { 'lib.rs': 'fn f(){}', 'Cargo.toml': '[package]' }).map((f) => f.name)).toEqual(['lib.rs', 'Cargo.toml']);
+  });
+});
+
+describe('job requests', () => {
+  const o = { chain_id: 20, stage: 2 };
+  it('a bundled Solana program goes by its sample id, with no bytes', () => {
+    expect(newJob('solana-elf', {}, o, 'spl-token')).toEqual({ lang: 'solana-elf', files: [], options: o, sample: 'spl-token' });
+  });
+  it('a source job carries its files and no sample', () => {
+    const j = newJob('solidity', { 'A.sol': 'x' }, o, 'spl-token');
+    expect(j).toEqual({ lang: 'solidity', files: [{ name: 'A.sol', encoding: 'text', content: 'x' }], options: o });
+    expect('sample' in j).toBe(false);
   });
 });
 

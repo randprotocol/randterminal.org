@@ -69,6 +69,21 @@ test('the EVM fork: picked beside the language, sent with the job, remembered, s
   await expect(page.getByLabel('EVM fork')).toHaveCount(0);
 });
 
+test('Solana programs are never uploaded: no upload control, and the bundled sample goes by id', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('input[type=file]')).toHaveCount(0);
+  const langs = await page.getByLabel('language').locator('option').allTextContents();
+  expect(langs).toEqual(['Solidity', 'Solana (Rust)']);
+  await page.getByRole('button', { name: /SPL Token/ }).click();
+  await expect(page.getByText(/a program bundled with the terminal/)).toBeVisible();
+  await expect(page.locator('input[type=file]')).toHaveCount(0);
+  const job = page.waitForRequest((r) => r.method() === 'POST' && r.url().endsWith('/api/v1/jobs'));
+  await page.getByRole('button', { name: 'Compile & Run' }).click();
+  const body = (await job).postDataJSON();
+  expect(body).toMatchObject({ lang: 'solana-elf', sample: 'spl-token', files: [] });
+  expect(JSON.stringify(body)).not.toContain('f0VMRg');
+});
+
 test('no horizontal scroll at phone width', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/', { waitUntil: 'networkidle' });

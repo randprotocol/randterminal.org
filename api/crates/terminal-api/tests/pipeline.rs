@@ -4,6 +4,11 @@ use std::sync::Arc;
 use terminal_api::{jobs::JobStore, ApiConfig};
 use terminal_core::views::*;
 
+/// The bundled samples: a Solana ELF job runs only one of their programs.
+fn samples_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../samples")
+}
+
 fn store() -> (Arc<JobStore>, tempfile::TempDir) {
     store_with(fake_runner())
 }
@@ -12,6 +17,7 @@ fn store_with(runner: Arc<dyn terminal_sandbox::Runner>) -> (Arc<JobStore>, temp
     let d = tempfile::tempdir().unwrap();
     let cfg = ApiConfig {
         data_dir: d.path().into(),
+        samples_dir: samples_dir(),
         ..ApiConfig::default()
     };
     (JobStore::new(Arc::new(cfg), runner), d)
@@ -24,6 +30,7 @@ fn store_cfg(
     let d = tempfile::tempdir().unwrap();
     let mut cfg = ApiConfig {
         data_dir: d.path().into(),
+        samples_dir: samples_dir(),
         ..ApiConfig::default()
     };
     f(&mut cfg);
@@ -39,6 +46,7 @@ fn rust_job(src: &str) -> NewJob {
             content: src.into(),
         }],
         options: JobOptions::default(),
+        sample: None,
     }
 }
 
@@ -51,6 +59,7 @@ fn sol(src: &str) -> NewJob {
             content: src.into(),
         }],
         options: JobOptions::default(),
+        sample: None,
     }
 }
 
@@ -124,6 +133,7 @@ async fn solana_elf_skips_the_compiler() {
                 content: base64::engine::general_purpose::STANDARD.encode(&elf),
             }],
             options: JobOptions::default(),
+            sample: None,
         })
         .unwrap();
     let v = wait_finished(&s, &id).await;
@@ -154,6 +164,7 @@ async fn solana_rust_errors_are_diagnostics() {
                 content: "compile_error!(\"x\");".into(),
             }],
             options: JobOptions::default(),
+            sample: None,
         })
         .unwrap();
     let v = wait_finished(&s, &id).await;
@@ -171,7 +182,8 @@ fn validation() {
     assert!(bad(NewJob {
         lang: Lang::Solidity,
         files: vec![],
-        options: JobOptions::default()
+        options: JobOptions::default(),
+        sample: None,
     })
     .contains("bad request"));
     assert!(bad(NewJob {
@@ -181,7 +193,8 @@ fn validation() {
             encoding: "text".into(),
             content: "".into()
         }],
-        options: JobOptions::default()
+        options: JobOptions::default(),
+        sample: None,
     })
     .contains("bad request"));
     assert!(bad(sol(&"x".repeat(512 * 1024 + 1))).contains("too large"));
@@ -192,7 +205,8 @@ fn validation() {
             encoding: "text".into(),
             content: "".into()
         }],
-        options: JobOptions::default()
+        options: JobOptions::default(),
+        sample: None,
     })
     .contains("lib.rs"));
     let mut j = sol("contract A {}");
@@ -212,7 +226,8 @@ fn validation() {
             encoding: "base64".into(),
             content: elf
         }],
-        options: JobOptions::default()
+        options: JobOptions::default(),
+        sample: None,
     })
     .contains("too large"));
 }

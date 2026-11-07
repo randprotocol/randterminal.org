@@ -8,6 +8,7 @@ createServer((req, res) => {
   const u = new URL(req.url, 'http://x'); const p = u.pathname.replace(/^\/api\/v1/, '');
   if (p === '/samples') return send(res, 200, F('samples.json'));
   if (p === '/samples/erc20') return send(res, 200, F('sample-erc20.json'));
+  if (p === '/samples/spl-token') return send(res, 200, F('sample-spl-token.json'));
   if (req.method === 'POST' && p === '/jobs') return send(res, 201, { id: job.id });
   if (p === `/jobs/${job.id}`) return send(res, 200, job);
   if (p === `/jobs/${job.id}/events`) { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(`event: job\ndata: ${JSON.stringify(job)}\n\nevent: done\ndata: {}\n\n`); return; }

@@ -7,7 +7,7 @@ import { Console } from './Console';
 import { ThemeSwitch } from './ThemeSwitch';
 import { StagePanel } from './StagePanel';
 import { Icon } from './ui';
-import { filesFor, useJob, type Stage } from '@/lib/job';
+import { newJob, useJob, type Stage } from '@/lib/job';
 import { EVM_VERSIONS, forkHint, isEvmVersion, jobOptions, loadFork, saveFork, type EvmVersion } from '@/lib/evm';
 import { useStageView } from '@/lib/useStageView';
 import type { CallForm, CompileView, Diagnostic, ImageView, JobOptions, Lang, RunSummary, SampleView, TranspileView } from '@/lib/types';
@@ -45,7 +45,6 @@ const MIN_W = 460;
 const MIN_EDITOR = 340;
 const WIDE_EDITOR = 400;
 const DEFAULT_W = 620;
-const MAX_UPLOAD = 2 * 1024 * 1024;
 const maxStage = () => Math.max(MIN_W, window.innerWidth - MIN_EDITOR);
 const clampW = (w: number) => Math.max(MIN_W, Math.min(w, maxStage()));
 const saveW = (m: Mode, w: number) => { try { localStorage.setItem(WIDTH_KEY[m], String(w)); } catch { /* ignore */ } };
@@ -55,7 +54,8 @@ export function Shell() {
   const [lang, setLang] = useState<Lang>('solidity');
   const [files, setFiles] = useState<Record<string, string>>(STARTER.solidity);
   const [active, setActive] = useState('Contract.sol');
-  const [binary, setBinary] = useState<string | undefined>();
+  // A bundled Solana program is run by its sample id; there is no upload.
+  const [program, setProgram] = useState<{ id: string; title: string } | null>(null);
   const [options, setOptions] = useState<JobOptions>({ chain_id: 20, stage: 2 });
   // The fork lives apart from the options: it outlives samples and language switches, for the session.
   const [fork, setForkState] = useState<EvmVersion>('shanghai');
@@ -68,7 +68,6 @@ export function Shell() {
   const [menu, setMenu] = useState(false);
   const [widths, setWidths] = useState<Record<Mode, number>>({ reading: DEFAULT_W, wide: 960 });
   const [dragging, setDragging] = useState(false);
-  const [upErr, setUpErr] = useState<string | null>(null);
   const [sampleLoading, setSampleLoading] = useState(false);
   const [run_, setRun] = useState<RunSummary | null>(null);
   const [maxW, setMaxW] = useState(1200);
@@ -111,16 +110,16 @@ export function Shell() {
   const run = useCallback(() => {
     if (busy) return;
     setFocused('compile'); setView('stage');
-    void submit({ lang, files: filesFor(lang, files, binary), options: jobOptions(lang, options, fork) });
-  }, [busy, lang, files, binary, options, fork, submit]);
+    void submit(newJob(lang, files, jobOptions(lang, options, fork), program?.id));
+  }, [busy, lang, files, program, options, fork, submit]);
 
   // Re-submits the same sources with the contract the developer picked (several contracts in the file).
   const pickContract = useCallback((contract: string) => {
     if (busy) return;
     const o = { ...options, contract };
     setOptions(o); setFocused('compile'); setView('stage');
-    void submit({ lang, files: filesFor(lang, files, binary), options: jobOptions(lang, o, fork) });
-  }, [busy, lang, files, binary, options, fork, submit]);
+    void submit(newJob(lang, files, jobOptions(lang, o, fork), program?.id));
+  }, [busy, lang, files, program, options, fork, submit]);
   // An edit to the source may rename or remove the picked contract: forget it (keep chain id, stage).
   const onEdit = (v: string) => {
     if (v === files[active]) return;
@@ -141,22 +140,9 @@ export function Shell() {
     setOptions(s.meta.options ?? { chain_id: 20, stage: 2 });
     if (isEvmVersion(s.meta.options?.evm_version)) setFork(s.meta.options.evm_version);
     setDefaultCall(s.meta.default_call ?? null);
-    if (s.meta.lang === 'solana-elf') { setFiles({}); setBinary(s.files[0]?.content); setActive(''); }
-    else { const f = Object.fromEntries(s.files.map((x) => [x.name, x.content])); setFiles(f); setBinary(undefined); setActive(s.files[0]?.name ?? ''); }
-    reset(); setUpErr(null); setMenu(false); setView('editor');
-  };
-
-  const onUpload = async (input: HTMLInputElement) => {
-    const f = input.files?.[0];
-    input.value = '';
-    if (!f) return;
-    if (f.size > MAX_UPLOAD) { setUpErr(`${f.name} is ${(f.size / 1048576).toFixed(1)} MB; the limit is 2 MB.`); return; }
-    try {
-      const buf = new Uint8Array(await f.arrayBuffer());
-      let s = '';
-      for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-      setBinary(btoa(s)); setLang('solana-elf'); setFiles({}); setActive(''); setUpErr(null); reset();
-    } catch (e) { setUpErr(`Could not read ${f.name}: ${e instanceof Error ? e.message : String(e)}`); }
+    if (s.meta.lang === 'solana-elf') { setFiles({}); setProgram({ id: s.meta.id, title: s.meta.title }); setActive(''); }
+    else { const f = Object.fromEntries(s.files.map((x) => [x.name, x.content])); setFiles(f); setProgram(null); setActive(s.files[0]?.name ?? ''); }
+    reset(); setMenu(false); setView('editor');
   };
 
   const drag = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -184,9 +170,11 @@ export function Shell() {
 
   const diagnostics: Diagnostic[] = useMemo(() => (state.job?.compile.error?.diagnostics ?? []).filter((d) => d.file === active || d.file.endsWith(`/${active}`)), [state.job, active]);
   const langSelect = (
-    <select aria-label="language" value={lang} onChange={(e) => { const l = e.target.value as Lang; setLang(l); setFiles(STARTER[l]); setBinary(undefined); setActive(Object.keys(STARTER[l])[0] ?? ''); setOptions((o) => ({ chain_id: o.chain_id, stage: 2 })); setDefaultCall(null); reset(); setUpErr(null); }}
+    <select aria-label="language" value={lang} onChange={(e) => { const l = e.target.value as Lang; setLang(l); setFiles(STARTER[l]); setProgram(null); setActive(Object.keys(STARTER[l])[0] ?? ''); setOptions((o) => ({ chain_id: o.chain_id, stage: 2 })); setDefaultCall(null); reset(); }}
       className="h-7 rounded-sm border border-border bg-surface px-1.5 text-xs text-text max-lg:h-11">
-      <option value="solidity">Solidity</option><option value="solana-rust">Solana (Rust)</option><option value="solana-elf">Solana (.so upload)</option>
+      <option value="solidity">Solidity</option><option value="solana-rust">Solana (Rust)</option>
+      {/* Only a bundled sample puts the shell in solana-elf; it cannot be picked. */}
+      {lang === 'solana-elf' && <option value="solana-elf" hidden>Bundled program</option>}
     </select>
   );
   const forkSelect = lang === 'solidity' && (
@@ -227,9 +215,8 @@ export function Shell() {
             {hint && <p role="note" className="px-3 pb-1.5 text-xs text-warning">{hint}</p>}
           </div>
           {lang === 'solana-elf'
-            ? <div className="p-6"><p className="mb-3 text-text-soft">{binary ? `program.so loaded, ${Math.round((binary.length * 3) / 4 / 1024)} KB. Press Compile & Run.` : 'Upload a Solana program built with cargo build-sbf, up to 2 MB.'}</p>
-                <label className="block text-text-soft">Program file <input type="file" accept=".so" onChange={(e) => void onUpload(e.target)} className="mt-1 block w-full text-xs" /></label>
-                {upErr && <p className="mt-2 text-xs text-negative" role="alert">{upErr}</p>}</div>
+            ? <div className="p-6"><p className="text-text-soft">{program ? `${program.title}: a program bundled with the terminal, run as deployed. Press Compile & Run.` : 'Pick a Solana sample.'}</p>
+                <p className="mt-2 text-xs text-text-mute">Programs are not uploaded: write Solana Rust to build your own.</p></div>
             : <div className="min-h-0"><Editor key={`${lang}:${active}`} value={files[active] ?? ''} onChange={onEdit} language={active.endsWith('.sol') ? 'solidity' : active.endsWith('.rs') ? 'rust' : 'toml'} diagnostics={diagnostics} onRun={run} /></div>}
         </main>
         <section id="panel-stage" role="tabpanel" aria-labelledby="tab-stage" className={`relative min-h-0 min-w-0 overflow-auto border-l border-border-soft bg-bg max-lg:border-l-0 ${view === 'stage' ? '' : 'max-lg:hidden'}`} aria-label="stage panel">

@@ -63,6 +63,8 @@ pub struct JobStore {
     /// jobs and runs added since. Over `data_cap_bytes`, new jobs and runs are refused.
     usage: AtomicU64,
     sweeping: AtomicBool,
+    /// The bundled samples' Solana programs: the only ELF bytes a `solana-elf` job may run.
+    bundled: Vec<crate::samples::BundledProgram>,
     /// Test hook: the next sweep panics.
     #[doc(hidden)]
     pub fail_next_sweep: AtomicBool,
@@ -122,7 +124,22 @@ pub fn read_regular(p: &Path) -> std::io::Result<Vec<u8>> {
 }
 
 impl JobStore {
+    /// A store whose bundled programs come from the samples under `config.samples_dir`.
     pub fn new(config: Arc<ApiConfig>, runner: Arc<dyn Runner>) -> Arc<Self> {
+        let samples = crate::samples::load(&config.samples_dir).unwrap_or_else(|e| {
+            tracing::warn!("samples: {e}");
+            vec![]
+        });
+        Self::with_samples(config, runner, &samples)
+    }
+
+    /// A store that runs `samples`' Solana programs and no others.
+    pub fn with_samples(
+        config: Arc<ApiConfig>,
+        runner: Arc<dyn Runner>,
+        samples: &[SampleView],
+    ) -> Arc<Self> {
+        let bundled = crate::samples::bundled_programs(samples);
         // The docker runner only mounts absolute paths, so resolve the data dir once here.
         let _ = std::fs::create_dir_all(config.data_dir.join("jobs"));
         let root = std::fs::canonicalize(&config.data_dir)
@@ -140,6 +157,7 @@ impl JobStore {
             running: Mutex::new(HashMap::new()),
             usage: AtomicU64::new(0),
             sweeping: AtomicBool::new(false),
+            bundled,
             fail_next_sweep: AtomicBool::new(false),
         })
     }
@@ -284,6 +302,11 @@ impl JobStore {
                 "{text_total} bytes of source; the limit is {MAX_TEXT_BYTES}"
             )));
         }
+        if req.sample.is_some() && req.lang != Lang::SolanaElf {
+            return Err(AppError::BadRequest(
+                "sample applies to Solana ELF jobs only".into(),
+            ));
+        }
         // The fork is the one option that goes into the sandbox as text: only solc's own names.
         match (req.lang, req.options.evm_version.as_deref()) {
             (Lang::Solidity, None) => {
@@ -333,17 +356,57 @@ impl JobStore {
                 }
             }
             Lang::SolanaElf => {
-                if names != ["program.so"] || req.files[0].encoding != "base64" {
-                    return Err(AppError::BadRequest(
-                        "a Solana ELF job is one base64 file named program.so".into(),
-                    ));
-                }
-                if files[0].1.len() > MAX_ELF_BYTES {
-                    return Err(AppError::PayloadTooLarge(format!(
-                        "{} bytes of ELF; the limit is {MAX_ELF_BYTES}",
-                        files[0].1.len()
-                    )));
-                }
+                // Never an uploaded program: only a bundled sample's, named by id or (older
+                // clients) sent as its exact bytes.
+                let shape = || {
+                    AppError::BadRequest(
+                        "a Solana ELF job runs a bundled sample program: send {\"sample\": \"<id>\"} and no files".into(),
+                    )
+                };
+                let ids = || {
+                    self.bundled
+                        .iter()
+                        .map(|b| b.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let elf = match (req.sample.as_deref(), names.as_slice()) {
+                    (Some(id), []) => self
+                        .bundled
+                        .iter()
+                        .find(|b| b.id == id)
+                        .ok_or_else(|| {
+                            AppError::BadRequest(format!(
+                                "no bundled Solana program {id:?}; the bundled ones are {}",
+                                ids()
+                            ))
+                        })?
+                        .bytes
+                        .clone(),
+                    (None, ["program.so"]) if req.files[0].encoding == "base64" => {
+                        let bytes = &files[0].1;
+                        if bytes.len() > MAX_ELF_BYTES {
+                            return Err(AppError::PayloadTooLarge(format!(
+                                "{} bytes of ELF; the limit is {MAX_ELF_BYTES}",
+                                bytes.len()
+                            )));
+                        }
+                        let h = crate::samples::sha256(bytes);
+                        self.bundled
+                            .iter()
+                            .find(|b| b.sha256 == h)
+                            .ok_or_else(|| {
+                                AppError::BadRequest(format!(
+                                    "uploaded programs are not accepted: a Solana ELF job runs a bundled sample ({})",
+                                    ids()
+                                ))
+                            })?
+                            .bytes
+                            .clone()
+                    }
+                    _ => return Err(shape()),
+                };
+                files = vec![("program.so".to_string(), elf.to_vec())];
             }
         }
         self.check_space()?;

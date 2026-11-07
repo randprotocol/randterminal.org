@@ -1,7 +1,9 @@
 //! The bundled samples, loaded once at start-up from `TERMINAL_SAMPLES`.
 use base64::Engine;
+use sha2::{Digest, Sha256};
 use std::path::Path;
-use terminal_core::views::{CallForm, SampleFile, SampleMeta, SampleView};
+use std::sync::Arc;
+use terminal_core::views::{CallForm, Lang, SampleFile, SampleMeta, SampleView};
 use terminal_core::{evm_call, sbpf_call};
 
 fn load_one(d: &Path) -> anyhow::Result<SampleView> {
@@ -48,4 +50,35 @@ pub fn load(dir: &Path) -> anyhow::Result<Vec<SampleView>> {
     }
     out.sort_by(|a, b| a.meta.id.cmp(&b.meta.id));
     Ok(out)
+}
+
+/// A bundled sample's Solana program: the only ELF bytes a `solana-elf` job may run.
+#[derive(Clone, Debug)]
+pub struct BundledProgram {
+    pub id: String,
+    pub sha256: [u8; 32],
+    pub bytes: Arc<Vec<u8>>,
+}
+
+/// The `solana-elf` samples' programs, with their SHA-256 (computed once, at load).
+pub fn bundled_programs(samples: &[SampleView]) -> Vec<BundledProgram> {
+    samples
+        .iter()
+        .filter(|s| s.meta.lang == Lang::SolanaElf)
+        .filter_map(|s| {
+            let f = s.files.iter().find(|f| f.name.ends_with(".so"))?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&f.content)
+                .ok()?;
+            Some(BundledProgram {
+                id: s.meta.id.clone(),
+                sha256: sha256(&bytes),
+                bytes: Arc::new(bytes),
+            })
+        })
+        .collect()
+}
+
+pub fn sha256(b: &[u8]) -> [u8; 32] {
+    Sha256::digest(b).into()
 }

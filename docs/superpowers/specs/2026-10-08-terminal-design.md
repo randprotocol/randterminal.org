@@ -28,7 +28,10 @@ ERC-20 or SPL Token sample, press Run, and understand where every cycle came fro
 
 - Solidity source → solc 0.8.37 → `evm2rv` → `rand-guest build` → emulator trace.
 - Solana Rust source → `cargo build-sbf` (platform-tools v1.54) → `sbpf2rv` → `rand-guest build` → trace.
-- Uploaded Solana `.so` (skips the build).
+- The bundled SPL Token `.so` (skips the build). Programs are never uploaded: a `solana-elf` job
+  names a bundled sample (`{"lang": "solana-elf", "sample": "spl-token"}`), and the server runs
+  only a sample's own `.so` (an older client's bytes are accepted only when their SHA-256, computed
+  at sample load, matches one; anything else is a 400).
 - Call construction forms: ABI function + args + caller + initial storage for EVM; accounts + instruction data for Solana.
 - Cycle-level debugger with a three-level source map (source opcode ↔ C line ↔ RV32 pc).
 - STARK table fill view and tier placement. No proving.
@@ -115,7 +118,7 @@ those paths, and the API serves only the host-owned copies.
 
 | Stage | Solidity | Solana Rust | Solana `.so` |
 |---|---|---|---|
-| compile | solc (sandbox) → `creation.hex`, `runtime.hex`, `abi.json` | cargo build-sbf (sandbox) → `program.so` | copy upload → `program.so` |
+| compile | solc (sandbox) → `creation.hex`, `runtime.hex`, `abi.json` | cargo build-sbf (sandbox) → `program.so` | copy the bundled sample's `.so` → `program.so` |
 | transpile | `evm2rv::emit::translate` → `contract.c`, blocks view | `sbpf2rv` scan + emit → `program.c`, functions view | same |
 | build | `rand-guest build` (sandbox) on the shim crate → `image.bin`, plus the `-g` side build (`image-dbg.bin`, `debug-line.txt`) | same | same |
 | run | emulator in-process, on demand, many runs per job | same | same |
@@ -255,8 +258,9 @@ Single route `/`, three columns, Remix-shaped:
 - **Left rail**: Samples, Files (the editable tabs: `Contract.sol`, or `lib.rs` + `Cargo.toml`), and
   the pipeline strip: five numbered stages with status chips. Clicking a stage focuses its panel.
 - **Centre**: CodeMirror 6 with `@replit/codemirror-lang-solidity` and `@codemirror/lang-rust`,
-  diagnostics as gutter markers and inline messages. Language picker: Solidity / Solana (Rust) /
-  Solana (.so upload).
+  diagnostics as gutter markers and inline messages. Language picker: Solidity / Solana (Rust); the
+  bundled SPL Token sample is the only `.so` (no upload). An EVM fork picker sits beside it for
+  Solidity.
 - **Right**: the stage panel for the focused stage. **Bottom**: a console with the raw
   stdout/stderr of every tool run, collapsible.
 
@@ -299,7 +303,7 @@ Base `/api/v1`. JSON everywhere; errors are `{error, message, details?}`.
 |---|---|---|
 | GET | `/samples` | `[{id, title, lang, files}]` |
 | GET | `/samples/:id` | file contents (text or base64 for `.so`) |
-| POST | `/jobs` | `{lang: "solidity" \| "solana-rust" \| "solana-elf", files: {name: text\|base64}, options: {contract?, chain_id?, stage?, evm_version?}}` → `{id}` 201 |
+| POST | `/jobs` | `{lang: "solidity" \| "solana-rust" \| "solana-elf", files: [{name, encoding: text\|base64, content}], options: {contract?, chain_id?, stage?, evm_version?}, sample?}` → `{id}` 201; `sample` (a bundled `solana-elf` sample id) replaces `files` for `solana-elf` |
 | GET | `/jobs/:id` | `{lang, stages: {compile, transpile, build}: {status, started, ended, error?}, console: [...]}` |
 | GET | `/jobs/:id/events` | SSE: `stage` events as statuses change, `console` lines, `done` |
 | GET | `/jobs/:id/compile` `/transpile` `/image` | stage views (§4) |
@@ -399,7 +403,8 @@ certbot, CSP, `/api/` proxied to :8080, SSE buffering off). Config by environmen
 ## 11. Decisions recorded
 
 - Hosted publicly at randterminal.org; sandboxing is therefore mandatory in v1.
-- Solana input is both pasted Rust (built in the sandbox) and uploaded `.so`.
+- Solana input is pasted Rust (built in the sandbox) or the bundled SPL Token `.so`. Uploading a
+  `.so` was removed (2026-11-07): arbitrary ELF uploads were a malware vector for little gain.
 - zkVM view is the step debugger plus table/tier view; no proving in v1.
 - Own repo + submodule, like every sibling app.
 - In-process transpilers over CLI shelling, for the intermediate forms.

@@ -545,7 +545,12 @@ pub fn text_enc() -> String {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NewJob {
     pub lang: Lang,
+    #[serde(default)]
     pub files: Vec<FileIn>,
     #[serde(default)]
     pub options: JobOptions,
+    /// `solana-elf` only: the id of the bundled sample whose program to run, sent instead of
+    /// files. Programs are never uploaded: the server runs only the samples' own `.so`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<String>,
 }

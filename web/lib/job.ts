@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { api, subscribeJob } from './api';
-import type { ConsoleLine, FileIn, JobStreamEvent, JobView, Lang, NewJob, StageError, StageState, StageStatus } from './types';
+import type { ConsoleLine, FileIn, JobOptions, JobStreamEvent, JobView, Lang, NewJob, StageError, StageState, StageStatus } from './types';
 
 export type Stage = 'compile' | 'analyse' | 'transpile' | 'image' | 'run';
 export const STAGES: { id: Stage; n: number; title: string }[] = [
@@ -41,11 +41,18 @@ export function stageStatus(job: JobView | null, s: Stage): StageStatus | 'idle'
   }
 }
 
-export function filesFor(lang: Lang, files: Record<string, string>, binary?: string): FileIn[] {
-  if (lang === 'solana-elf') return [{ name: 'program.so', encoding: 'base64', content: binary ?? '' }];
+export function filesFor(lang: Lang, files: Record<string, string>): FileIn[] {
+  // A Solana ELF job runs a bundled sample's program, named by id: no bytes leave the browser.
+  if (lang === 'solana-elf') return [];
   // An empty file (the starter's blank Cargo.toml, a cleared tab) is left out: the server would
   // take it as the file's whole content.
   return Object.entries(files).filter(([, content]) => content.trim() !== '').map(([name, content]) => ({ name, encoding: 'text' as const, content }));
+}
+
+/** The request for a job: source files, or for a bundled Solana program its sample id. */
+export function newJob(lang: Lang, files: Record<string, string>, options: JobOptions, sample?: string | null): NewJob {
+  const req: NewJob = { lang, files: filesFor(lang, files), options };
+  return lang === 'solana-elf' && sample ? { ...req, sample } : req;
 }
 
 /** The contracts the developer can pick between: from a compile error that lists them ("choose a
