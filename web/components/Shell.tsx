@@ -6,6 +6,7 @@ import { PipelineStrip } from './PipelineStrip';
 import { Console } from './Console';
 import { ThemeSwitch } from './ThemeSwitch';
 import { StagePanel } from './StagePanel';
+import { Intro } from './Intro';
 import { Icon } from './ui';
 import { filesFor, useJob, type Stage } from '@/lib/job';
 import { useStageView } from '@/lib/useStageView';
@@ -169,6 +170,11 @@ export function Shell() {
     const w = clampW(stageW + (e.key === 'ArrowLeft' ? 24 : -24));
     setWidths((x) => ({ ...x, [mode]: w })); saveW(mode, w);
   };
+  // The intro's way in: the editor tab on a phone, and the caret in the source (or the upload).
+  const openEditor = () => {
+    setView('editor');
+    requestAnimationFrame(() => document.querySelector<HTMLElement>('#panel-editor .cm-content, #panel-editor input[type="file"]')?.focus());
+  };
   const tabKeys = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     const next = view === 'editor' ? 'stage' : 'editor';
@@ -179,34 +185,34 @@ export function Shell() {
   const diagnostics: Diagnostic[] = useMemo(() => (state.job?.compile.error?.diagnostics ?? []).filter((d) => d.file === active || d.file.endsWith(`/${active}`)), [state.job, active]);
   const langSelect = (
     <select aria-label="language" value={lang} onChange={(e) => { const l = e.target.value as Lang; setLang(l); setFiles(STARTER[l]); setBinary(undefined); setActive(Object.keys(STARTER[l])[0] ?? ''); setOptions((o) => ({ chain_id: o.chain_id, stage: 2 })); setDefaultCall(null); reset(); setUpErr(null); }}
-      className="h-7 rounded-sm border border-border bg-surface px-1.5 text-xs text-text max-lg:h-11">
+      className="h-7 rounded-sm border border-rule bg-surface px-1.5 text-xs text-ink max-lg:h-11">
       <option value="solidity">Solidity</option><option value="solana-rust">Solana (Rust)</option><option value="solana-elf">Solana (.so upload)</option>
     </select>
   );
   const tab = (id: 'editor' | 'stage', label: string) => (
-    <button role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} tabIndex={view === id ? 0 : -1} aria-selected={view === id} onKeyDown={tabKeys} onClick={() => setView(id)} className={`h-11 flex-1 text-sm ${view === id ? 'border-b-2 border-accent text-text-strong' : 'text-text-soft'}`}>{label}</button>
+    <button role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} tabIndex={view === id ? 0 : -1} aria-selected={view === id} onKeyDown={tabKeys} onClick={() => setView(id)} className={`mono h-11 flex-1 text-[11px] tracking-[.08em] uppercase ${view === id ? 'text-ink shadow-[inset_0_-2px_0_var(--ink)]' : 'text-ink-3'}`}>{label}</button>
   );
 
   return (
-    <div className="grid h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[48px_auto_auto_minmax(0,1fr)_auto] lg:grid-rows-[48px_auto_minmax(0,1fr)_auto]" style={{ ['--stage-w' as string]: `${Math.min(stageW, maxW)}px` }}>
-      <header className="relative z-20 flex items-center gap-2 border-b border-border-soft px-4 max-sm:px-2">
-        <span className="mono mr-2 font-semibold whitespace-nowrap text-text-strong">Rand Terminal</span>
+    <div className="grid h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[64px_auto_auto_minmax(0,1fr)_auto] lg:grid-rows-[64px_auto_minmax(0,1fr)_auto]" style={{ ['--stage-w' as string]: `${Math.min(stageW, maxW)}px` }}>
+      <header className="relative z-20 flex items-center gap-2 border-b border-rule bg-bg px-6 max-sm:px-4">
+        <span className="mono wordmark mr-4 font-semibold whitespace-nowrap text-text-strong max-sm:mr-1">Rand Terminal</span>
         <div ref={menuRef} className="relative">
-          <button aria-expanded={menu} onClick={() => setMenu(!menu)} className="inline-flex h-8 items-center gap-1 rounded-sm px-2 text-text-soft hover:bg-surface-2 hover:text-text-strong max-lg:h-11">Samples <Icon name="chevron" /></button>
-          {menu && <div className="absolute top-full left-0 mt-1 w-[min(380px,calc(100vw-16px))] rounded-lg border border-border bg-surface p-1"><SamplesPanel onLoad={load} onLoading={setSampleLoading} /></div>}
+          <button aria-expanded={menu} onClick={() => setMenu(!menu)} className="inline-flex h-8 items-center gap-1 rounded-sm px-2 text-[14px] text-ink-2 hover:text-ink max-lg:h-11">Samples <Icon name="chevron" /></button>
+          {menu && <div className="absolute top-full left-0 mt-2 w-[min(380px,calc(100vw-16px))] rounded-sm border border-rule bg-surface"><SamplesPanel onLoad={load} onLoading={setSampleLoading} /></div>}
         </div>
-        <button onClick={run} disabled={busy} title="Ctrl/Cmd + Enter" className="ml-auto h-8 rounded-sm bg-accent px-4 font-medium whitespace-nowrap text-on-accent hover:brightness-110 disabled:opacity-50 max-lg:h-11 max-sm:px-3">{busy ? 'Working…' : 'Compile & Run'}</button>
+        <button onClick={run} disabled={busy} title="Ctrl/Cmd + Enter" className="btn btn-primary ml-auto max-lg:h-11 max-sm:px-3">{busy ? 'Working…' : 'Compile & Run'}</button>
         <ThemeSwitch />
       </header>
       <PipelineStrip job={job} views={views} focused={focused} onFocus={(s) => { setFocused(s); setView('stage'); }} />
-      <div role="tablist" className="flex border-b border-border-soft lg:hidden">{tab('editor', 'Editor')}{tab('stage', 'Stages')}</div>
+      <div role="tablist" className="flex border-b border-rule lg:hidden">{tab('editor', 'Editor')}{tab('stage', 'Stages')}</div>
       <div data-dragging={dragging || undefined} className="workspace relative grid min-h-0 lg:grid-cols-[minmax(0,1fr)_var(--stage-w)]">
         <main id="panel-editor" role="tabpanel" aria-labelledby="tab-editor" className={`grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] overflow-hidden ${view === 'editor' ? '' : 'max-lg:hidden'}`}>
           <div className="flex min-w-0 items-center gap-2 border-b border-border-soft pr-2">
             <div className="flex min-w-0 flex-1 overflow-x-auto" aria-label="files">
               {Object.keys(files).map((n) => <button key={n} aria-pressed={n === active} onClick={() => setActive(n)} className="file-tab max-lg:h-11">{n}</button>)}
             </div>
-            {lang === 'solidity' && <label className="flex items-center gap-1 text-xs whitespace-nowrap text-text-mute">Chain <input aria-label="chain id" type="number" value={options.chain_id} onChange={(e) => setOptions({ ...options, chain_id: Number(e.target.value) })} className="mono h-7 w-14 rounded-sm border border-border bg-surface px-1.5 text-text max-lg:h-11" /></label>}
+            {lang === 'solidity' && <label className="mono flex items-center gap-1.5 text-[11px] tracking-[.08em] whitespace-nowrap text-ink-3 uppercase">Chain <input aria-label="chain id" type="number" value={options.chain_id} onChange={(e) => setOptions({ ...options, chain_id: Number(e.target.value) })} className="mono h-7 w-14 rounded-sm border border-rule bg-surface px-1.5 tracking-normal text-ink normal-case max-lg:h-11" /></label>}
             {langSelect}
           </div>
           {lang === 'solana-elf'
@@ -221,11 +227,8 @@ export function Shell() {
           {state.error && <p className="m-3 rounded-sm border border-negative p-3 text-negative" role="alert">{state.error}</p>}
           {job
             ? <StagePanel stage={focused} job={job} compile={compile} transpile={transpile} image={image} defaultCall={defaultCall} onRun={setRun} onPickContract={busy ? undefined : pickContract} />
-            : <div className="mx-auto max-w-lg p-6">
-                <h1 className="text-2xl leading-tight font-medium text-text-strong">Follow a contract down to zkVM cycles.</h1>
-                <p className="mt-2 mb-5 text-text-soft">Pick a sample below or write your own in the editor, then press Compile &amp; Run (⌘ or Ctrl + Enter).</p>
-                {!menu && <SamplesPanel onLoad={load} onLoading={setSampleLoading} />}
-              </div>}
+            : <Intro lang={lang} source={active} chainId={options.chain_id} busy={busy} onNew={openEditor}
+                samples={!menu && <SamplesPanel onLoad={load} onLoading={setSampleLoading} />} />}
         </section>
       </div>
       <Console lines={state.console} />
