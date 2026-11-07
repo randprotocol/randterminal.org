@@ -45,6 +45,7 @@ pub fn syscall_kind(s: &Syscall) -> &'static str {
         Syscall::Poseidon2Len { .. } => "poseidon2_len",
         Syscall::Keccak { .. } => "keccak",
         Syscall::Sha256 { .. } => "sha256",
+        Syscall::Modq { .. } => "modq",
     }
 }
 
@@ -58,6 +59,7 @@ pub fn syscall_view(clk: u32, s: &Syscall) -> SyscallView {
         Syscall::Poseidon2Len { ptr, n } => format!("{n} words at {ptr:#x}"),
         Syscall::Keccak { ptr } => format!("state at {ptr:#x}"),
         Syscall::Sha256 { ptr } => format!("block at {ptr:#x}"),
+        Syscall::Modq { base, a1 } => format!("arena at {base:#x}, a1 = {a1:#x}"),
     };
     SyscallView {
         clk,

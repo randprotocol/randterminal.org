@@ -32,10 +32,11 @@ RUN cd /opt/solana-template && HOME=/opt/sbf-home cargo vendor /opt/solana-vendo
 # circuits at the pinned revision; rand-guest built once; the shim crates' registry warmed by
 # translating and building the two reference programs, whose hc must equal the published ones.
 COPY circuits /circuits
-# Not --locked: at this pin the three lockfiles omit two edges of the rand_zkvm path crate (chacha20,
-# rand_core). Cargo adds those edges and changes no version; the hc pins below catch any drift.
-RUN cd /circuits/rand-guest && cargo build --release && install -m 0755 target/release/rand-guest /usr/local/bin/rand-guest \
- && cd /circuits/evm2rv && cargo build --release && cd /circuits/sbpf2rv && cargo build --release
+# rand-guest and evm2rv build --locked: their lockfiles are complete at this pin (85b6f46). sbpf2rv's
+# is not: it omits three edges of the rand_zkvm path crate (chacha20, rand_core, dilithium-core).
+# Cargo adds those and changes no version; the hc pins below catch any drift.
+RUN cd /circuits/rand-guest && cargo build --release --locked && install -m 0755 target/release/rand-guest /usr/local/bin/rand-guest \
+ && cd /circuits/evm2rv && cargo build --release --locked && cd /circuits/sbpf2rv && cargo build --release
 # The shim builds use their own CARGO_HOME so only their registry ships to run time.
 RUN set -e; export CARGO_HOME=/opt/shim-cargo; mkdir -p /circuits/jobs/warm; \
     /circuits/evm2rv/target/release/evm2rv /circuits/guests-compiled/evm/contracts/erc20.runtime.hex --out /circuits/jobs/warm/erc20 --chain-id 13; \

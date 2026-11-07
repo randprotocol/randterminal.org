@@ -20,7 +20,12 @@ pub fn rows(program: &Program, n_in: usize, n_pub: usize, exec: &Execution) -> T
         memory: exec
             .events
             .iter()
-            .map(|e| e.accesses.len() + e.keccak_accesses.len() + e.sha256_accesses.len())
+            .map(|e| {
+                e.accesses.len()
+                    + e.keccak_accesses.len()
+                    + e.sha256_accesses.len()
+                    + e.modq.as_ref().map_or(0, |m| m.accesses.len())
+            })
             .sum(),
         alu: exec.events.iter().map(|e| e.alu.len()).sum(),
         poseidon2_permutations: digest_rows + absorb,
