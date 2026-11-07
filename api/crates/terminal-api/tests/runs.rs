@@ -125,6 +125,80 @@ async fn erc20_transfer_runs_and_matches_the_host_interpreter() {
     assert_eq!(sys.as_array().unwrap().last().unwrap()["kind"], "halt");
 }
 
+/// A Cancun contract (circuits' `Cancun.sol`, solc 0.8.37 `--evm-version cancun`: TLOAD, TSTORE
+/// and MCOPY) goes through the whole pipeline with no unsupported-opcode warning, and its calls
+/// run to completion on the zkVM image, agreeing with the EVM interpreter. `bump(bytes)` itself
+/// (TSTORE and MCOPY) is run on the same image in terminal-core's evm_call tests: the call form
+/// takes static argument types only.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancun_contract_has_no_fork_warnings_and_runs_to_completion() {
+    let (app, _s, _d) = test_app(fake_runner());
+    let job = json!({"lang": "solidity", "files": [{"name": "Cancun.sol", "content": "contract Cancun {}"}], "options": {"evm_version": "cancun"}});
+    let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(job))).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let id = v["id"].as_str().unwrap().to_string();
+    let j = wait_job(&app, &id).await;
+    assert_eq!(j["build"]["status"], "done", "{j}");
+    for stage in ["compile", "transpile"] {
+        let (_, _, view) = call(
+            &app,
+            json_req("GET", &format!("/api/v1/jobs/{id}/{stage}"), None),
+        )
+        .await;
+        assert_eq!(view["warnings"], json!([]), "{stage}: {view}");
+    }
+    let (_, _, c) = call(
+        &app,
+        json_req("GET", &format!("/api/v1/jobs/{id}/compile"), None),
+    )
+    .await;
+    let names: Vec<&str> = c["opcodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["mnemonic"].as_str().unwrap())
+        .collect();
+    for op in ["TLOAD", "TSTORE", "MCOPY"] {
+        assert!(names.contains(&op), "{op}");
+    }
+    let code = hex::decode(
+        std::fs::read_to_string(fixtures_dir().join("cancun.runtime.hex"))
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    for function in ["isLocked()", "counter()"] {
+        let form = terminal_core::views::EvmCallForm {
+            function: function.into(),
+            args: vec![],
+            caller: evm_call::u256_hex(&rand_zkvm::evm::ALICE),
+            address: None,
+            value: "0".into(),
+            gas_limit: 100_000,
+            storage: vec![terminal_core::views::StorageSeed::Slot {
+                slot: "0".into(),
+                value: "41".into(),
+            }],
+        };
+        let (st, _, sum) = call(
+            &app,
+            json_req(
+                "POST",
+                &format!("/api/v1/jobs/{id}/runs"),
+                Some(evm_run(&form)),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{function}: {sum}");
+        assert_eq!(sum["halted"], true, "{function}: {sum}");
+        assert!(sum["trap"].is_null(), "{function}: {sum}");
+        let (call_, _) = evm_call::build(&code, &form).unwrap();
+        let (want, outcome, _) = call_.expected();
+        assert_eq!(outcome.status(), 1, "{function}");
+        assert_eq!(sum["outputs"], json!(want), "{function}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_trap_is_a_summary_without_a_trace() {
     let (app, _s, _d) = test_app(fake_runner());

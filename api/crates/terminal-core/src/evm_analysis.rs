@@ -36,20 +36,17 @@ pub fn metadata_start(code: &[u8]) -> usize {
     }
 }
 
-/// Names for opcodes the zkVM's interpreter does not implement but a newer fork defines.
+/// Names evm2rv's mnemonic table lacks: Cancun's blob opcodes, which evm2rv reports as traps
+/// (block context) but prints as `UNDEFINED_0x..`.
 fn fork_mnemonic(op: u8) -> Option<&'static str> {
     Some(match op {
-        0x1e => "CLZ",
         0x49 => "BLOBHASH",
         0x4a => "BLOBBASEFEE",
-        0x5c => "TLOAD",
-        0x5d => "TSTORE",
-        0x5e => "MCOPY",
         _ => return None,
     })
 }
 
-/// evm2rv's mnemonic, with the newer forks' names in place of `UNDEFINED_0x..`.
+/// evm2rv's mnemonic, with the blob opcodes' names in place of `UNDEFINED_0x..`.
 pub fn mnemonic(op: u8) -> String {
     fork_mnemonic(op)
         .map(str::to_string)
@@ -57,9 +54,10 @@ pub fn mnemonic(op: u8) -> String {
 }
 
 /// Every opcode the zkVM would trap on, in pc order: evm2rv's own warnings (block context,
-/// cross-contract, calls, code size) and, which evm2rv does not report, every opcode byte the
-/// interpreter does not implement (Cancun's TLOAD/TSTORE/MCOPY, Osaka's CLZ, undefined bytes),
-/// which its block split turns into a trap. Bytes in solc's metadata trailer are skipped.
+/// BLOBHASH and BLOBBASEFEE included, cross-contract, calls, code size) and, which evm2rv does not
+/// report, every byte no fork defines, which its block split turns into a trap. The zkVM's EVM
+/// implements every other opcode through Osaka (TLOAD/TSTORE/MCOPY since circuits 85b6f46, CLZ
+/// too), so those are never reported. Bytes in solc's metadata trailer are skipped.
 pub fn zkvm_warnings(code: &[u8]) -> Vec<WarningView> {
     let end = metadata_start(code);
     let mut out: Vec<WarningView> = blocks::warnings(code)
@@ -84,22 +82,14 @@ pub fn zkvm_warnings(code: &[u8]) -> Vec<WarningView> {
     out
 }
 
+/// A byte evm2rv's block split traps on that is outside its own warning set: one no fork through
+/// Osaka defines (every defined opcode is either implemented or one of evm2rv's warnings).
 fn unsupported_view(pc: usize, op: u8) -> WarningView {
-    let (detail, explanation) = match fork_mnemonic(op) {
-        Some(name) => (
-            format!("{name} ({op:#04x}) at {pc:#06x}"),
-            format!("{name} comes from a fork newer than the zkVM's EVM, which implements Shanghai: the translated program traps if this opcode executes. Compile for shanghai, or wait for the circuits pin that adds it."),
-        ),
-        None => (
-            format!("undefined opcode {op:#04x} at {pc:#06x}"),
-            "No EVM fork the zkVM implements defines this byte: the translated program traps if it executes. Code that never reaches it runs normally.".to_string(),
-        ),
-    };
     WarningView {
         kind: "unsupported_opcode".into(),
         pc: Some(pc),
-        detail,
-        explanation,
+        detail: format!("undefined opcode {op:#04x} at {pc:#06x}"),
+        explanation: "No EVM fork defines this byte. The zkVM's EVM implements every opcode through Osaka (TLOAD, TSTORE, MCOPY and CLZ included) except the block-context family (BLOBHASH, TIMESTAMP and the rest) and the cross-contract ones, which are reported separately, so this is not a fork mismatch: the translated program traps if it executes this byte. Code that never reaches it runs normally.".to_string(),
         fatal: false,
     }
 }

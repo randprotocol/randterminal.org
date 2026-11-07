@@ -39,6 +39,10 @@ pub fn fake_answer(spec: &RunSpec) -> RunOutput {
                     stderr: String::new(),
                     timed_out: true,
                 };
+            } else if input.contains("contract Cancun") {
+                let hex =
+                    std::fs::read_to_string(fixtures_dir().join("cancun.runtime.hex")).unwrap();
+                serde_json::json!({"contracts": {"Cancun.sol": {"Cancun": {"abi": [{"type": "function", "name": "counter", "inputs": [], "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view"}, {"type": "function", "name": "isLocked", "inputs": [], "outputs": [{"name": "", "type": "bool"}], "stateMutability": "view"}], "evm": {"bytecode": {"object": "6080"}, "deployedBytecode": {"object": hex.trim()}}}}}})
             } else {
                 let hex =
                     std::fs::read_to_string(fixtures_dir().join("erc20.runtime.hex")).unwrap();
@@ -56,7 +60,10 @@ pub fn fake_answer(spec: &RunSpec) -> RunOutput {
             ok("Finished release")
         }
         Tool::RandGuestBuild { debug: false } => {
-            let fixture = if w.join("shim/contract.c").exists() {
+            let c = std::fs::read_to_string(w.join("shim/contract.c")).ok();
+            let fixture = if c.as_deref().is_some_and(|c| c.contains("evm_tload")) {
+                "cancun.image.bin"
+            } else if c.is_some() {
                 "erc20.image.bin"
             } else {
                 "spl.image.bin"

@@ -359,3 +359,42 @@ fn caller_and_address_must_fit_160_bits() {
         .expect("address")
         .contains("20 bytes"));
 }
+
+/// `bump(bytes)`'s calldata: the selector, the ABI head (offset 0x20), the length, the bytes
+/// zero-padded to a word. The call form refuses dynamic types, so this is built by hand.
+fn bump_calldata(data: &[u8]) -> Vec<u8> {
+    let mut c = rand_zkvm::evm::selector("bump(bytes)").to_vec();
+    c.extend_from_slice(&U256::from_u32(0x20).to_be_bytes());
+    c.extend_from_slice(&U256::from_u32(data.len() as u32).to_be_bytes());
+    c.extend_from_slice(data);
+    c.resize(c.len() + (32 - data.len() % 32) % 32, 0);
+    c
+}
+
+/// circuits' Cancun fixture (solc 0.8.37 `--evm-version cancun`) runs to completion on the zkVM
+/// image the terminal builds for it (`cancun.image.bin`: evm2rv at chain 20, stage 2), through
+/// TSTORE/TLOAD (the transient reentrancy lock) and MCOPY (`bytes.concat`), and the image agrees
+/// with the EVM interpreter.
+#[test]
+fn the_cancun_contract_runs_on_the_zkvm_image() {
+    use rand_zkvm::emulator::execute;
+    let code = fixtures::cancun_code();
+    let program = terminal_core::image::load(&fixtures::bytes("cancun.image.bin")).unwrap();
+    // `counter` is storage slot 0; seed 41, so bump writes 42.
+    let mut form = empty_form(vec![StorageSeed::Slot {
+        slot: "0".into(),
+        value: "41".into(),
+    }]);
+    form.function = "counter()".into();
+    let (mut call, _) = build(&code, &form).unwrap();
+    call.calldata = bump_calldata(b"hello, cancun");
+    let (want, outcome, post) = call.expected();
+    assert_eq!(outcome.status(), 1, "{:?}", outcome.halt);
+    assert_eq!(post.witness(&U256::from_u32(0)).value, U256::from_u32(42));
+    let exec = execute(&program, &call.input_words(), &[], 1 << 20).unwrap();
+    assert!(exec.halted);
+    assert_eq!(
+        exec.outputs, want,
+        "the RV32 image and the EVM interpreter agree"
+    );
+}

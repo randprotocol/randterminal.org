@@ -266,11 +266,11 @@ fn erc20_jump_edges_equal_the_gotos_in_the_c_at_both_stages() {
     assert!(counts[0] <= counts[1], "{counts:?}");
 }
 
-/// Opcodes newer than the interpreter (Cancun's TLOAD/TSTORE/MCOPY, Osaka's CLZ, any undefined
-/// byte) silently become a trap in evm2rv's block split; the terminal reports each one so the
-/// developer sees it before running, not as a trap at run time.
+/// Since circuits 85b6f46 the zkVM's EVM implements Cancun's TLOAD/TSTORE/MCOPY and Osaka's CLZ:
+/// evm2rv translates them as ordinary ops, so none is warned about. A byte no fork defines still
+/// becomes a trap in evm2rv's block split, and the terminal reports it before the run.
 #[test]
-fn opcodes_the_zkvm_does_not_implement_are_warned_about() {
+fn only_undefined_bytes_are_unsupported_opcodes() {
     // PUSH1 0 TLOAD | PUSH1 0 PUSH1 0 TSTORE | PUSH1 0 DUP1 DUP1 MCOPY | PUSH1 1 CLZ | 0x0c | STOP
     let code = vec![
         0x60, 0x00, 0x5c, 0x60, 0x00, 0x60, 0x00, 0x5d, 0x60, 0x00, 0x80, 0x80, 0x5e, 0x60, 0x01,
@@ -284,36 +284,30 @@ fn opcodes_the_zkvm_does_not_implement_are_warned_about() {
         serde_json::json!([]),
         "osaka",
     );
-    let got: Vec<(Option<usize>, &str)> =
-        v.warnings.iter().map(|w| (w.pc, w.kind.as_str())).collect();
+    let got: Vec<(Option<usize>, &str, &str)> = v
+        .warnings
+        .iter()
+        .map(|w| (w.pc, w.kind.as_str(), w.detail.as_str()))
+        .collect();
     assert_eq!(
         got,
-        vec![
-            (Some(2), "unsupported_opcode"),
-            (Some(7), "unsupported_opcode"),
-            (Some(12), "unsupported_opcode"),
-            (Some(15), "unsupported_opcode"),
-            (Some(16), "unsupported_opcode"),
-        ]
+        vec![(
+            Some(16),
+            "unsupported_opcode",
+            "undefined opcode 0x0c at 0x0010"
+        )]
     );
-    let detail: Vec<&str> = v.warnings.iter().map(|w| w.detail.as_str()).collect();
-    assert_eq!(
-        detail,
-        vec![
-            "TLOAD (0x5c) at 0x0002",
-            "TSTORE (0x5d) at 0x0007",
-            "MCOPY (0x5e) at 0x000c",
-            "CLZ (0x1e) at 0x000f",
-            "undefined opcode 0x0c at 0x0010",
-        ]
-    );
-    assert!(v.warnings.iter().all(|w| !w.fatal));
+    assert!(!v.warnings[0].fatal);
     assert!(v.warnings[0].explanation.contains("traps"));
-    // The opcode list names them too, rather than UNDEFINED_0x5c.
+    assert!(v.warnings[0].explanation.contains("Osaka"));
+    // The opcode list names the new opcodes (evm2rv's own table now has them).
     let names: Vec<&str> = v.opcodes.iter().map(|o| o.mnemonic.as_str()).collect();
-    assert!(names.contains(&"TLOAD") && names.contains(&"MCOPY") && names.contains(&"CLZ"));
-    // The transpile stage reports the same warnings.
-    let (t, _) = transpile(&code, 20, 2).unwrap();
+    for n in ["TLOAD", "TSTORE", "MCOPY", "CLZ"] {
+        assert!(names.contains(&n), "{n} in {names:?}");
+    }
+    // The transpile stage reports the same warnings, and its C calls the runtime for the transient
+    // table and MCOPY (CLZ of a constant folds away at stage two).
+    let (t, c) = transpile(&code, 20, 2).unwrap();
     assert_eq!(
         t.warnings
             .iter()
@@ -324,12 +318,35 @@ fn opcodes_the_zkvm_does_not_implement_are_warned_about() {
             .map(|w| w.detail.clone())
             .collect::<Vec<_>>()
     );
+    for f in ["evm_tload", "evm_tstore", "evm_mcopy"] {
+        assert!(c.contains(f), "{f} in the emitted C");
+    }
+}
+
+/// The blob opcodes are still traps (block context), reported by evm2rv under their names.
+#[test]
+fn blob_opcodes_are_block_context_traps() {
+    // PUSH1 0 BLOBHASH | BLOBBASEFEE | STOP
+    let code = vec![0x60, 0x00, 0x49, 0x4a, 0x00];
+    let v = compile_view(
+        &code,
+        "C",
+        vec![],
+        String::new(),
+        serde_json::json!([]),
+        "cancun",
+    );
+    let got: Vec<(Option<usize>, &str)> =
+        v.warnings.iter().map(|w| (w.pc, w.kind.as_str())).collect();
+    assert_eq!(got, vec![(Some(2), "trap"), (Some(3), "trap")]);
+    let names: Vec<&str> = v.opcodes.iter().map(|o| o.mnemonic.as_str()).collect();
+    assert!(names.contains(&"BLOBHASH") && names.contains(&"BLOBBASEFEE"));
 }
 
 #[test]
 fn compile_view_merges_evm2rv_warnings_in_pc_order() {
-    // TSTORE at 4, TIMESTAMP at 5, CALL-free.
-    let code = vec![0x60, 0x00, 0x60, 0x00, 0x5d, 0x42, 0x00];
+    // TSTORE at 4 (implemented: no warning), an undefined byte at 5, TIMESTAMP at 6.
+    let code = vec![0x60, 0x00, 0x60, 0x00, 0x5d, 0x0c, 0x42, 0x00];
     let v = compile_view(
         &code,
         "C",
@@ -342,8 +359,43 @@ fn compile_view_merges_evm2rv_warnings_in_pc_order() {
         v.warnings.iter().map(|w| (w.pc, w.kind.as_str())).collect();
     assert_eq!(
         kinds,
-        vec![(Some(4), "unsupported_opcode"), (Some(5), "trap")]
+        vec![(Some(5), "unsupported_opcode"), (Some(6), "trap")]
     );
+}
+
+/// solc 0.8.37 `--evm-version cancun` output (circuits' `Cancun.sol`: a transient reentrancy lock
+/// and `bytes.concat`, so TLOAD, TSTORE and MCOPY) has no warning at all: its one EXTCODEHASH byte
+/// sits in the metadata trailer.
+#[test]
+fn a_cancun_contract_has_no_warnings() {
+    let code = fixtures::cancun_code();
+    for op in [0x5cu8, 0x5d, 0x5e] {
+        assert!(
+            blocks_ops(&code).contains(&op),
+            "{op:#04x} in the reachable code"
+        );
+    }
+    let v = compile_view(
+        &code,
+        "Cancun",
+        vec!["Cancun".into()],
+        String::new(),
+        serde_json::json!([]),
+        "cancun",
+    );
+    assert!(v.warnings.is_empty(), "{:?}", v.warnings);
+    let (t, _) = transpile(&code, 20, 2).unwrap();
+    assert!(t.warnings.is_empty(), "{:?}", t.warnings);
+}
+
+fn blocks_ops(code: &[u8]) -> Vec<u8> {
+    let end = terminal_core::evm_analysis::metadata_start(code);
+    evm2rv::blocks::blocks(code)
+        .iter()
+        .flat_map(|b| b.ops.iter())
+        .filter(|o| o.pc < end)
+        .map(|o| o.opcode)
+        .collect()
 }
 
 #[test]
