@@ -39,6 +39,10 @@ pub struct JobOptions {
     /// `1` or `2`; two is the default and what ships.
     #[serde(default = "default_stage")]
     pub stage: u8,
+    /// Solidity only: the fork solc compiles for (`settings.evmVersion`), one of
+    /// `stages::EVM_VERSIONS`. Absent means shanghai; a created job records the fork it used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evm_version: Option<String>,
 }
 impl Default for JobOptions {
     fn default() -> Self {
@@ -46,6 +50,7 @@ impl Default for JobOptions {
             contract: None,
             chain_id: default_chain_id(),
             stage: default_stage(),
+            evm_version: None,
         }
     }
 }
@@ -133,6 +138,16 @@ pub struct EvmCompileView {
     pub opcodes: Vec<EvmOpcode>,
     pub blocks: usize,
     pub jumpdests: usize,
+    /// The fork solc compiled for.
+    #[serde(default = "default_evm_version")]
+    pub evm_version: String,
+    /// What the zkVM will make of this bytecode, in pc order: opcodes it traps on, calls that
+    /// trap unless they reach a precompile, opcodes it does not implement at all.
+    #[serde(default)]
+    pub warnings: Vec<WarningView>,
+}
+fn default_evm_version() -> String {
+    crate::stages::DEFAULT_EVM_VERSION.to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

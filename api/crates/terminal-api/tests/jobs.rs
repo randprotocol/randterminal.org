@@ -424,3 +424,91 @@ async fn a_panicking_sweep_does_not_wedge_the_cap() {
         "no 60 s wait"
     );
 }
+
+/// A fake sandbox that records the evmVersion each solc step was asked for.
+fn recording_runner() -> (
+    std::sync::Arc<dyn terminal_sandbox::Runner>,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s = seen.clone();
+    let r = terminal_sandbox::FakeRunner::new(move |spec: &terminal_sandbox::RunSpec| {
+        if spec.tool == terminal_sandbox::Tool::Solc {
+            let input: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(spec.work.join("input.json")).unwrap())
+                    .unwrap();
+            s.lock().unwrap().push(
+                input["settings"]["evmVersion"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+            );
+        }
+        fake_answer(spec)
+    });
+    (std::sync::Arc::new(r), seen)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_solidity_job_compiles_for_the_fork_it_names_and_records_it() {
+    let (r, seen) = recording_runner();
+    let (app, _s, _d) = test_app(r);
+    let mut job = erc20_job();
+    job["options"] = serde_json::json!({"evm_version": "cancun"});
+    let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(job))).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let id = v["id"].as_str().unwrap().to_string();
+    let j = wait_job(&app, &id).await;
+    assert_eq!(j["options"]["evm_version"], "cancun");
+    let (_, _, c) = call(
+        &app,
+        json_req("GET", &format!("/api/v1/jobs/{id}/compile"), None),
+    )
+    .await;
+    assert_eq!(c["evm_version"], "cancun");
+    assert!(c["warnings"].is_array());
+    assert_eq!(*seen.lock().unwrap(), vec!["cancun".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_solidity_job_without_a_fork_compiles_for_shanghai() {
+    let (r, seen) = recording_runner();
+    let (app, _s, _d) = test_app(r);
+    let (_, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(erc20_job()))).await;
+    let id = v["id"].as_str().unwrap().to_string();
+    let j = wait_job(&app, &id).await;
+    assert_eq!(j["options"]["evm_version"], "shanghai");
+    let (_, _, c) = call(
+        &app,
+        json_req("GET", &format!("/api/v1/jobs/{id}/compile"), None),
+    )
+    .await;
+    assert_eq!(c["evm_version"], "shanghai");
+    assert_eq!(*seen.lock().unwrap(), vec!["shanghai".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_fork_or_a_fork_on_a_solana_job_is_a_bad_request() {
+    let (app, _s, d) = test_app(fake_runner());
+    for fork in [
+        "amsterdam",
+        "Shanghai",
+        "",
+        "shanghai; rm -rf /",
+        "frontier",
+    ] {
+        let mut job = erc20_job();
+        job["options"] = serde_json::json!({"evm_version": fork});
+        let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(job))).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{fork}: {v}");
+        assert!(
+            v["message"].as_str().unwrap().contains("evm_version"),
+            "{v}"
+        );
+    }
+    let job = serde_json::json!({"lang": "solana-rust", "files": [{"name": "lib.rs", "content": "x"}], "options": {"evm_version": "cancun"}});
+    let (st, _, v) = call(&app, json_req("POST", "/api/v1/jobs", Some(job))).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(v["message"], "evm_version applies to Solidity jobs only");
+    assert_eq!(std::fs::read_dir(d.path().join("jobs")).unwrap().count(), 0);
+}

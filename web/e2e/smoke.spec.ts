@@ -46,6 +46,29 @@ test('ERC-20: sample → five stages → a stepped run → the tables', async ({
   await expect(page.locator('#panel-stage').getByText(/needs tier 18/)).toBeVisible();
 });
 
+test('the EVM fork: picked beside the language, sent with the job, remembered, shown in the compile facts', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: /ERC-20 token/ }).click();
+  await expect(page.getByLabel('source editor')).toContainText('contract ERC20');
+  const fork = page.getByLabel('EVM fork');
+  await expect(fork).toHaveValue('shanghai');
+  await expect(page.getByRole('note')).toHaveCount(0);
+  await fork.selectOption('cancun');
+  await expect(page.getByRole('note')).toContainText('MCOPY, TLOAD/TSTORE, CLZ');
+  const job = page.waitForRequest((r) => r.method() === 'POST' && r.url().endsWith('/api/v1/jobs'));
+  await page.getByRole('button', { name: 'Compile & Run' }).click();
+  expect((await job).postDataJSON().options.evm_version).toBe('cancun');
+  await stage(page, /Compile/).click();
+  await expect(page.locator('#panel-stage').getByText('EVM fork')).toBeVisible();
+  // The pick lasts for the session.
+  await page.reload();
+  await page.getByRole('button', { name: /ERC-20 token/ }).click();
+  await expect(page.getByLabel('EVM fork')).toHaveValue('cancun');
+  // Solana has no fork.
+  await page.getByLabel('language').selectOption('solana-rust');
+  await expect(page.getByLabel('EVM fork')).toHaveCount(0);
+});
+
 test('no horizontal scroll at phone width', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/', { waitUntil: 'networkidle' });

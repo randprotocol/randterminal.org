@@ -34,8 +34,28 @@ fn tag_and_rename_shapes() {
         opcodes: vec![],
         blocks: 0,
         jumpdests: 0,
+        evm_version: "shanghai".into(),
+        warnings: vec![],
     });
     assert_eq!(serde_json::to_value(&v).unwrap()["lang"], "evm");
+    // A compile view written before the fork picker reads as shanghai with no warnings.
+    let mut old = serde_json::to_value(&v).unwrap();
+    old.as_object_mut().unwrap().remove("evm_version");
+    old.as_object_mut().unwrap().remove("warnings");
+    let CompileView::Evm(back) = serde_json::from_value(old).unwrap() else {
+        panic!()
+    };
+    assert_eq!(back.evm_version, "shanghai");
+    assert!(back.warnings.is_empty());
+    // Job options: evm_version is optional on the wire and absent when unset.
+    let o: JobOptions = serde_json::from_value(json!({"chain_id": 20, "stage": 2})).unwrap();
+    assert_eq!(o.evm_version, None);
+    assert!(serde_json::to_value(&o)
+        .unwrap()
+        .get("evm_version")
+        .is_none());
+    let o: JobOptions = serde_json::from_value(json!({"evm_version": "cancun"})).unwrap();
+    assert_eq!(o.evm_version.as_deref(), Some("cancun"));
     let s = StorageSeed::Mapping2 {
         base: 1,
         key1: "a".into(),

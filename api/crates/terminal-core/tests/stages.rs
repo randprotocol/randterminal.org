@@ -11,7 +11,7 @@ fn files() -> Vec<(String, String)> {
 
 #[test]
 fn input_has_the_pinned_settings() {
-    let v = solc_input(&files());
+    let v = solc_input(&files(), DEFAULT_EVM_VERSION);
     assert_eq!(v["language"], "Solidity");
     assert_eq!(v["sources"]["Token.sol"]["content"], SRC);
     assert_eq!(v["settings"]["optimizer"]["enabled"], true);
@@ -21,6 +21,43 @@ fn input_has_the_pinned_settings() {
         v["settings"]["outputSelection"]["*"]["*"],
         serde_json::json!(["abi", "evm.bytecode.object", "evm.deployedBytecode.object"])
     );
+}
+
+#[test]
+fn input_carries_the_chosen_evm_version() {
+    for fork in EVM_VERSIONS {
+        assert_eq!(solc_input(&files(), fork)["settings"]["evmVersion"], fork);
+    }
+}
+
+/// The forks solc 0.8.37 accepts for `settings.evmVersion` (its `--help`), without the
+/// experimental `amsterdam`; shanghai is the default.
+#[test]
+fn evm_versions_are_solc_0_8_37s_forks() {
+    assert_eq!(
+        EVM_VERSIONS,
+        [
+            "homestead",
+            "tangerineWhistle",
+            "spuriousDragon",
+            "byzantium",
+            "constantinople",
+            "petersburg",
+            "istanbul",
+            "berlin",
+            "london",
+            "paris",
+            "shanghai",
+            "cancun",
+            "prague",
+            "osaka"
+        ]
+    );
+    assert_eq!(DEFAULT_EVM_VERSION, "shanghai");
+    assert!(is_evm_version("cancun"));
+    assert!(!is_evm_version("amsterdam"));
+    assert!(!is_evm_version("Shanghai"));
+    assert!(!is_evm_version(""));
 }
 
 #[test]

@@ -243,7 +243,11 @@ impl JobStore {
 
     /// Creates a job for `client`, who may have at most `max_active_jobs_per_ip` unfinished jobs
     /// (429); at most `max_queued_jobs` are unfinished in all (503).
-    pub fn create_from(self: &Arc<Self>, req: NewJob, client: Option<&str>) -> ApiResult<String> {
+    pub fn create_from(
+        self: &Arc<Self>,
+        mut req: NewJob,
+        client: Option<&str>,
+    ) -> ApiResult<String> {
         if !(1..=2).contains(&req.options.stage) {
             return Err(AppError::BadRequest(format!(
                 "stage must be 1 or 2, not {}",
@@ -279,6 +283,25 @@ impl JobStore {
             return Err(AppError::PayloadTooLarge(format!(
                 "{text_total} bytes of source; the limit is {MAX_TEXT_BYTES}"
             )));
+        }
+        // The fork is the one option that goes into the sandbox as text: only solc's own names.
+        match (req.lang, req.options.evm_version.as_deref()) {
+            (Lang::Solidity, None) => {
+                req.options.evm_version = Some(stages::DEFAULT_EVM_VERSION.to_string())
+            }
+            (Lang::Solidity, Some(v)) if stages::is_evm_version(v) => {}
+            (Lang::Solidity, Some(v)) => {
+                return Err(AppError::BadRequest(format!(
+                    "evm_version {v:?} is not one of {}",
+                    stages::EVM_VERSIONS.join(", ")
+                )))
+            }
+            (_, Some(_)) => {
+                return Err(AppError::BadRequest(
+                    "evm_version applies to Solidity jobs only".into(),
+                ))
+            }
+            (_, None) => {}
         }
         let names: Vec<&str> = req.files.iter().map(|f| f.name.as_str()).collect();
         match req.lang {
@@ -868,6 +891,12 @@ impl Pipeline {
         let src = self.dir.join("source");
         match self.view.lang {
             Lang::Solidity => {
+                let evm_version = self
+                    .view
+                    .options
+                    .evm_version
+                    .clone()
+                    .unwrap_or_else(|| stages::DEFAULT_EVM_VERSION.to_string());
                 let mut files = Vec::new();
                 for e in std::fs::read_dir(&src).map_err(io_err)? {
                     let e = e.map_err(io_err)?;
@@ -880,7 +909,7 @@ impl Pipeline {
                 std::fs::create_dir_all(&sdir).map_err(io_err)?;
                 std::fs::write(
                     sdir.join("input.json"),
-                    stages::solc_input(&files).to_string(),
+                    stages::solc_input(&files, &evm_version).to_string(),
                 )
                 .map_err(io_err)?;
                 let out = self
@@ -916,6 +945,7 @@ impl Pipeline {
                         r.contracts,
                         r.creation_hex,
                         r.abi,
+                        &evm_version,
                     )
                 })
                 .await

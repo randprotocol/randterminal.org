@@ -21,12 +21,96 @@ fn push_hex(op: &blocks::Op) -> Option<String> {
     Some(hex::encode(&bytes[32 - n..]))
 }
 
+/// Where solc's CBOR metadata trailer starts: the code's last two bytes are the trailer's length,
+/// and the trailer is a CBOR map (head 0xa0-0xbf). `code.len()` when there is no such trailer.
+/// The trailer is data no jump can reach, so its bytes are never reported as opcodes.
+pub fn metadata_start(code: &[u8]) -> usize {
+    let len = code.len();
+    if len < 2 {
+        return len;
+    }
+    let n = u16::from_be_bytes([code[len - 2], code[len - 1]]) as usize;
+    match len.checked_sub(n + 2) {
+        Some(start) if n > 0 && (0xa0..=0xbf).contains(&code[start]) => start,
+        _ => len,
+    }
+}
+
+/// Names for opcodes the zkVM's interpreter does not implement but a newer fork defines.
+fn fork_mnemonic(op: u8) -> Option<&'static str> {
+    Some(match op {
+        0x1e => "CLZ",
+        0x49 => "BLOBHASH",
+        0x4a => "BLOBBASEFEE",
+        0x5c => "TLOAD",
+        0x5d => "TSTORE",
+        0x5e => "MCOPY",
+        _ => return None,
+    })
+}
+
+/// evm2rv's mnemonic, with the newer forks' names in place of `UNDEFINED_0x..`.
+pub fn mnemonic(op: u8) -> String {
+    fork_mnemonic(op)
+        .map(str::to_string)
+        .unwrap_or_else(|| emit::mnemonic(op))
+}
+
+/// Every opcode the zkVM would trap on, in pc order: evm2rv's own warnings (block context,
+/// cross-contract, calls, code size) and, which evm2rv does not report, every opcode byte the
+/// interpreter does not implement (Cancun's TLOAD/TSTORE/MCOPY, Osaka's CLZ, undefined bytes),
+/// which its block split turns into a trap. Bytes in solc's metadata trailer are skipped.
+pub fn zkvm_warnings(code: &[u8]) -> Vec<WarningView> {
+    let end = metadata_start(code);
+    let mut out: Vec<WarningView> = blocks::warnings(code)
+        .iter()
+        .map(warning_view)
+        .filter(|w| w.pc.map(|pc| pc < end).unwrap_or(true))
+        .collect();
+    for b in blocks::blocks(code) {
+        let Term::TrapOp(op) = b.term else { continue };
+        if blocks::TRAP_TERM.contains(&op) {
+            continue;
+        }
+        let Some(pc) = b.ops.last().map(|o| o.pc) else {
+            continue;
+        };
+        if pc >= end {
+            continue;
+        }
+        out.push(unsupported_view(pc, op));
+    }
+    out.sort_by_key(|w| w.pc.unwrap_or(0));
+    out
+}
+
+fn unsupported_view(pc: usize, op: u8) -> WarningView {
+    let (detail, explanation) = match fork_mnemonic(op) {
+        Some(name) => (
+            format!("{name} ({op:#04x}) at {pc:#06x}"),
+            format!("{name} comes from a fork newer than the zkVM's EVM, which implements Shanghai: the translated program traps if this opcode executes. Compile for shanghai, or wait for the circuits pin that adds it."),
+        ),
+        None => (
+            format!("undefined opcode {op:#04x} at {pc:#06x}"),
+            "No EVM fork the zkVM implements defines this byte: the translated program traps if it executes. Code that never reaches it runs normally.".to_string(),
+        ),
+    };
+    WarningView {
+        kind: "unsupported_opcode".into(),
+        pc: Some(pc),
+        detail,
+        explanation,
+        fatal: false,
+    }
+}
+
 pub fn compile_view(
     code: &[u8],
     contract: &str,
     contracts: Vec<String>,
     creation_hex: String,
     abi: serde_json::Value,
+    evm_version: &str,
 ) -> EvmCompileView {
     let bs = blocks::blocks(code);
     let jd = blocks::jumpdests(code);
@@ -36,7 +120,7 @@ pub fn compile_view(
             opcodes.push(EvmOpcode {
                 pc: op.pc,
                 opcode: op.opcode,
-                mnemonic: emit::mnemonic(op.opcode),
+                mnemonic: mnemonic(op.opcode),
                 push_hex: push_hex(op),
                 static_gas: blocks::static_gas(op.opcode),
                 jumpdest: op.opcode == 0x5b,
@@ -54,6 +138,8 @@ pub fn compile_view(
         opcodes,
         blocks: bs.len(),
         jumpdests: jd.len(),
+        evm_version: evm_version.to_string(),
+        warnings: zkvm_warnings(code),
     }
 }
 
@@ -66,7 +152,7 @@ fn term_text(t: &Term) -> String {
         Term::Return => "return".into(),
         Term::Revert => "revert".into(),
         Term::Invalid => "invalid".into(),
-        Term::TrapOp(op) => format!("trap {}", emit::mnemonic(*op)),
+        Term::TrapOp(op) => format!("trap {}", mnemonic(*op)),
         Term::OutOfBounds => "code too large".into(),
     }
 }
@@ -197,7 +283,7 @@ pub fn transpile(
         2 => Stage::Two,
         s => return Err(EvmTranspileError::BadStage(s)),
     };
-    let warnings: Vec<WarningView> = blocks::warnings(code).iter().map(warning_view).collect();
+    let warnings = zkvm_warnings(code);
     if let Some(f) = warnings.iter().find(|w| w.fatal) {
         return Err(EvmTranspileError::Unsupported(f.clone()));
     }

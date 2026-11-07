@@ -30,7 +30,8 @@
   "options": {
     "chain_id": 13,
     "contract": "ERC20",
-    "stage": 2
+    "stage": 2,
+    "evm_version": "shanghai"
   },
   "transpile": {
     "ended": 0,

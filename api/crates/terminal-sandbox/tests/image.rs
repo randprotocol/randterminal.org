@@ -55,7 +55,7 @@ async fn erc20_sol_compiles_to_the_fixture_bytecode() {
     let files = vec![("ERC20.sol".to_string(), src)];
     std::fs::write(
         d.path().join("input.json"),
-        stages::solc_input(&files).to_string(),
+        stages::solc_input(&files, stages::DEFAULT_EVM_VERSION).to_string(),
     )
     .unwrap();
     open_up(d.path());

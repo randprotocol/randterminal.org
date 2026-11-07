@@ -74,4 +74,12 @@ describe('rowsOf', () => {
     expect(rows.filter((r) => !r.header && !r.inert).map((r) => r.pc)).toEqual([0, 1]);
     expect(rows.at(-1)).toMatchObject({ inert: true, pc: 2 });
   });
+  it('marks the opcodes the zkVM traps on instead of their gas', () => {
+    const view = { lang: 'evm', opcodes: [
+      { pc: 0, opcode: 0x60, mnemonic: 'PUSH1', push_hex: '00', static_gas: 3, jumpdest: false, block: 0 },
+      { pc: 2, opcode: 0x5c, mnemonic: 'TLOAD', static_gas: 0, jumpdest: false, block: 0 },
+    ], warnings: [{ kind: 'unsupported_opcode', pc: 2, detail: 'TLOAD (0x5c) at 0x0002', explanation: '', fatal: false }] } as unknown as CompileView;
+    const rows = rowsOf(view);
+    expect(rows.map((r) => [r.note, !!r.warn])).toEqual([['gas 3', false], ['traps on the zkVM', true]]);
+  });
 });

@@ -13,8 +13,16 @@ fn erc20_compile_view_counts() {
         vec!["ERC20".into()],
         String::new(),
         serde_json::json!([]),
+        "shanghai",
     );
     assert_eq!(v.size_bytes, 1296);
+    assert_eq!(v.evm_version, "shanghai");
+    // solc's CBOR metadata trailer is data, not code: none of its bytes is reported.
+    assert!(
+        v.warnings.iter().all(|w| w.pc.unwrap_or(0) < 1296 - 53),
+        "{:?}",
+        v.warnings
+    );
     assert_eq!(v.runtime_hex, hex::encode(&code));
     assert_eq!(v.blocks, 74);
     assert_eq!(v.jumpdests, 51);
@@ -256,4 +264,97 @@ fn erc20_jump_edges_equal_the_gotos_in_the_c_at_both_stages() {
         counts.push(ours.len());
     }
     assert!(counts[0] <= counts[1], "{counts:?}");
+}
+
+/// Opcodes newer than the interpreter (Cancun's TLOAD/TSTORE/MCOPY, Osaka's CLZ, any undefined
+/// byte) silently become a trap in evm2rv's block split; the terminal reports each one so the
+/// developer sees it before running, not as a trap at run time.
+#[test]
+fn opcodes_the_zkvm_does_not_implement_are_warned_about() {
+    // PUSH1 0 TLOAD | PUSH1 0 PUSH1 0 TSTORE | PUSH1 0 DUP1 DUP1 MCOPY | PUSH1 1 CLZ | 0x0c | STOP
+    let code = vec![
+        0x60, 0x00, 0x5c, 0x60, 0x00, 0x60, 0x00, 0x5d, 0x60, 0x00, 0x80, 0x80, 0x5e, 0x60, 0x01,
+        0x1e, 0x0c, 0x00,
+    ];
+    let v = compile_view(
+        &code,
+        "C",
+        vec!["C".into()],
+        String::new(),
+        serde_json::json!([]),
+        "osaka",
+    );
+    let got: Vec<(Option<usize>, &str)> =
+        v.warnings.iter().map(|w| (w.pc, w.kind.as_str())).collect();
+    assert_eq!(
+        got,
+        vec![
+            (Some(2), "unsupported_opcode"),
+            (Some(7), "unsupported_opcode"),
+            (Some(12), "unsupported_opcode"),
+            (Some(15), "unsupported_opcode"),
+            (Some(16), "unsupported_opcode"),
+        ]
+    );
+    let detail: Vec<&str> = v.warnings.iter().map(|w| w.detail.as_str()).collect();
+    assert_eq!(
+        detail,
+        vec![
+            "TLOAD (0x5c) at 0x0002",
+            "TSTORE (0x5d) at 0x0007",
+            "MCOPY (0x5e) at 0x000c",
+            "CLZ (0x1e) at 0x000f",
+            "undefined opcode 0x0c at 0x0010",
+        ]
+    );
+    assert!(v.warnings.iter().all(|w| !w.fatal));
+    assert!(v.warnings[0].explanation.contains("traps"));
+    // The opcode list names them too, rather than UNDEFINED_0x5c.
+    let names: Vec<&str> = v.opcodes.iter().map(|o| o.mnemonic.as_str()).collect();
+    assert!(names.contains(&"TLOAD") && names.contains(&"MCOPY") && names.contains(&"CLZ"));
+    // The transpile stage reports the same warnings.
+    let (t, _) = transpile(&code, 20, 2).unwrap();
+    assert_eq!(
+        t.warnings
+            .iter()
+            .map(|w| w.detail.clone())
+            .collect::<Vec<_>>(),
+        v.warnings
+            .iter()
+            .map(|w| w.detail.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compile_view_merges_evm2rv_warnings_in_pc_order() {
+    // TSTORE at 4, TIMESTAMP at 5, CALL-free.
+    let code = vec![0x60, 0x00, 0x60, 0x00, 0x5d, 0x42, 0x00];
+    let v = compile_view(
+        &code,
+        "C",
+        vec![],
+        String::new(),
+        serde_json::json!([]),
+        "cancun",
+    );
+    let kinds: Vec<(Option<usize>, &str)> =
+        v.warnings.iter().map(|w| (w.pc, w.kind.as_str())).collect();
+    assert_eq!(
+        kinds,
+        vec![(Some(4), "unsupported_opcode"), (Some(5), "trap")]
+    );
+}
+
+#[test]
+fn metadata_trailer_is_found_from_its_length_suffix() {
+    use terminal_core::evm_analysis::metadata_start;
+    let code = fixtures::erc20_code();
+    let start = metadata_start(&code);
+    assert_eq!(code[start], 0xa2, "the CBOR map head");
+    assert_eq!(code.len() - start, 0x33 + 2);
+    // Code without a plausible trailer is all code.
+    assert_eq!(metadata_start(&[0x60, 0x00, 0x00]), 3);
+    assert_eq!(metadata_start(&[]), 0);
+    assert_eq!(metadata_start(&[0x00, 0xff]), 2);
 }

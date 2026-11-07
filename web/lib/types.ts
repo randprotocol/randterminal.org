@@ -2,7 +2,7 @@
 export type Lang = 'solidity' | 'solana-rust' | 'solana-elf';
 export type StageStatus = 'queued' | 'running' | 'done' | 'failed';
 export type StageName = 'compile' | 'transpile' | 'build';
-export interface JobOptions { contract?: string | null; chain_id: number; stage: number }
+export interface JobOptions { contract?: string | null; chain_id: number; stage: number; evm_version?: string | null }
 export interface Diagnostic { file: string; line: number; col: number; severity: string; message: string }
 export interface StageError { kind: string; message: string; diagnostics: Diagnostic[] }
 export interface StageState { status: StageStatus; started?: number | null; ended?: number | null; error?: StageError | null }
@@ -12,7 +12,7 @@ export interface JobView { id: string; lang: Lang; options: JobOptions; created:
 export interface AbiParam { name: string; type: string }
 export interface AbiItem { type: string; name?: string; inputs?: AbiParam[]; outputs?: AbiParam[]; stateMutability?: string }
 export interface EvmOpcode { pc: number; opcode: number; mnemonic: string; push_hex?: string | null; static_gas: number; jumpdest: boolean; block: number }
-export interface EvmCompileView { lang: 'evm'; contract: string; contracts: string[]; creation_hex: string; runtime_hex: string; size_bytes: number; abi: AbiItem[]; opcodes: EvmOpcode[]; blocks: number; jumpdests: number }
+export interface EvmCompileView { lang: 'evm'; contract: string; contracts: string[]; creation_hex: string; runtime_hex: string; size_bytes: number; abi: AbiItem[]; opcodes: EvmOpcode[]; blocks: number; jumpdests: number; evm_version: string; warnings: WarningView[] }
 export interface SbpfInsnView { pc: number; text: string; opc: number }
 export interface SbpfBlockView { start: number; end: number; term: string; insns: SbpfInsnView[] }
 export interface SbpfFunctionView { entry: number; blocks: SbpfBlockView[] }

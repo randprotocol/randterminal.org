@@ -7,7 +7,34 @@ use std::path::Path;
 
 pub const SHIM_UP: &str = "../../..";
 
-pub fn solc_input(files: &[(String, String)]) -> Value {
+/// The forks solc 0.8.37 accepts as `settings.evmVersion` (its `--help`; `amsterdam` is
+/// experimental there and left out). Pre-london forks compile with a deprecation warning.
+pub const EVM_VERSIONS: [&str; 14] = [
+    "homestead",
+    "tangerineWhistle",
+    "spuriousDragon",
+    "byzantium",
+    "constantinople",
+    "petersburg",
+    "istanbul",
+    "berlin",
+    "london",
+    "paris",
+    "shanghai",
+    "cancun",
+    "prague",
+    "osaka",
+];
+
+/// What a job that names no fork compiles for: the fork the zkVM's EVM interpreter implements.
+pub const DEFAULT_EVM_VERSION: &str = "shanghai";
+
+pub fn is_evm_version(v: &str) -> bool {
+    EVM_VERSIONS.contains(&v)
+}
+
+/// The standard-JSON input for `files`, compiled for `evm_version` (one of [`EVM_VERSIONS`]).
+pub fn solc_input(files: &[(String, String)], evm_version: &str) -> Value {
     let sources: serde_json::Map<String, Value> = files
         .iter()
         .map(|(n, c)| (n.clone(), json!({ "content": c })))
@@ -17,7 +44,7 @@ pub fn solc_input(files: &[(String, String)]) -> Value {
         "sources": sources,
         "settings": {
             "optimizer": { "enabled": true, "runs": 200 },
-            "evmVersion": "shanghai",
+            "evmVersion": evm_version,
             "outputSelection": { "*": { "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"] } }
         }
     })

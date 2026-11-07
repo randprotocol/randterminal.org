@@ -123,10 +123,17 @@ those paths, and the API serves only the host-owned copies.
 ### 4.1 Compile
 
 **Solidity.** The sandbox runs solc with standard-json input built by terminal-core:
-`--optimize --optimize-runs 200 --evm-version shanghai`, outputs `abi`,
+`--optimize --optimize-runs 200 --evm-version <fork>`, outputs `abi`,
 `evm.bytecode.object`, `evm.deployedBytecode.object`, `metadata`. These are the
 flags `transpiled/ethereum/SOLC.md` and `fullnode/ci.yml` already pin, so the ERC-20
-sample reproduces `erc20.runtime.hex` byte for byte. The user picks the contract to
+sample reproduces `erc20.runtime.hex` byte for byte. The fork is the job's
+`options.evm_version`, one of the fourteen solc 0.8.37 accepts (homestead … osaka; the
+experimental amsterdam is refused), shanghai when absent; anything else is a 400. The compile
+view records the fork (`evm_version`) and lists, as `warnings`, every opcode the zkVM traps on:
+evm2rv's own (block context, cross-contract, calls) plus every byte the interpreter does not
+implement (Cancun's TLOAD/TSTORE/MCOPY, Osaka's CLZ, undefined bytes), skipping solc's metadata
+trailer. The web picker sits beside the language picker, lasts for the browser session, and
+warns that Cancun+ opcodes trap at the current circuits pin. The user picks the contract to
 transpile when a file defines several. Diagnostics (`errors[]` with
 `sourceLocation`) are mapped to editor markers.
 
@@ -292,7 +299,7 @@ Base `/api/v1`. JSON everywhere; errors are `{error, message, details?}`.
 |---|---|---|
 | GET | `/samples` | `[{id, title, lang, files}]` |
 | GET | `/samples/:id` | file contents (text or base64 for `.so`) |
-| POST | `/jobs` | `{lang: "solidity" \| "solana-rust" \| "solana-elf", files: {name: text\|base64}, options: {contract?, chain_id?, stage?}}` → `{id}` 201 |
+| POST | `/jobs` | `{lang: "solidity" \| "solana-rust" \| "solana-elf", files: {name: text\|base64}, options: {contract?, chain_id?, stage?, evm_version?}}` → `{id}` 201 |
 | GET | `/jobs/:id` | `{lang, stages: {compile, transpile, build}: {status, started, ended, error?}, console: [...]}` |
 | GET | `/jobs/:id/events` | SSE: `stage` events as statuses change, `console` lines, `done` |
 | GET | `/jobs/:id/compile` `/transpile` `/image` | stage views (§4) |

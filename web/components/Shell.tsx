@@ -8,6 +8,7 @@ import { ThemeSwitch } from './ThemeSwitch';
 import { StagePanel } from './StagePanel';
 import { Icon } from './ui';
 import { filesFor, useJob, type Stage } from '@/lib/job';
+import { EVM_VERSIONS, forkHint, isEvmVersion, jobOptions, loadFork, saveFork, type EvmVersion } from '@/lib/evm';
 import { useStageView } from '@/lib/useStageView';
 import type { CallForm, CompileView, Diagnostic, ImageView, JobOptions, Lang, RunSummary, SampleView, TranspileView } from '@/lib/types';
 
@@ -56,6 +57,10 @@ export function Shell() {
   const [active, setActive] = useState('Contract.sol');
   const [binary, setBinary] = useState<string | undefined>();
   const [options, setOptions] = useState<JobOptions>({ chain_id: 20, stage: 2 });
+  // The fork lives apart from the options: it outlives samples and language switches, for the session.
+  const [fork, setForkState] = useState<EvmVersion>('shanghai');
+  useEffect(() => { setForkState(loadFork()); }, []);
+  const setFork = (v: EvmVersion) => { setForkState(v); saveFork(v); };
   const [defaultCall, setDefaultCall] = useState<CallForm | null>(null);
   const [focused, setFocused] = useState<Stage>('compile');
   // Phones open on the samples; the editor tab is one tap away.
@@ -106,16 +111,16 @@ export function Shell() {
   const run = useCallback(() => {
     if (busy) return;
     setFocused('compile'); setView('stage');
-    void submit({ lang, files: filesFor(lang, files, binary), options });
-  }, [busy, lang, files, binary, options, submit]);
+    void submit({ lang, files: filesFor(lang, files, binary), options: jobOptions(lang, options, fork) });
+  }, [busy, lang, files, binary, options, fork, submit]);
 
   // Re-submits the same sources with the contract the developer picked (several contracts in the file).
   const pickContract = useCallback((contract: string) => {
     if (busy) return;
     const o = { ...options, contract };
     setOptions(o); setFocused('compile'); setView('stage');
-    void submit({ lang, files: filesFor(lang, files, binary), options: o });
-  }, [busy, lang, files, binary, options, submit]);
+    void submit({ lang, files: filesFor(lang, files, binary), options: jobOptions(lang, o, fork) });
+  }, [busy, lang, files, binary, options, fork, submit]);
   // An edit to the source may rename or remove the picked contract: forget it (keep chain id, stage).
   const onEdit = (v: string) => {
     if (v === files[active]) return;
@@ -134,6 +139,7 @@ export function Shell() {
   const load = (s: SampleView) => {
     setLang(s.meta.lang);
     setOptions(s.meta.options ?? { chain_id: 20, stage: 2 });
+    if (isEvmVersion(s.meta.options?.evm_version)) setFork(s.meta.options.evm_version);
     setDefaultCall(s.meta.default_call ?? null);
     if (s.meta.lang === 'solana-elf') { setFiles({}); setBinary(s.files[0]?.content); setActive(''); }
     else { const f = Object.fromEntries(s.files.map((x) => [x.name, x.content])); setFiles(f); setBinary(undefined); setActive(s.files[0]?.name ?? ''); }
@@ -183,6 +189,13 @@ export function Shell() {
       <option value="solidity">Solidity</option><option value="solana-rust">Solana (Rust)</option><option value="solana-elf">Solana (.so upload)</option>
     </select>
   );
+  const forkSelect = lang === 'solidity' && (
+    <select aria-label="EVM fork" title="The EVM fork solc compiles for" value={fork} onChange={(e) => { if (isEvmVersion(e.target.value)) setFork(e.target.value); }}
+      className="mono h-7 rounded-sm border border-border bg-surface px-1.5 text-xs text-text max-lg:h-11">
+      {EVM_VERSIONS.map((v) => <option key={v} value={v}>{v}</option>)}
+    </select>
+  );
+  const hint = lang === 'solidity' ? forkHint(fork) : null;
   const tab = (id: 'editor' | 'stage', label: string) => (
     <button role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} tabIndex={view === id ? 0 : -1} aria-selected={view === id} onKeyDown={tabKeys} onClick={() => setView(id)} className={`h-11 flex-1 text-sm ${view === id ? 'border-b-2 border-accent text-text-strong' : 'text-text-soft'}`}>{label}</button>
   );
@@ -202,12 +215,16 @@ export function Shell() {
       <div role="tablist" className="flex border-b border-border-soft lg:hidden">{tab('editor', 'Editor')}{tab('stage', 'Stages')}</div>
       <div data-dragging={dragging || undefined} className="workspace relative grid min-h-0 lg:grid-cols-[minmax(0,1fr)_var(--stage-w)]">
         <main id="panel-editor" role="tabpanel" aria-labelledby="tab-editor" className={`grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] overflow-hidden ${view === 'editor' ? '' : 'max-lg:hidden'}`}>
-          <div className="flex min-w-0 items-center gap-2 border-b border-border-soft pr-2">
-            <div className="flex min-w-0 flex-1 overflow-x-auto" aria-label="files">
-              {Object.keys(files).map((n) => <button key={n} aria-pressed={n === active} onClick={() => setActive(n)} className="file-tab max-lg:h-11">{n}</button>)}
+          <div className="min-w-0 border-b border-border-soft">
+            <div className="flex min-w-0 items-center gap-2 pr-2">
+              <div className="flex min-w-0 flex-1 overflow-x-auto" aria-label="files">
+                {Object.keys(files).map((n) => <button key={n} aria-pressed={n === active} onClick={() => setActive(n)} className="file-tab max-lg:h-11">{n}</button>)}
+              </div>
+              {lang === 'solidity' && <label className="flex items-center gap-1 text-xs whitespace-nowrap text-text-mute">Chain <input aria-label="chain id" type="number" value={options.chain_id} onChange={(e) => setOptions({ ...options, chain_id: Number(e.target.value) })} className="mono h-7 w-14 rounded-sm border border-border bg-surface px-1.5 text-text max-lg:h-11" /></label>}
+              {forkSelect}
+              {langSelect}
             </div>
-            {lang === 'solidity' && <label className="flex items-center gap-1 text-xs whitespace-nowrap text-text-mute">Chain <input aria-label="chain id" type="number" value={options.chain_id} onChange={(e) => setOptions({ ...options, chain_id: Number(e.target.value) })} className="mono h-7 w-14 rounded-sm border border-border bg-surface px-1.5 text-text max-lg:h-11" /></label>}
-            {langSelect}
+            {hint && <p role="note" className="px-3 pb-1.5 text-xs text-warning">{hint}</p>}
           </div>
           {lang === 'solana-elf'
             ? <div className="p-6"><p className="mb-3 text-text-soft">{binary ? `program.so loaded, ${Math.round((binary.length * 3) / 4 / 1024)} KB. Press Compile & Run.` : 'Upload a Solana program built with cargo build-sbf, up to 2 MB.'}</p>
