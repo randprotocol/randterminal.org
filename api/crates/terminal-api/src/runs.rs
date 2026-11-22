@@ -87,7 +87,9 @@ pub async fn create(s: &AppState, job: &str, req: RunRequest) -> ApiResult<RunSu
                 Err(m) => return Ok(Outcome::Bad(m)),
             },
             Call::Sbpf(elf, form) => match sbpf_call::build(&elf, &form) {
-                Ok(c) => (c.input_words(), c.public_words(), vec![]),
+                // A translated image carries its program (circuits ZKVM-117, constraint set 11):
+                // its public tape is the sysvar block alone, not the interpreter's ELF + sysvars.
+                Ok(c) => (c.input_words(), c.translated_public_words(), vec![]),
                 Err(m) => return Ok(Outcome::Bad(m)),
             },
         };

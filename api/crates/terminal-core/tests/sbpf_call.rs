@@ -12,7 +12,11 @@ fn spl_transfer_round_trips() {
     assert_eq!(form.data, "0x03fa00000000000000");
     let got = build(&want.elf, &form).unwrap();
     assert_eq!(got.input, want.input);
-    assert_eq!(got.public_words(), fixtures::words("spl-transfer.public"));
+    // The translated image's public tape: the sysvar block alone (constraint set 11, ZKVM-117).
+    assert_eq!(
+        got.translated_public_words(),
+        fixtures::words("spl-transfer.public")
+    );
     assert_eq!(got.input_words(), fixtures::words("spl-transfer.input"));
 }
 

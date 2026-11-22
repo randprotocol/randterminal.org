@@ -43,7 +43,7 @@ fn term_text(t: &Term) -> String {
 
 pub fn warning_view(w: &Warning) -> WarningView {
     let (kind, pc, detail, explanation, fatal) = match *w {
-        Warning::UnknownSyscall { pc, hash } => ("unknown_syscall", pc, format!("syscall {hash:#010x} at {pc}"), "Only twelve Solana syscalls exist in the guest runtime; this one traps if executed.", false),
+        Warning::UnknownSyscall { pc, hash } => ("unknown_syscall", pc, format!("syscall {hash:#010x} at {pc}"), "The guest runtime does not implement this syscall (the syscall list names the ones it does); it traps if executed.", false),
         Warning::Cpi { pc, name } => ("cpi", pc, format!("{name} at {pc}"), "Cross-program invocation is not available inside a proof; the program traps if it reaches this call.", false),
         Warning::RegisterOutOfRange { pc, opc } => ("register_out_of_range", pc, format!("opcode {opc:#04x} at {pc}"), "The instruction names a register above r10; the verifier would reject it and the guest traps.", false),
         Warning::UnknownOpcode { pc, opc } => ("unknown_opcode", pc, format!("opcode {opc:#04x} at {pc}"), "Not an sBPF v1 instruction; it traps if executed.", false),

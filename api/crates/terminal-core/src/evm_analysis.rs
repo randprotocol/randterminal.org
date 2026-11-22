@@ -247,12 +247,12 @@ pub fn warning_view(w: &Warning) -> WarningView {
     match *w {
         Warning::Trap { pc, opcode } => WarningView {
             kind: "trap".into(), pc: Some(pc), detail: format!("{} at {pc:#06x}", emit::mnemonic(opcode)),
-            explanation: "Block-context, balance, external-code and CREATE opcodes have no meaning inside a proof: the translated program halts with a trap if this opcode executes. Code that never reaches it runs normally.".into(),
+            explanation: "BLOCKHASH, SELFBALANCE, the blob opcodes and the balance, external-code, CREATE and SELFDESTRUCT opcodes have no meaning inside a proof: the translated program halts with a trap if this opcode executes. Code that never reaches it runs normally.".into(),
             fatal: false,
         },
         Warning::BlockContext { pc, opcode } => WarningView {
             kind: "block_context".into(), pc: Some(pc), detail: format!("{} at {pc:#06x}", emit::mnemonic(opcode)),
-            explanation: "Block-context opcodes (NUMBER, TIMESTAMP, PREVRANDAO and the like) read the block the call is proved against: they run when the transaction is an InvokeAt (a version-2 context; PREVRANDAO also needs the chain beacon) and trap on a plain invoke.".into(),
+            explanation: "Block-context opcodes (NUMBER, TIMESTAMP, PREVRANDAO and the like) read the block the call is proved against: they run when the transaction is an InvokeAt (a version-2 context; PREVRANDAO also needs the chain beacon) and trap on a plain invoke. The terminal runs every call as a plain invoke, so here they trap.".into(),
             fatal: false,
         },
         Warning::Call { pc, opcode } => WarningView {

@@ -98,15 +98,26 @@ fn stage_one_is_allowed_and_three_is_not() {
 
 #[test]
 fn trapping_opcodes_are_warnings_not_errors() {
-    let code = vec![0x42, 0x00];
+    // BLOCKHASH always traps; TIMESTAMP is block context since constraint set 11 (circuits #27):
+    // it runs under an InvokeAt and traps on a plain invoke. Neither is an error.
+    let code = vec![0x5f, 0x40, 0x42, 0x00];
     let (view, _) = transpile(&code, 20, 2).unwrap();
     let w = view
         .warnings
         .iter()
         .find(|w| w.kind == "trap")
         .expect("a trap warning");
-    assert_eq!(w.pc, Some(0));
+    assert_eq!(w.pc, Some(1));
+    assert!(w.detail.contains("BLOCKHASH"));
+    assert!(!w.fatal);
+    let w = view
+        .warnings
+        .iter()
+        .find(|w| w.kind == "block_context")
+        .expect("a block_context warning");
+    assert_eq!(w.pc, Some(2));
     assert!(w.detail.contains("TIMESTAMP"));
+    assert!(w.explanation.contains("InvokeAt"));
     assert!(!w.fatal);
 }
 
@@ -345,7 +356,8 @@ fn blob_opcodes_are_block_context_traps() {
 
 #[test]
 fn compile_view_merges_evm2rv_warnings_in_pc_order() {
-    // TSTORE at 4 (implemented: no warning), an undefined byte at 5, TIMESTAMP at 6.
+    // TSTORE at 4 (implemented: no warning), an undefined byte at 5, TIMESTAMP (block context
+    // since constraint set 11) at 6.
     let code = vec![0x60, 0x00, 0x60, 0x00, 0x5d, 0x0c, 0x42, 0x00];
     let v = compile_view(
         &code,
@@ -359,7 +371,7 @@ fn compile_view_merges_evm2rv_warnings_in_pc_order() {
         v.warnings.iter().map(|w| (w.pc, w.kind.as_str())).collect();
     assert_eq!(
         kinds,
-        vec![(Some(5), "unsupported_opcode"), (Some(6), "trap")]
+        vec![(Some(5), "unsupported_opcode"), (Some(6), "block_context")]
     );
 }
 

@@ -12,8 +12,9 @@ fn spl_token_analyses() {
     assert!(c.text_bytes > 100_000 && c.text_bytes.is_multiple_of(8));
     assert!(c.functions.len() > 20, "{}", c.functions.len());
     assert!(c.instructions > 10_000);
-    // SPL Token also calls two syscalls outside the guest runtime's twelve (4 call sites); each is
-    // flagged by a non-fatal warning, and the supported ones are named.
+    // Every syscall SPL Token calls is one the guest runtime implements since constraint set 11
+    // (circuits ZKVM-116 added sol_set_return_data and sol_get_sysvar, its last two, 4 call sites):
+    // no unknown_syscall warning, and each one is named.
     let unsupported: usize = c
         .syscalls
         .iter()
@@ -27,7 +28,10 @@ fn spl_token_analyses() {
             .filter(|w| w.kind == "unknown_syscall")
             .count()
     );
-    assert_eq!(c.syscalls.iter().filter(|s| !s.supported).count(), 2);
+    assert_eq!(c.syscalls.iter().filter(|s| !s.supported).count(), 0);
+    for name in ["sol_set_return_data", "sol_get_sysvar"] {
+        assert!(c.syscalls.iter().any(|s| s.name == name), "{name}");
+    }
     assert!(c.syscalls.iter().any(|s| s.name == "sol_log_"));
     assert!(c.warnings.iter().all(|w| !w.fatal));
     // the entry function comes first and starts at the ELF's entry pc
