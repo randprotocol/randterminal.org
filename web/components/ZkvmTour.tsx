@@ -71,7 +71,7 @@ export function ZkvmTour() {
         <div className="flex flex-wrap items-end justify-between gap-x-10 gap-y-4">
           <div className="max-w-[62ch]">
             <h1 className="text-[28px] leading-tight font-medium tracking-tight text-text-strong sm:text-[34px]">How the zkVM works</h1>
-            <p className="mt-2 text-[15px] leading-relaxed text-text-soft">One program, from source to a verified proof, the way the terminal and the circuits it pins (85b6f46) really do it. Every number here comes from their code or a recorded run.</p>
+            <p className="mt-2 text-[15px] leading-relaxed text-text-soft">One program, from source to a verified proof, the way the terminal and the circuits it pins (41d64acd, constraint set 11) really do it. Every number here comes from their code or a recorded run.</p>
           </div>
           <div role="radiogroup" aria-label="sample" className="flex gap-1 rounded-md border border-border-soft bg-bg-soft p-1">
             {Object.values(SAMPLES).map((x) => (
@@ -160,8 +160,8 @@ function Explain({ id, s }: { id: StepId; s: SampleFacts }) {
       <Code path="circuits/research/src/emulator.rs" />
     </>;
     case 'tables': return <>
-      {/* Nineteen: the bus constants in circuits/research/src/tables/mod.rs at 85b6f46 (MODQ and MODQ_WIRE joined after BLIND); docs/02-tables-and-buses.md counts the same. */}
-      <p>The record becomes tables, one per chip, that exchange facts over nineteen LogUp buses instead of calling each other. A tier t fixes their heights to powers of two: CPU 2<sup>t</sup>, ALU 2<sup>t+1</sup>, Memory and Poseidon2 at least 2<sup>t+2</sup>. Unused rows are padding.</p>
+      {/* Nineteen: the bus constants in circuits/research/src/tables/mod.rs at 41d64acd, as at 85b6f46 (MODQ and MODQ_WIRE joined after BLIND); docs/02-tables-and-buses.md counts the same. */}
+      <p>The record becomes tables, one per chip, that exchange facts over nineteen LogUp buses instead of calling each other. A tier t fixes their heights to powers of two: CPU 2<sup>t</sup>, ALU 2<sup>t+1</sup>, Memory at least 2<sup>t+2</sup>. Poseidon2’s height is declared by the proof: the smallest of 2<sup>8</sup>, 2<sup>10</sup>, …, 2<sup>t+2</sup> that holds the run’s permutations. Unused rows are padding.</p>
       <p>The smallest tier that holds every table wins: here, tier {s.tier}. Range and nibble tables are fixed at 256 rows; {evm ? `${s.rows.keccak_permutations} Keccak permutations add a Keccak table.` : 'SHA-256 compressions add a SHA-256 table.'}</p>
       <Code path="circuits/research/src/machine.rs (Tier), api/crates/terminal-core/src/tiers.rs" />
     </>;
@@ -172,7 +172,7 @@ function Explain({ id, s }: { id: StepId; s: SampleFacts }) {
       <Code path="circuits/research/src/tables/cpu.rs" />
     </>;
     case 'commit': return <>
-      <p>Each column is interpolated over the Goldilocks field (p = 2<sup>64</sup> − 2<sup>32</sup> + 1) and evaluated on a domain eight times larger (log_blowup 3): the low-degree extension.</p>
+      <p>Each column is interpolated over the Goldilocks field (p = 2<sup>64</sup> − 2<sup>32</sup> + 1) and evaluated on a domain four times larger (log_blowup 2, rate 1/4): the low-degree extension.</p>
       <p>The extended rows become the leaves of a Merkle tree hashed with Poseidon2, salted so the root reveals nothing about the trace. All tables go under one commitment; its root is all the verifier receives of the trace.</p>
       <Code path="circuits/research/src/machine.rs (generic_config: HidingFriPcs)" />
     </>;
@@ -183,8 +183,8 @@ function Explain({ id, s }: { id: StepId; s: SampleFacts }) {
     </>;
     case 'verify': return <>
       <p>The verifier never sees the trace. It replays the transcript, checks the proof of work, checks that every bus balances and every AIR holds at one random point, and opens {FRI.queries} random positions down the FRI layers along their Merkle paths.</p>
-      <p>The production profile (80 queries, 20 bits of grinding, blowup 8) gives about 86 proven bits of soundness. The recursion machine, which proves that proofs verify, uses its own profile for the same bound: blowup 4, 92 queries, 24 bits. The terminal itself stops at the tier: it runs and measures programs; proving is the node’s prover.</p>
-      {/* 86.38 against 86.41 proven bits: circuits/recursion/docs/07-rvm-rate-quarter.md; RvmFri::of in circuits/recursion/src/machine.rs (85b6f46). */}
+      <p>The production profile (blowup 4, 92 queries, 24 bits of grinding) gives about 86 proven bits of soundness, the same profile the recursion machine uses to prove that proofs verify. It replaced blowup 8 with 80 queries and 20 bits in constraint set 11, for the same bound at half the extension. The terminal itself stops at the tier: it runs and measures programs; proving is the node’s prover.</p>
+      {/* 86.38 against 86.41 proven bits: circuits/recursion/docs/07-rvm-rate-quarter.md; FriProfile::Production's doc in circuits/research/src/machine.rs (41d64acd, ZKVM-111). */}
       <Code path="FriProfile::Production, circuits/research/src/machine.rs; RvmFri, circuits/recursion/src/machine.rs" />
     </>;
   }
@@ -312,16 +312,16 @@ function Air({ reduced }: { reduced: boolean }) {
 }
 
 function Commit() {
-  // A column of 8 values, its blowup-8 extension (64 points), and a binary tree over 8 leaf groups.
+  // A column of 8 values, its blowup-4 extension (32 points), and a binary tree over 8 leaf groups.
   const leaves = 8;
   const levels = [8, 4, 2, 1];
   return (
     <figure>
-      <svg className="zk-commit" viewBox="0 0 400 230" role="img" aria-label="A column of 8 trace values extends to 64 points; groups of extended rows hash up a Merkle tree to one root">
+      <svg className="zk-commit" viewBox="0 0 400 230" role="img" aria-label="A column of 8 trace values extends to 32 points; groups of extended rows hash up a Merkle tree to one root">
         <text x="6" y="14" className="zk-svg-label">trace column, 8 rows</text>
         {Array.from({ length: 8 }, (_, r) => <rect key={r} className="zk-cell" x={6 + r * 14} y={22} width={12} height={12} style={{ animationDelay: `${r * 30}ms` }} />)}
-        <text x="6" y="58" className="zk-svg-label">low-degree extension ×8, 64 points</text>
-        {Array.from({ length: 64 }, (_, r) => <rect key={r} className={`zk-cell ${r % 8 === 0 ? '' : 'zk-cell-ext'}`} x={6 + r * 6} y={66} width={5} height={12} style={{ animationDelay: `${300 + r * 8}ms` }} />)}
+        <text x="6" y="58" className="zk-svg-label">low-degree extension ×4, 32 points</text>
+        {Array.from({ length: 32 }, (_, r) => <rect key={r} className={`zk-cell ${r % 4 === 0 ? '' : 'zk-cell-ext'}`} x={6 + r * 12} y={66} width={10} height={12} style={{ animationDelay: `${300 + r * 16}ms` }} />)}
         {levels.map((count, l) => Array.from({ length: count }, (_, j) => {
           const w = 384 / count, cx = 6 + w * j + w / 2, cy = 210 - l * 36;
           const child = l > 0 ? [cx - w / 4, cx + w / 4] : null;

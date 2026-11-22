@@ -311,7 +311,7 @@ Base `/api/v1`. JSON everywhere; errors are `{error, message, details?}`.
 | GET | `/jobs/:id/files/:name` | raw artifacts: `contract.c`, `image.bin`, `program.so`, `runtime.hex` |
 | POST | `/jobs/:id/runs` | the call (§4.4) → `{rid}` 201; runs synchronously up to the cap |
 | GET | `/runs/:rid` `/cycles` `/state` `/memory` `/syscalls` `/next_src` | §4.4 |
-| GET | `/health` | `{ok, sandbox, sandbox_image, circuits_rev}`; `sandbox`: the docker daemon answers (`docker version`, cached 30 s) |
+| GET | `/health` | `{ok, sandbox, sandbox_image, circuits_rev, chain_id, constraint_set}`; `sandbox`: the docker daemon answers (`docker version`, cached 30 s); `chain_id`: the CHAINID a job gets by default (`default_chain_id()`); `constraint_set`: `rand_zkvm::machine::CONSTRAINT_SET` of the vendored circuits. The monorepo site-sync check compares the last two with the fleet |
 
 Limits: source files ≤ 512 KB total, `.so` ≤ 2 MB, one job per POST, 10 jobs per
 minute per IP and 60 runs per minute per IP (randscan's limiter pattern), 6 000 reads

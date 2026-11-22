@@ -242,6 +242,11 @@ impl Host for TraceHost {
     fn poseidon2(&mut self, words: &mut [u32], n: usize) {
         HostRef.poseidon2(words, n)
     }
+    /// No public segment, as `HostRef`: every block-context opcode traps, as on a version-1
+    /// context (a plain invoke).
+    fn read_public(&mut self, idx: u32) -> u32 {
+        HostRef.read_public(idx)
+    }
 }
 
 fn dry_run(call: &EvmCall) -> (Outcome, Vec<U256>) {
@@ -325,6 +330,8 @@ pub fn build(code: &[u8], form: &EvmCallForm) -> Result<(EvmCall, Vec<DiscoveryS
         caller: parse_address(&form.caller)?,
         callvalue: parse_u256(&form.value)?,
         gas_limit: form.gas_limit,
+        // The replay-protection words the chain binds a call to; the terminal binds none.
+        context: [0; 8],
         tree,
         touched: seeded,
     };

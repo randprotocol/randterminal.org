@@ -47,3 +47,12 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# circuits research patches p3 crates through its own [patch.crates-io], but [patch] applies
+# only to the root package, so repeat it here: constraint set 11 needs the vendored
+# p3-batch-stark (QuotientLayout); p3-fri / p3-merkle-tree carry the hiding-RNG lock fix
+# (../circuits/vendor/PROVENANCE.md).
+[patch.crates-io]
+p3-batch-stark = { path = "../circuits/vendor/p3-batch-stark" }
+p3-fri = { path = "../circuits/vendor/p3-fri" }
+p3-merkle-tree = { path = "../circuits/vendor/p3-merkle-tree" }

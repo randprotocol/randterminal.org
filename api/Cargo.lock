@@ -1049,8 +1049,6 @@ dependencies = [
 [[package]]
 name = "p3-batch-stark"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d68b4d3ba163ef87fb27a61f1c47be9b9eb05e5320c410f9f8cf09503ae4f95"
 dependencies = [
  "hashbrown",
  "p3-air",
@@ -1129,8 +1127,6 @@ dependencies = [
 [[package]]
 name = "p3-fri"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52e1cb8b63f02a9e3e441b20c341856d9bce85ae3e3bee6d3ed0da9bea8779d1"
 dependencies = [
  "itertools",
  "p3-challenger",
@@ -1235,8 +1231,6 @@ dependencies = [
 [[package]]
 name = "p3-merkle-tree"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1508ed6e0211a8375ffdcd08746d81841526fe36140d985acd81b4bfe4103649"
 dependencies = [
  "itertools",
  "p3-commit",
@@ -1467,6 +1461,7 @@ dependencies = [
  "clap",
  "hex",
  "rand_zkvm",
+ "rustc-demangle",
  "sha2",
 ]
 
@@ -1532,6 +1527,12 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
 name = "rustc_version"

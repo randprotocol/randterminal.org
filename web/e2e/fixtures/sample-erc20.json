@@ -39,7 +39,7 @@
     "id": "erc20",
     "lang": "solidity",
     "options": {
-      "chain_id": 20,
+      "chain_id": 22,
       "contract": "ERC20",
       "stage": 2
     },

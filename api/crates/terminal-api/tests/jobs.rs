@@ -31,7 +31,7 @@ async fn submit_poll_and_read_every_view() {
         json_req("GET", &format!("/api/v1/jobs/{id}/image"), None),
     )
     .await;
-    assert_eq!(i["words"], 11_686);
+    assert_eq!(i["words"], 7_965);
     let res = app
         .clone()
         .oneshot(json_req(
@@ -42,10 +42,10 @@ async fn submit_poll_and_read_every_view() {
         .await
         .unwrap();
     assert_eq!(res.headers()["content-type"], "application/octet-stream");
-    // erc20.image.bin is 46_244 bytes (RULING R7; the brief said 46_760).
+    // erc20.image.bin is 31_244 bytes at constraint set 11 (46_244 at set 10, RULING R7).
     assert_eq!(
         res.into_body().collect().await.unwrap().to_bytes().len(),
-        46_244
+        31_244
     );
 }
 

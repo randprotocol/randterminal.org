@@ -60,6 +60,11 @@ pub fn build(elf: &[u8], form: &SbpfCallForm) -> Result<SbpfCall, String> {
     Ok(SbpfCall {
         elf: elf.to_vec(),
         input,
+        // Clock and Rent as circuits fixtures them, so a program that reads a sysvar runs.
+        sysvars: Some(rand_zkvm::sbpf::sysvar_block(
+            &rand_zkvm::sbpf::FIXTURE_CLOCK,
+            &rand_zkvm::sbpf::DEFAULT_RENT,
+        )),
     })
 }
 

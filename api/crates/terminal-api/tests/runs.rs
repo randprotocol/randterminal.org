@@ -44,9 +44,10 @@ async fn erc20_transfer_runs_and_matches_the_host_interpreter() {
         "the RV32 image and the EVM interpreter agree"
     );
     assert_eq!(sum["halted"], true);
-    assert_eq!(sum["tier"], 18);
+    // Tier 16 since constraint set 11 (circuits ZKVM-117's harness savings; tier 18 before).
+    assert_eq!(sum["tier"], 16);
     let total = sum["cycles"].as_u64().unwrap();
-    assert!(total > 60_000);
+    assert_eq!(total, 59_949);
     let rid = sum["rid"].as_str().unwrap();
 
     let (_, _, again) = call(&app, json_req("GET", &format!("/api/v1/runs/{rid}"), None)).await;
@@ -295,7 +296,9 @@ async fn spl_transfer_runs_on_the_translated_image() {
     let want = rand_zkvm::sbpf::spl_transfer(250).expected().0;
     assert_eq!(sum["outputs"], json!(want));
     assert_eq!(sum["tier"], 20);
-    assert_eq!(sum["public_words"], 27_151);
+    // The translated image's public tape is the sysvar block alone (constraint set 11, ZKVM-117):
+    // its length word and 57 bytes in 15 words, where set 10 put the 108 600-byte ELF.
+    assert_eq!(sum["public_words"], 16);
 }
 
 #[tokio::test(flavor = "multi_thread")]

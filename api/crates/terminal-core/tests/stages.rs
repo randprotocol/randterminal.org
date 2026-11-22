@@ -135,11 +135,13 @@ fn sbpf_shim_equals_what_sbpf2rv_writes() {
     let reference = root.join("target/terminal-sbpf-test/shim");
     let _ = std::fs::remove_dir_all(&reference);
     let a = terminal_core::sbpf_analysis::analyse(&fixtures::bytes("spl_token.so")).unwrap();
+    let mut elf = fixtures::bytes("spl_token.so");
+    let p = sbpf_core::elf::load(&mut elf).unwrap();
     let body = a
         .program_c
-        .strip_suffix(&sbpf2rv::shim::view_digest_c(&a.digest))
+        .strip_suffix(&sbpf2rv::shim::baked_c(&p, false))
         .unwrap();
-    sbpf2rv::shim::write_crate(&reference, "spl-token", body, &a.digest).unwrap();
+    sbpf2rv::shim::write_crate(&reference, "spl-token", body, &p, false).unwrap();
     let ours = tempfile::tempdir().unwrap();
     write_sbpf_shim(ours.path(), "spl-token", &a.program_c).unwrap();
     for f in [

@@ -1,5 +1,5 @@
 form: image container
-text 11147 words at 0x10000; data 408 words (205 non-zero) at 0x1ae2c; prologue 539 words; program 11686 words from base_pc 0xf794
-hc a0feae92a7311c9562495717100eb7aea71270a38ed435d06dc31387e0ea8ff6
-program id f074c4eb834cf01886a8241b6a2e0caf6e1cee5327fee6cb1a1a37436607280d
-11686 words against a cap of 4096: does not fit
+text 7310 words at 0x10000; data 495 words (253 non-zero) at 0x17238; prologue 655 words; program 7965 words from base_pc 0xf5c4
+hc fd8dd3afdd785a991993c0f17dcca9a7c2c4b4c3bf213e2354d9aa1ffbf6e400
+program id 5591baf0b5f918a40e89dcb6f2b31fec1443dd0b6cb0059a7f9753e672d550a8
+7965 words against a cap of 4096: does not fit

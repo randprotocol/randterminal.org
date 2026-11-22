@@ -21,52 +21,60 @@ typedef sbpf_ret (*sbpf_callee)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t
  * whole SPL program runs into first. The toolchain's flags are unchanged; this is per function. */
 #define SBPF_FN __attribute__((minsize)) static sbpf_ret
 
-/* The call depth: frames pushed and not yet popped (`Vm::depth`). */
+/* The call depth: frames pushed and not yet popped (`Vm::depth`). The *callee* pushes, as its
+ * first statement (SBPF_ENTER), and pops in its return (SBPF_RETURN): once per function instead of
+ * once per call site, which is some nine RV32 words at each of a whole program's call sites. The
+ * entry starts it at -1, so the entry function's own push makes it 0. */
 static uint32_t sbpf_depth;
 /* Which entry of a merged function to start at: 0 for its own, else the entry's pc + 1. Set
- * immediately before a call and cleared by the callee's first statement. */
+ * immediately before a call and cleared by the callee's first statements. */
 static uint32_t sbpf_sel;
 
-/* `push_frame`: the depth check comes first; the callee gets the caller's registers (those it may
- * read before writing: sbpf2rv/src/emit.rs, "register liveness across calls"), r10 one frame up;
- * the caller continues with the callee's r0..r5 (those it may write) and its own r6..r10. The
- * instruction budget lives in each function's local `budget` and is handed over through
- * `sbpf_budget` around the call. `call` is the whole call expression, `copy` the copy-back. */
-#define SBPF_DEPTH_PUSH() \
+/* `push_frame`: the depth check comes first — in the callee, before it charges anything; the
+ * callee gets the caller's registers (those it may read before writing: sbpf2rv/src/emit.rs,
+ * "register liveness across calls"), r10 one frame up; the caller continues with the callee's
+ * r0..r5 (those it may write) and its own r6..r10. The instruction budget lives in each function's
+ * local `budget` and is handed over through `sbpf_budget` around the call. `call` is the whole
+ * call expression, `copy` the copy-back. */
+#define SBPF_ENTER() \
     do { \
         if (++sbpf_depth == SBPF_MAX_CALL_DEPTH) sbpf_trap(SBPF_HALT_CALL_DEPTH, 0); \
     } while (0)
+/* The same check without the push, where the push's own trap must come before another. */
+#define SBPF_DEPTH_CHECK() \
+    do { \
+        if (sbpf_depth + 1 == SBPF_MAX_CALL_DEPTH) sbpf_trap(SBPF_HALT_CALL_DEPTH, 0); \
+    } while (0)
 #define SBPF_CALL(call, copy) \
     do { \
-        SBPF_DEPTH_PUSH(); \
         sbpf_budget = budget; \
         sbpf_ret x_ = call; \
-        budget = (int32_t)sbpf_budget; \
-        sbpf_depth--; \
+        budget = sbpf_budget; \
         copy \
     } while (0)
-/* `callx`: the address is read, the frame pushed, then the target fetched (`interp.rs`). */
+/* `callx`: the address is read, the frame pushed (its depth check here, the push in the callee),
+ * then the target fetched (`interp.rs`). */
 #define SBPF_CALLX(a, args, copy) \
     do { \
         uint64_t a_ = (a); \
-        SBPF_DEPTH_PUSH(); \
+        SBPF_DEPTH_CHECK(); \
         sbpf_callee f_ = sbpf_callx_target(a_); \
         sbpf_budget = budget; \
         sbpf_ret x_ = f_ args; \
-        budget = (int32_t)sbpf_budget; \
-        sbpf_depth--; \
+        budget = sbpf_budget; \
         copy \
     } while (0)
-/* An internal call whose target is not code: the frame push (and its depth check) still runs. */
+/* An internal call whose target is not code: the frame push's depth check still runs. */
 #define SBPF_CALL_BAD_TARGET() \
     do { \
-        SBPF_DEPTH_PUSH(); \
+        SBPF_DEPTH_CHECK(); \
         sbpf_trap(SBPF_HALT_BAD_JUMP, 0); \
     } while (0)
-/* `exit`. */
+/* `exit`: pops the frame SBPF_ENTER pushed. */
 #define SBPF_RETURN() \
     do { \
         sbpf_budget = budget; \
+        sbpf_depth--; \
         return (sbpf_ret){r0, r1, r2, r3, r4, r5}; \
     } while (0)
 
@@ -94,19 +102,20 @@ SBPF_FN f_12751(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4,
 SBPF_FN f_12794(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10);
 
 SBPF_FN f_225(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
     uint32_t sel = sbpf_sel;
     sbpf_sel = 0;
     switch (sel) {
     case 7358u: goto L_7357;
     }
 L_225:
-    budget -= 2;
+    if ((budget -= 2) < 0) goto L_limit;
     r2 = sbpf_ld1(r1, 0);
     if (r2 == 3) goto L_336;
     goto L_227;
 L_227:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 != 4) goto L_344;
     goto L_228;
 L_228:
@@ -115,7 +124,7 @@ L_228:
     if (r2 != 165) goto L_344;
     goto L_230;
 L_230:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r1, 10512);
     if (r2 != 255) goto L_344;
     goto L_232;
@@ -125,7 +134,7 @@ L_232:
     if (r2 != 82) goto L_344;
     goto L_234;
 L_234:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r1, 20936);
     if (r2 != 255) goto L_344;
     goto L_236;
@@ -135,7 +144,7 @@ L_236:
     if (r2 != 165) goto L_344;
     goto L_238;
 L_238:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r1, 31440);
     if (r2 != 255) goto L_344;
     goto L_240;
@@ -153,7 +162,7 @@ L_240:
     if (r2 < 10) goto L_344;
     goto L_250;
 L_250:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = r5;
     r2 = r2 + 41784;
     r2 = sbpf_ld1(r2, 0);
@@ -167,7 +176,7 @@ L_254:
     if (r2 > 2) goto L_5078;
     goto L_258;
 L_258:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 == 0) goto L_5471;
     goto L_259;
 L_259:
@@ -176,7 +185,7 @@ L_259:
     if (r3 > 2) goto L_5078;
     goto L_261;
 L_261:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 == 0) goto L_5471;
     goto L_262;
 L_262:
@@ -186,7 +195,7 @@ L_262:
     if (r2 == 2) goto L_5078;
     goto L_265;
 L_265:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 == 2) goto L_5078;
     goto L_266;
 L_266:
@@ -199,7 +208,7 @@ L_266:
     if (r3 < r2) goto L_5078;
     goto L_272;
 L_272:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r7 = 3;
     r0 = sbpf_ld8(r1, 96);
     r6 = sbpf_ld8(r1, 21024);
@@ -212,7 +221,7 @@ L_276:
     if (r8 != r6) goto L_5915;
     goto L_279;
 L_279:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     sbpf_st8(r10, -2080, r3);
     r6 = sbpf_ld8(r1, 112);
     r9 = sbpf_ld8(r1, 21040);
@@ -225,7 +234,7 @@ L_283:
     if (r9 != r3) goto L_5915;
     goto L_286;
 L_286:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld8(r1, 10520);
     if (r3 != r0) goto L_5915;
     goto L_288;
@@ -235,7 +244,7 @@ L_288:
     if (r3 != r8) goto L_5915;
     goto L_290;
 L_290:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld8(r1, 10536);
     if (r3 != r6) goto L_5915;
     goto L_292;
@@ -246,7 +255,7 @@ L_292:
     if (r3 != r9) goto L_5078;
     goto L_295;
 L_295:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld1(r1, 10645);
     if (r0 != 1) goto L_5469;
     goto L_297;
@@ -258,7 +267,7 @@ L_297:
     if (r3 != r5) goto L_6443;
     goto L_301;
 L_301:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r1, 31448);
     r3 = sbpf_ld1(r1, 168);
     if (r3 != 1) goto L_5204;
@@ -269,7 +278,7 @@ L_304:
     if (r3 != r5) goto L_5204;
     goto L_306;
 L_306:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r1, 31456);
     r0 = sbpf_ld8(r1, 180);
     if (r0 != r3) goto L_5204;
@@ -281,7 +290,7 @@ L_309:
     if (r0 != r3) goto L_5204;
     goto L_312;
 L_312:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r1, 31472);
     r0 = sbpf_ld8(r1, 196);
     if (r0 != r3) goto L_5204;
@@ -291,7 +300,7 @@ L_315:
     if (r4 != 355) goto L_5869;
     goto L_316;
 L_316:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r1, 31480);
     r3 = 0xde8f75eee1f6dd06ull;
     if (r4 == r3) goto L_5857;
@@ -302,7 +311,7 @@ L_320:
     if (r4 != r3) goto L_5869;
     goto L_323;
 L_323:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r1, 31488);
     r4 = 0xac79ebce46e1cbd9ull;
     if (r3 != r4) goto L_5869;
@@ -314,7 +323,7 @@ L_327:
     if (r3 != r4) goto L_5869;
     goto L_331;
 L_331:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r1, 31504);
     r4 = 0xa900ff7e85f58c3aull;
     if (r3 != r4) goto L_5869;
@@ -323,7 +332,7 @@ L_335:
     budget -= 1;
     goto L_6898;
 L_336:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r1, 88);
     if (r2 != 165) goto L_344;
     goto L_338;
@@ -333,7 +342,7 @@ L_338:
     if (r2 != 255) goto L_344;
     goto L_340;
 L_340:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r1, 10592);
     if (r2 != 165) goto L_344;
     goto L_342;
@@ -343,7 +352,7 @@ L_342:
     if (r2 == 255) goto L_4281;
     goto L_344;
 L_344:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = r1;
     r0 = r0 + 8;
     r7 = sbpf_ld8(r1, 0);
@@ -359,7 +368,7 @@ L_348:
     if (r7 == 1) goto L_362;
     goto L_354;
 L_354:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 != 2) goto L_3610;
     goto L_355;
 L_355:
@@ -368,7 +377,7 @@ L_355:
     if (r2 != 255) goto L_5473;
     goto L_357;
 L_357:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -2064, r1);
     goto L_358;
 L_358:
@@ -379,7 +388,7 @@ L_358:
     r1 = r1 & (uint64_t)-8;
     goto L_362;
 L_362:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r4 = r0;
     r0 = r1;
     r9 = sbpf_ld8(r0, 0);
@@ -391,7 +400,7 @@ L_366:
     if (r5 == 255) goto L_460;
     goto L_368;
 L_368:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r9 = r9 + (uint64_t)-1;
     r8 = r0;
     r8 = r8 + 9;
@@ -402,7 +411,7 @@ L_372:
     if ((int64_t)r5 > 6) goto L_3799;
     goto L_373;
 L_373:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 0) goto L_3877;
     goto L_374;
 L_374:
@@ -410,7 +419,7 @@ L_374:
     if (r5 == 1) goto L_4004;
     goto L_375;
 L_375:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 3) goto L_4113;
     goto L_376;
 L_376:
@@ -418,7 +427,7 @@ L_376:
     if (r9 < 8) goto L_4227;
     goto L_377;
 L_377:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 <= 2) goto L_4230;
     goto L_378;
 L_378:
@@ -427,7 +436,7 @@ L_378:
     if (r1 != 165) goto L_4990;
     goto L_380;
 L_380:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 196);
     if (r1 > 2) goto L_4990;
     goto L_382;
@@ -438,7 +447,7 @@ L_382:
     if (r1 == 0) goto L_6556;
     goto L_385;
 L_385:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r8, 0);
     r3 = sbpf_ld8(r10, -2064);
     if (r5 == r3) goto L_5774;
@@ -449,7 +458,7 @@ L_388:
     if (r2 != 165) goto L_4990;
     goto L_390;
 L_390:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r3, 196);
     if (r2 > 2) goto L_4990;
     goto L_392;
@@ -458,7 +467,7 @@ L_392:
     if (r2 == 0) goto L_6556;
     goto L_393;
 L_393:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = 17;
     r6 = 0;
     if (r1 == 2) goto L_3792;
@@ -468,7 +477,7 @@ L_396:
     if (r2 == 2) goto L_3792;
     goto L_397;
 L_397:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = r5;
     r1 = sbpf_ld8(r4, 152);
     if (r1 < r8) goto L_5780;
@@ -482,7 +491,7 @@ L_400:
     if (r2 != r1) goto L_3792;
     goto L_405;
 L_405:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 96);
     r2 = sbpf_ld8(r4, 96);
     if (r2 != r1) goto L_3792;
@@ -494,7 +503,7 @@ L_408:
     if (r2 != r1) goto L_3792;
     goto L_411;
 L_411:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     sbpf_st8(r10, -2120, r7);
     r1 = sbpf_ld8(r3, 112);
     r2 = sbpf_ld8(r4, 112);
@@ -511,7 +520,7 @@ L_415:
     if (r2 != 1) goto L_4122;
     goto L_422;
 L_422:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r4, 164);
     if (r2 != r1) goto L_4122;
     goto L_424;
@@ -522,7 +531,7 @@ L_424:
     if (r6 != r2) goto L_4122;
     goto L_427;
 L_427:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r0, 24);
     r6 = sbpf_ld8(r4, 180);
     if (r6 != r2) goto L_4122;
@@ -534,7 +543,7 @@ L_430:
     if (r6 != r2) goto L_4122;
     goto L_433;
 L_433:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r0, 80);
     if (r1 != 355) goto L_5519;
     goto L_435;
@@ -545,7 +554,7 @@ L_435:
     if (r1 == r2) goto L_5507;
     goto L_439;
 L_439:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_5519;
     goto L_442;
@@ -556,7 +565,7 @@ L_442:
     if (r1 != r2) goto L_5519;
     goto L_446;
 L_446:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_5519;
@@ -568,10 +577,10 @@ L_450:
     if (r1 != r2) goto L_5519;
     goto L_454;
 L_454:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6498;
 L_455:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = sbpf_ld8(r0, 0);
     if (r9 != 0) goto L_366;
     goto L_457;
@@ -581,7 +590,7 @@ L_457:
     r9 = 12;
     goto L_3795;
 L_460:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r9 < 3) goto L_4227;
     goto L_461;
 L_461:
@@ -606,7 +615,7 @@ L_470:
     if (r9 < r1) goto L_4866;
     goto L_473;
 L_473:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld1(r0, 0);
     sbpf_st8(r10, -2088, r2);
     if (r7 < r2) goto L_4817;
@@ -621,7 +630,7 @@ L_476:
     if (r5 > 15) goto L_870;
     goto L_482;
 L_482:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = 1;
     r1 = r1 << (r5 & 63);
     r1 = r1 & 49544;
@@ -633,7 +642,7 @@ L_486:
     if (r1 <= 1) goto L_4817;
     goto L_488;
 L_488:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -2080);
     r1 = sbpf_ld8(r1, 0);
     r2 = sbpf_ld8(r1, 40);
@@ -647,7 +656,7 @@ L_494:
     if (r2 != r3) goto L_4861;
     goto L_498;
 L_498:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r1, 56);
     r3 = 0x91375b5fed85b41cull;
     if (r2 != r3) goto L_4861;
@@ -659,7 +668,7 @@ L_502:
     if (r1 != r2) goto L_4861;
     goto L_506;
 L_506:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -2080);
     r1 = sbpf_ld8(r1, 8);
     r2 = sbpf_ld8(r1, 40);
@@ -673,7 +682,7 @@ L_512:
     if (r2 != r3) goto L_4861;
     goto L_516;
 L_516:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = 6;
     r2 = sbpf_ld8(r1, 56);
     r3 = 0x91375b5fed85b41cull;
@@ -686,7 +695,7 @@ L_521:
     if (r1 != r2) goto L_3791;
     goto L_525;
 L_525:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r4 = r4 + (uint64_t)-1;
     r2 = sbpf_ld8(r10, -2096);
     r8 = r2;
@@ -698,7 +707,7 @@ L_530:
     if ((int64_t)r5 > 6) goto L_820;
     goto L_531;
 L_531:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 0) goto L_891;
     goto L_532;
 L_532:
@@ -706,7 +715,7 @@ L_532:
     if (r5 == 1) goto L_1040;
     goto L_533;
 L_533:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 3) goto L_1229;
     goto L_534;
 L_534:
@@ -714,7 +723,7 @@ L_534:
     if (r4 < 8) goto L_5198;
     goto L_535;
 L_535:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 10;
     r1 = sbpf_ld8(r10, -2088);
     if (r1 <= 2) goto L_3791;
@@ -727,7 +736,7 @@ L_538:
     if (r1 != 165) goto L_5301;
     goto L_542;
 L_542:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 196);
     if (r1 > 2) goto L_5301;
     goto L_544;
@@ -736,7 +745,7 @@ L_544:
     if (r1 == 0) goto L_5579;
     goto L_545;
 L_545:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r5 = sbpf_ld8(r8, 0);
     r6 = r4;
     r6 = r6 + 88;
@@ -751,7 +760,7 @@ L_551:
     if (r2 != 165) goto L_5288;
     goto L_554;
 L_554:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r3, 196);
     if (r2 > 2) goto L_5288;
     goto L_556;
@@ -760,7 +769,7 @@ L_556:
     if (r2 == 0) goto L_5286;
     goto L_557;
 L_557:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 2) goto L_5295;
     goto L_558;
 L_558:
@@ -768,7 +777,7 @@ L_558:
     if (r2 == 2) goto L_5295;
     goto L_559;
 L_559:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld8(r4, 152);
     if (r0 < r5) goto L_5283;
     goto L_561;
@@ -781,7 +790,7 @@ L_561:
     if (r2 != r1) goto L_5166;
     goto L_566;
 L_566:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 96);
     r2 = sbpf_ld8(r4, 96);
     if (r2 != r1) goto L_5166;
@@ -793,7 +802,7 @@ L_569:
     if (r2 != r1) goto L_5166;
     goto L_572;
 L_572:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 112);
     r2 = sbpf_ld8(r4, 112);
     if (r2 != r1) goto L_5166;
@@ -811,7 +820,7 @@ L_575:
     if (r2 != 1) goto L_1235;
     goto L_584;
 L_584:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r4, 164);
     if (r2 != r1) goto L_1235;
     goto L_586;
@@ -822,7 +831,7 @@ L_586:
     if (r7 != r2) goto L_1235;
     goto L_589;
 L_589:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r6, 24);
     r7 = sbpf_ld8(r4, 180);
     if (r7 != r2) goto L_1235;
@@ -834,7 +843,7 @@ L_592:
     if (r7 != r2) goto L_1235;
     goto L_595;
 L_595:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r6, 80);
     if (r1 != 355) goto L_2196;
     goto L_597;
@@ -845,7 +854,7 @@ L_597:
     if (r1 == r2) goto L_2184;
     goto L_601;
 L_601:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_2196;
     goto L_604;
@@ -856,7 +865,7 @@ L_604:
     if (r1 != r2) goto L_2196;
     goto L_608;
 L_608:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_2196;
@@ -868,14 +877,14 @@ L_612:
     if (r1 != r2) goto L_2196;
     goto L_616;
 L_616:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_3056;
 L_617:
     budget -= 1;
     if ((int64_t)r5 > 17) goto L_856;
     goto L_618;
 L_618:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 12) goto L_706;
     goto L_619;
 L_619:
@@ -883,7 +892,7 @@ L_619:
     if (r5 == 15) goto L_1080;
     goto L_620;
 L_620:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 17) goto L_1229;
     goto L_621;
 L_621:
@@ -893,7 +902,7 @@ L_621:
     if (r1 == 0) goto L_3791;
     goto L_624;
 L_624:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = 6;
     r1 = sbpf_ld8(r10, -2080);
     r8 = sbpf_ld8(r1, 0);
@@ -908,7 +917,7 @@ L_631:
     if (r1 != r2) goto L_5084;
     goto L_635;
 L_635:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_5084;
@@ -920,12 +929,12 @@ L_639:
     if (r1 != r2) goto L_3791;
     goto L_643;
 L_643:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -2088);
     if (r1 != 1) goto L_1275;
     goto L_645;
 L_645:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r10;
     r1 = r1 + (uint64_t)-32;
     SBPF_CALL(f_11537(0, r1, 0, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
@@ -936,7 +945,7 @@ L_648:
     if (r1 != 0) goto L_4863;
     goto L_650;
 L_650:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r6 = sbpf_ld8(r10, -16);
     r2 = sbpf_ld8(r10, -24);
     r7 = sbpf_ld8(r8, 80);
@@ -952,7 +961,7 @@ L_659:
     if (r6 != r2) goto L_1871;
     goto L_662;
 L_662:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 << (1 & 63);
     goto L_1893;
 L_664:
@@ -960,7 +969,7 @@ L_664:
     if (r5 != 12) goto L_870;
     goto L_665;
 L_665:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 10;
     r1 = sbpf_ld8(r10, -2088);
     if (r1 <= 2) goto L_3791;
@@ -974,7 +983,7 @@ L_668:
     if (r2 != r3) goto L_4861;
     goto L_674;
 L_674:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r1, 48);
     r3 = 0xac79ebce46e1cbd9ull;
     if (r2 != r3) goto L_4861;
@@ -986,7 +995,7 @@ L_678:
     if (r2 != r3) goto L_4861;
     goto L_682;
 L_682:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r1, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_4861;
@@ -1000,7 +1009,7 @@ L_686:
     if (r2 != r3) goto L_4861;
     goto L_692;
 L_692:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r1, 48);
     r3 = 0xac79ebce46e1cbd9ull;
     if (r2 != r3) goto L_4861;
@@ -1013,7 +1022,7 @@ L_696:
     if (r2 != r3) goto L_5084;
     goto L_701;
 L_701:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r1, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_3791;
@@ -1023,7 +1032,7 @@ L_705:
     r4 = r4 + (uint64_t)-1;
     goto L_706;
 L_706:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 < 9) goto L_2237;
     goto L_707;
 L_707:
@@ -1033,7 +1042,7 @@ L_707:
     if (r1 < 4) goto L_2140;
     goto L_710;
 L_710:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2080);
     r4 = sbpf_ld8(r1, 0);
     r1 = sbpf_ld8(r4, 80);
@@ -1046,7 +1055,7 @@ L_714:
     if (r2 > 2) goto L_1268;
     goto L_717;
 L_717:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 == 0) goto L_2276;
     goto L_718;
 L_718:
@@ -1061,7 +1070,7 @@ L_718:
     if (r4 == r3) goto L_2280;
     goto L_726;
 L_726:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld8(r3, 80);
     if (r0 != 165) goto L_1381;
     goto L_728;
@@ -1071,7 +1080,7 @@ L_728:
     if (r7 > 2) goto L_1381;
     goto L_730;
 L_730:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 == 0) goto L_2559;
     goto L_731;
 L_731:
@@ -1084,7 +1093,7 @@ L_731:
     if (r2 == 2) goto L_2140;
     goto L_737;
 L_737:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 == 2) goto L_2140;
     goto L_738;
 L_738:
@@ -1094,7 +1103,7 @@ L_738:
     if (r6 < r5) goto L_2140;
     goto L_741;
 L_741:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r9 = 3;
     r2 = sbpf_ld8(r10, -2136);
     r7 = sbpf_ld8(r2, 0);
@@ -1109,7 +1118,7 @@ L_747:
     if (r8 != r2) goto L_2140;
     goto L_750;
 L_750:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r3, 104);
     r8 = sbpf_ld8(r4, 104);
     if (r8 != r2) goto L_2140;
@@ -1121,7 +1130,7 @@ L_753:
     if (r8 != r2) goto L_2140;
     goto L_756;
 L_756:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r9 = 3;
     r2 = sbpf_ld8(r10, -2080);
     r2 = sbpf_ld8(r2, 8);
@@ -1135,7 +1144,7 @@ L_761:
     if (r8 != r7) goto L_2160;
     goto L_764;
 L_764:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r4, 104);
     r8 = sbpf_ld8(r2, 24);
     if (r8 != r7) goto L_2160;
@@ -1148,7 +1157,7 @@ L_767:
     if (r8 != r7) goto L_2160;
     goto L_771;
 L_771:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = sbpf_ld8(r2, 80);
     if (r7 != 82) goto L_2736;
     goto L_773;
@@ -1158,7 +1167,7 @@ L_773:
     if (r7 == 0) goto L_2744;
     goto L_775;
 L_775:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 != 1) goto L_2736;
     goto L_776;
 L_776:
@@ -1168,7 +1177,7 @@ L_776:
     if (r1 != r7) goto L_2750;
     goto L_779;
 L_779:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r1 = sbpf_ld8(r10, -2080);
     r6 = r1;
     r6 = r6 + 32;
@@ -1184,7 +1193,7 @@ L_787:
     if (r9 != r7) goto L_2754;
     goto L_789;
 L_789:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = sbpf_ld8(r8, 16);
     r1 = sbpf_ld8(r4, 172);
     if (r1 != r9) goto L_2754;
@@ -1196,7 +1205,7 @@ L_792:
     if (r9 != r1) goto L_2754;
     goto L_795;
 L_795:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 32);
     r9 = sbpf_ld8(r4, 188);
     if (r9 != r1) goto L_2754;
@@ -1207,7 +1216,7 @@ L_798:
     if (r1 != 355) goto L_3296;
     goto L_800;
 L_800:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r8, 40);
     r1 = 0xde8f75eee1f6dd06ull;
     if (r7 == r1) goto L_3284;
@@ -1218,7 +1227,7 @@ L_804:
     if (r7 != r1) goto L_3296;
     goto L_807;
 L_807:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 48);
     r7 = 0xac79ebce46e1cbd9ull;
     if (r1 != r7) goto L_3296;
@@ -1230,7 +1239,7 @@ L_811:
     if (r1 != r7) goto L_3296;
     goto L_815;
 L_815:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 64);
     r7 = 0xa900ff7e85f58c3aull;
     if (r1 != r7) goto L_3296;
@@ -1239,7 +1248,7 @@ L_819:
     budget -= 1;
     goto L_3492;
 L_820:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 7) goto L_938;
     goto L_821;
 L_821:
@@ -1247,7 +1256,7 @@ L_821:
     if (r5 == 8) goto L_1143;
     goto L_822;
 L_822:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 9) goto L_1229;
     goto L_823;
 L_823:
@@ -1257,7 +1266,7 @@ L_823:
     if (r1 < 3) goto L_3791;
     goto L_826;
 L_826:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2080);
     r3 = sbpf_ld8(r1, 8);
     r1 = sbpf_ld8(r1, 0);
@@ -1269,7 +1278,7 @@ L_830:
     if (r2 != 165) goto L_5575;
     goto L_832;
 L_832:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld1(r1, 196);
     r9 = sbpf_ld8(r10, -2144);
     if (r2 > 2) goto L_5288;
@@ -1279,7 +1288,7 @@ L_835:
     if (r2 == 0) goto L_5286;
     goto L_836;
 L_836:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r1, 197);
     if (r2 == 1) goto L_840;
     goto L_838;
@@ -1289,7 +1298,7 @@ L_838:
     if (r2 != 0) goto L_5465;
     goto L_840;
 L_840:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r1, 217);
     if (r2 == 1) goto L_1309;
     goto L_842;
@@ -1302,7 +1311,7 @@ L_842:
     if (r4 == r5) goto L_1315;
     goto L_848;
 L_848:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 != 0) goto L_1345;
     goto L_849;
 L_849:
@@ -1311,7 +1320,7 @@ L_849:
     if (r4 != 0) goto L_1345;
     goto L_851;
 L_851:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld8(r1, 136);
     if (r4 != 0) goto L_1345;
     goto L_853;
@@ -1321,10 +1330,10 @@ L_853:
     if (r4 != 0) goto L_1345;
     goto L_855;
 L_855:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_1327;
 L_856:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 18) goto L_1016;
     goto L_857;
 L_857:
@@ -1332,7 +1341,7 @@ L_857:
     if (r5 == 20) goto L_1194;
     goto L_858;
 L_858:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 22) goto L_1229;
     goto L_859;
 L_859:
@@ -1341,7 +1350,7 @@ L_859:
     if (r1 == 0) goto L_5319;
     goto L_861;
 L_861:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = 3;
     r1 = sbpf_ld8(r10, -2080);
     r1 = sbpf_ld8(r1, 0);
@@ -1354,14 +1363,14 @@ L_866:
     if (r1 > 2) goto L_3791;
     goto L_868;
 L_868:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 0) goto L_3788;
     goto L_869;
 L_869:
     budget -= 1;
     goto L_2145;
 L_870:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = 10;
     r1 = r5;
     r1 = r1 + (uint64_t)-4;
@@ -1373,7 +1382,7 @@ L_875:
     if (r5 > 45) goto L_525;
     goto L_876;
 L_876:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = 1;
     r1 = r1 << (r5 & 63);
     r2 = 0x0000204000400000ull;
@@ -1386,7 +1395,7 @@ L_882:
     if (r1 == 0) goto L_5084;
     goto L_884;
 L_884:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -2080);
     r1 = sbpf_ld8(r1, 0);
     r2 = sbpf_ld8(r1, 40);
@@ -1401,7 +1410,7 @@ L_891:
     if (r4 < 34) goto L_5198;
     goto L_892;
 L_892:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r9 = 0;
     r5 = sbpf_ld1(r2, 3);
     r1 = sbpf_ld1(r2, 36);
@@ -1412,7 +1421,7 @@ L_896:
     if (r1 != 1) goto L_5567;
     goto L_897;
 L_897:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 < 66) goto L_4893;
     goto L_898;
 L_898:
@@ -1421,7 +1430,7 @@ L_898:
     r9 = r9 + 37;
     goto L_900;
 L_900:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 10;
     r1 = sbpf_ld8(r10, -2088);
     if (r1 <= 1) goto L_3791;
@@ -1435,7 +1444,7 @@ L_903:
     if (r1 != r2) goto L_5428;
     goto L_909;
 L_909:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 16);
     r2 = 0x7ff14a3d4cc98c21ull;
     if (r1 != r2) goto L_5428;
@@ -1447,7 +1456,7 @@ L_913:
     if (r1 != r2) goto L_5428;
     goto L_917;
 L_917:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 32);
     r2 = 0x000000008ad9dbe3ull;
     if (r1 != r2) goto L_5428;
@@ -1467,7 +1476,7 @@ L_921:
     if (r6 == r2) goto L_1661;
     goto L_933;
 L_933:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x4000000000000000ull;
     if (r6 != r2) goto L_1632;
     goto L_936;
@@ -1480,7 +1489,7 @@ L_938:
     if (r4 < 8) goto L_5198;
     goto L_939;
 L_939:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 10;
     r1 = sbpf_ld8(r10, -2088);
     if (r1 < 3) goto L_3791;
@@ -1493,7 +1502,7 @@ L_942:
     if (r1 != 165) goto L_5571;
     goto L_946;
 L_946:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld1(r3, 196);
     r9 = sbpf_ld8(r10, -2160);
     if (r1 > 2) goto L_5288;
@@ -1503,7 +1512,7 @@ L_949:
     if (r1 == 0) goto L_5286;
     goto L_950;
 L_950:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 2) goto L_5295;
     goto L_951;
 L_951:
@@ -1512,7 +1521,7 @@ L_951:
     if (r1 == 1) goto L_5467;
     goto L_953;
 L_953:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r5 = r3;
     r5 = r5 + 88;
     r1 = sbpf_ld8(r5, 0);
@@ -1528,7 +1537,7 @@ L_960:
     if (r2 != r1) goto L_5166;
     goto L_963;
 L_963:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 104);
     r2 = sbpf_ld8(r4, 24);
     if (r2 != r1) goto L_5166;
@@ -1540,7 +1549,7 @@ L_966:
     if (r2 != r1) goto L_5166;
     goto L_969;
 L_969:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r4, 80);
     if (r1 != 82) goto L_5311;
     goto L_971;
@@ -1550,7 +1559,7 @@ L_971:
     if (r1 != 1) goto L_5291;
     goto L_973;
 L_973:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = r4;
     r6 = r6 + 88;
     r1 = sbpf_ld1(r6, 0);
@@ -1565,7 +1574,7 @@ L_977:
     if (r1 != r2) goto L_5279;
     goto L_982;
 L_982:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 16);
     r2 = sbpf_ld8(r4, 100);
     if (r2 != r1) goto L_5279;
@@ -1577,7 +1586,7 @@ L_985:
     if (r2 != r1) goto L_5279;
     goto L_988;
 L_988:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     sbpf_st8(r10, -2160, r5);
     r1 = sbpf_ld8(r0, 32);
     r2 = sbpf_ld8(r4, 116);
@@ -1591,7 +1600,7 @@ L_992:
     if (r1 != 355) goto L_1923;
     goto L_996;
 L_996:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 40);
     r2 = 0xde8f75eee1f6dd06ull;
     if (r1 == r2) goto L_1911;
@@ -1602,7 +1611,7 @@ L_1000:
     if (r1 != r2) goto L_1923;
     goto L_1003;
 L_1003:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_1923;
@@ -1614,7 +1623,7 @@ L_1007:
     if (r1 != r2) goto L_1923;
     goto L_1011;
 L_1011:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_1923;
@@ -1627,13 +1636,13 @@ L_1016:
     if (r4 <= 31) goto L_5198;
     goto L_1017;
 L_1017:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 10;
     r1 = sbpf_ld8(r10, -2088);
     if (r1 < 2) goto L_3791;
     goto L_1020;
 L_1020:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = sbpf_ld8(r10, -2080);
     r9 = sbpf_ld8(r1, 0);
     r6 = sbpf_ld8(r9, 80);
@@ -1647,7 +1656,7 @@ L_1026:
     if (r1 == 1) goto L_4863;
     goto L_1028;
 L_1028:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r6 + 128;
     r1 = sbpf_ld8(r10, -24);
     r1 = r1 * r6;
@@ -1661,11 +1670,11 @@ L_1035:
     if (r6 != r2) goto L_1513;
     goto L_1038;
 L_1038:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 << (1 & 63);
     goto L_1535;
 L_1040:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 10;
     r1 = sbpf_ld8(r10, -2088);
     if (r1 < 3) goto L_3791;
@@ -1676,7 +1685,7 @@ L_1043:
     if (r1 == 3) goto L_6556;
     goto L_1045;
 L_1045:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -2080);
     r8 = sbpf_ld8(r1, 24);
     r1 = sbpf_ld8(r8, 8);
@@ -1690,7 +1699,7 @@ L_1051:
     if (r1 != r2) goto L_5425;
     goto L_1055;
 L_1055:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 24);
     r2 = 0x44fda19b08eeda58ull;
     if (r1 != r2) goto L_5425;
@@ -1702,7 +1711,7 @@ L_1059:
     if (r1 != r2) goto L_5425;
     goto L_1063;
 L_1063:
-    if ((budget -= 11) < 0) goto L_limit;
+    budget -= 11;
     r1 = sbpf_ld8(r10, -2080);
     r9 = sbpf_ld8(r1, 0);
     r5 = sbpf_ld8(r9, 80);
@@ -1721,11 +1730,11 @@ L_1075:
     if (r6 != r2) goto L_1388;
     goto L_1078;
 L_1078:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 << (1 & 63);
     goto L_1413;
 L_1080:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 < 9) goto L_2237;
     goto L_1081;
 L_1081:
@@ -1735,7 +1744,7 @@ L_1081:
     if (r1 < 3) goto L_2140;
     goto L_1084;
 L_1084:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -2080);
     r3 = sbpf_ld8(r1, 0);
     r1 = sbpf_ld8(r3, 80);
@@ -1748,7 +1757,7 @@ L_1089:
     if (r1 > 2) goto L_1837;
     goto L_1091;
 L_1091:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 0) goto L_2747;
     goto L_1092;
 L_1092:
@@ -1762,7 +1771,7 @@ L_1092:
     if (r4 != 82) goto L_2021;
     goto L_1099;
 L_1099:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld1(r2, 133);
     if (r4 == 0) goto L_2028;
     goto L_1101;
@@ -1771,7 +1780,7 @@ L_1101:
     if (r4 != 1) goto L_2021;
     goto L_1102;
 L_1102:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r4 = r2;
     r4 = r4 + 88;
     sbpf_st8(r10, -2272, r4);
@@ -1785,7 +1794,7 @@ L_1108:
     if (r1 == 1) goto L_2809;
     goto L_1110;
 L_1110:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r4 = sbpf_ld8(r4, 3);
     r9 = 1;
     r5 = sbpf_ld8(r3, 152);
@@ -1799,7 +1808,7 @@ L_1114:
     if (r6 != r1) goto L_2787;
     goto L_1118;
 L_1118:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 96);
     r6 = sbpf_ld8(r2, 16);
     if (r6 != r1) goto L_2787;
@@ -1811,7 +1820,7 @@ L_1121:
     if (r6 != r1) goto L_2787;
     goto L_1124;
 L_1124:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 112);
     r6 = sbpf_ld8(r2, 32);
     if (r6 != r1) goto L_2787;
@@ -1824,7 +1833,7 @@ L_1127:
     if (r1 != r6) goto L_2811;
     goto L_1131;
 L_1131:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 120);
     r0 = 0x6011348d72903300ull;
     if (r1 == r0) goto L_2032;
@@ -1834,7 +1843,7 @@ L_1135:
     if (r1 != 0) goto L_2044;
     goto L_1136;
 L_1136:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld8(r3, 128);
     if (r0 != 0) goto L_2044;
     goto L_1138;
@@ -1844,7 +1853,7 @@ L_1138:
     if (r0 != 0) goto L_2044;
     goto L_1140;
 L_1140:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld8(r3, 144);
     if (r0 != 0) goto L_2044;
     goto L_1142;
@@ -1852,7 +1861,7 @@ L_1142:
     budget -= 1;
     goto L_2133;
 L_1143:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 < 8) goto L_5198;
     goto L_1144;
 L_1144:
@@ -1862,7 +1871,7 @@ L_1144:
     if (r1 < 3) goto L_3791;
     goto L_1147;
 L_1147:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2080);
     r3 = sbpf_ld8(r1, 0);
     r1 = sbpf_ld8(r3, 80);
@@ -1875,7 +1884,7 @@ L_1151:
     if (r1 > 2) goto L_5297;
     goto L_1154;
 L_1154:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 0) goto L_5582;
     goto L_1155;
 L_1155:
@@ -1886,7 +1895,7 @@ L_1155:
     if (r4 != 82) goto L_5288;
     goto L_1159;
 L_1159:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld1(r2, 133);
     if (r4 != 1) goto L_5285;
     goto L_1161;
@@ -1895,7 +1904,7 @@ L_1161:
     if (r1 == 2) goto L_5295;
     goto L_1162;
 L_1162:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r3, 197);
     if (r1 == 1) goto L_5467;
     goto L_1164;
@@ -1906,7 +1915,7 @@ L_1164:
     if (r5 < r4) goto L_5283;
     goto L_1167;
 L_1167:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r7 = r3;
     r7 = r7 + 88;
     r1 = sbpf_ld8(r7, 0);
@@ -1920,7 +1929,7 @@ L_1172:
     if (r0 != r1) goto L_5166;
     goto L_1175;
 L_1175:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 104);
     r0 = sbpf_ld8(r2, 24);
     if (r0 != r1) goto L_5166;
@@ -1932,7 +1941,7 @@ L_1178:
     if (r0 != r1) goto L_5166;
     goto L_1181;
 L_1181:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r3, 120);
     r0 = 0x6011348d72903300ull;
     sbpf_st8(r10, -2216, r7);
@@ -1943,7 +1952,7 @@ L_1186:
     if (r1 != 0) goto L_1760;
     goto L_1187;
 L_1187:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld8(r3, 128);
     if (r0 != 0) goto L_1760;
     goto L_1189;
@@ -1953,7 +1962,7 @@ L_1189:
     if (r0 != 0) goto L_1760;
     goto L_1191;
 L_1191:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld8(r3, 144);
     if (r0 != 0) goto L_1760;
     goto L_1193;
@@ -1961,7 +1970,7 @@ L_1193:
     budget -= 1;
     goto L_1953;
 L_1194:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 < 34) goto L_5198;
     goto L_1195;
 L_1195:
@@ -1973,7 +1982,7 @@ L_1195:
     if (r1 == 0) goto L_1204;
     goto L_1200;
 L_1200:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 1) goto L_5567;
     goto L_1201;
 L_1201:
@@ -1981,18 +1990,18 @@ L_1201:
     if (r4 < 66) goto L_4893;
     goto L_1202;
 L_1202:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = r2;
     r7 = r7 + 37;
     goto L_1204;
 L_1204:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 10;
     r1 = sbpf_ld8(r10, -2088);
     if (r1 == 0) goto L_3791;
     goto L_1207;
 L_1207:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = sbpf_ld8(r10, -2080);
     r9 = sbpf_ld8(r1, 0);
     r6 = sbpf_ld8(r9, 80);
@@ -2006,7 +2015,7 @@ L_1213:
     if (r1 == 1) goto L_4863;
     goto L_1215;
 L_1215:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     sbpf_st8(r10, -2128, r8);
     r6 = r6 + 128;
     r1 = sbpf_ld8(r10, -24);
@@ -2022,11 +2031,11 @@ L_1224:
     if (r6 != r2) goto L_1693;
     goto L_1227;
 L_1227:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 << (1 & 63);
     goto L_1716;
 L_1229:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2080);
     r2 = sbpf_ld8(r10, -2088);
     r3 = r8;
@@ -2037,7 +2046,7 @@ L_1233:
     r9 = r1;
     goto L_2140;
 L_1235:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r4, 120);
     if (r2 != r1) goto L_5279;
     goto L_1237;
@@ -2048,7 +2057,7 @@ L_1237:
     if (r2 != r1) goto L_5279;
     goto L_1240;
 L_1240:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 24);
     r2 = sbpf_ld8(r4, 136);
     if (r2 != r1) goto L_5279;
@@ -2060,7 +2069,7 @@ L_1243:
     if (r2 != r1) goto L_5279;
     goto L_1246;
 L_1246:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r6, 80);
     if (r1 != 355) goto L_1975;
     goto L_1248;
@@ -2071,7 +2080,7 @@ L_1248:
     if (r1 == r2) goto L_1963;
     goto L_1252;
 L_1252:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_1975;
     goto L_1255;
@@ -2082,7 +2091,7 @@ L_1255:
     if (r1 != r2) goto L_1975;
     goto L_1259;
 L_1259:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_1975;
@@ -2094,10 +2103,10 @@ L_1263:
     if (r1 != r2) goto L_1975;
     goto L_1267;
 L_1267:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_2427;
 L_1268:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = 0xffffffff00000000ull;
     r9 = sbpf_ld8(r10, -2136);
     r9 = r9 & r1;
@@ -2113,7 +2122,7 @@ L_1275:
     if (r1 != r2) goto L_5504;
     goto L_1281;
 L_1281:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r9, 16);
     r2 = 0x7ff14a3d4cc98c21ull;
     if (r1 != r2) goto L_5504;
@@ -2125,7 +2134,7 @@ L_1285:
     if (r1 != r2) goto L_5504;
     goto L_1289;
 L_1289:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r9, 32);
     r2 = 0x000000008ad9dbe3ull;
     if (r1 != r2) goto L_5504;
@@ -2143,7 +2152,7 @@ L_1293:
     if (r6 == r2) goto L_1869;
     goto L_1303;
 L_1303:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x4000000000000000ull;
     if (r6 != r2) goto L_1846;
     goto L_1306;
@@ -2161,7 +2170,7 @@ L_1309:
     if (r4 != r5) goto L_848;
     goto L_1315;
 L_1315:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r1, 128);
     r5 = 0xdb00ffbf11c9bd79ull;
     if (r4 != r5) goto L_1345;
@@ -2173,7 +2182,7 @@ L_1319:
     if (r4 != r5) goto L_1345;
     goto L_1323;
 L_1323:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r1, 144);
     r5 = 0x00000000e13800e1ull;
     if (r4 != r5) goto L_1345;
@@ -2185,7 +2194,7 @@ L_1327:
     if (r2 != r4) goto L_5317;
     goto L_1331;
 L_1331:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r3, 16);
     r4 = 0xdb00ffbf11c9bd79ull;
     if (r2 != r4) goto L_5317;
@@ -2198,7 +2207,7 @@ L_1335:
     if (r2 != r4) goto L_5084;
     goto L_1340;
 L_1340:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r3, 32);
     r4 = 0x00000000e13800e1ull;
     if (r2 == r4) goto L_2009;
@@ -2207,7 +2216,7 @@ L_1344:
     budget -= 1;
     goto L_3791;
 L_1345:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r5 = sbpf_ld8(r2, 0);
     r4 = sbpf_ld8(r10, -2080);
     r4 = sbpf_ld8(r4, 16);
@@ -2221,7 +2230,7 @@ L_1350:
     if (r0 != r5) goto L_5279;
     goto L_1353;
 L_1353:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r4, 24);
     r0 = sbpf_ld8(r2, 16);
     if (r0 != r5) goto L_5279;
@@ -2233,7 +2242,7 @@ L_1356:
     if (r2 != r5) goto L_5279;
     goto L_1359;
 L_1359:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r4, 80);
     if (r2 != 355) goto L_2007;
     goto L_1361;
@@ -2244,7 +2253,7 @@ L_1361:
     if (r2 == r5) goto L_1995;
     goto L_1365;
 L_1365:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = 0x93a165d7e1f6dd06ull;
     if (r2 != r5) goto L_2007;
     goto L_1368;
@@ -2255,7 +2264,7 @@ L_1368:
     if (r2 != r5) goto L_2007;
     goto L_1372;
 L_1372:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r4, 56);
     r5 = 0x91375b5fed85b41cull;
     if (r2 != r5) goto L_2007;
@@ -2267,10 +2276,10 @@ L_1376:
     if (r2 != r5) goto L_2007;
     goto L_1380;
 L_1380:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_2443;
 L_1381:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = 0xffffffff00000000ull;
     r9 = sbpf_ld8(r10, -2192);
     r9 = r9 & r1;
@@ -2278,18 +2287,18 @@ L_1381:
     sbpf_st8(r10, -2192, r9);
     goto L_2140;
 L_1388:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r10, -2128, r5);
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_1390;
 L_1390:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1393;
 L_1393:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -2232, r1);
@@ -2298,7 +2307,7 @@ L_1393:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1399;
 L_1399:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2248, r0);
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -2309,11 +2318,11 @@ L_1402:
     if ((int64_t)r1 < 0) goto L_1405;
     goto L_1404;
 L_1404:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -2232, r0);
     goto L_1405;
 L_1405:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -2324,11 +2333,11 @@ L_1409:
     if ((int64_t)r0 > 0) goto L_1412;
     goto L_1411;
 L_1411:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = sbpf_ld8(r10, -2232);
     goto L_1412;
 L_1412:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r5 = sbpf_ld8(r10, -2128);
     goto L_1413;
 L_1413:
@@ -2340,7 +2349,7 @@ L_1413:
     if (r3 != r4) goto L_1432;
     goto L_1419;
 L_1419:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r2, 16);
     r4 = 0x35c01846637f68fbull;
     if (r3 != r4) goto L_1432;
@@ -2352,14 +2361,14 @@ L_1423:
     if (r3 != r4) goto L_1432;
     goto L_1427;
 L_1427:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = 1;
     r3 = sbpf_ld8(r2, 32);
     r4 = 0x0100000000f0a098ull;
     if (r3 == r4) goto L_1433;
     goto L_1432;
 L_1432:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r0 = 0;
     goto L_1433;
 L_1433:
@@ -2368,7 +2377,7 @@ L_1433:
     if (r5 != 165) goto L_5679;
     goto L_1435;
 L_1435:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld1(r9, 196);
     if (r3 > 2) goto L_3791;
     goto L_1437;
@@ -2377,7 +2386,7 @@ L_1437:
     if (r3 != 0) goto L_3788;
     goto L_1438;
 L_1438:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = sbpf_ld8(r9, 72);
     if (r5 < r1) goto L_5202;
     goto L_1440;
@@ -2392,7 +2401,7 @@ L_1440:
     if (r0 == 0) goto L_1470;
     goto L_1447;
 L_1447:
-    if ((budget -= 23) < 0) goto L_limit;
+    budget -= 23;
     sbpf_st1(r9, 196, 1);
     r2 = sbpf_ld8(r4, 0);
     r0 = sbpf_ld8(r4, 8);
@@ -2417,7 +2426,7 @@ L_1447:
     sbpf_st8(r10, -2232, r8);
     goto L_2145;
 L_1470:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = 6;
     r1 = sbpf_ld8(r2, 40);
     r5 = 0x93a165d7e1f6dd06ull;
@@ -2430,7 +2439,7 @@ L_1475:
     if (r1 != r5) goto L_5084;
     goto L_1479;
 L_1479:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 56);
     r5 = 0x91375b5fed85b41cull;
     if (r1 != r5) goto L_5084;
@@ -2442,7 +2451,7 @@ L_1483:
     if (r1 != r5) goto L_3791;
     goto L_1487;
 L_1487:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = 2;
     sbpf_st8(r10, -2128, r1);
     r1 = sbpf_ld8(r2, 80);
@@ -2455,7 +2464,7 @@ L_1491:
     if (r1 != 1) goto L_3791;
     goto L_1494;
 L_1494:
-    if ((budget -= 19) < 0) goto L_limit;
+    budget -= 19;
     sbpf_st1(r9, 196, 1);
     r1 = sbpf_ld8(r4, 0);
     r2 = sbpf_ld8(r4, 8);
@@ -2476,17 +2485,17 @@ L_1494:
     sbpf_st8(r10, -2232, r8);
     goto L_2145;
 L_1513:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_1514;
 L_1514:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1517;
 L_1517:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r0;
     r7 = 0;
     r1 = r6;
@@ -2494,7 +2503,7 @@ L_1517:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1522;
 L_1522:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2128, r0);
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -2505,11 +2514,11 @@ L_1525:
     if ((int64_t)r1 < 0) goto L_1528;
     goto L_1527;
 L_1527:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = r0;
     goto L_1528;
 L_1528:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -2520,11 +2529,11 @@ L_1532:
     if ((int64_t)r0 > 0) goto L_1535;
     goto L_1534;
 L_1534:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = r7;
     goto L_1535;
 L_1535:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r2 = sbpf_ld8(r10, -2080);
     r2 = sbpf_ld8(r2, 8);
     r3 = sbpf_ld8(r2, 8);
@@ -2538,7 +2547,7 @@ L_1541:
     if (r3 != r4) goto L_1554;
     goto L_1545;
 L_1545:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r2, 24);
     r4 = 0x553beb1adc39c4daull;
     if (r3 != r4) goto L_1554;
@@ -2551,11 +2560,11 @@ L_1549:
     if (r3 == r4) goto L_1555;
     goto L_1554;
 L_1554:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r0 = 0;
     goto L_1555;
 L_1555:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 3;
     r3 = sbpf_ld8(r9, 80);
     if (r3 != 165) goto L_5679;
@@ -2566,7 +2575,7 @@ L_1558:
     if (r3 > 2) goto L_3791;
     goto L_1560;
 L_1560:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 != 0) goto L_3788;
     goto L_1561;
 L_1561:
@@ -2575,7 +2584,7 @@ L_1561:
     if (r5 < r1) goto L_5202;
     goto L_1563;
 L_1563:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r4 = r2;
     r4 = r4 + 8;
     r3 = r9;
@@ -2614,7 +2623,7 @@ L_1590:
     if (r1 != r5) goto L_5084;
     goto L_1595;
 L_1595:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 48);
     r5 = 0xac79ebce46e1cbd9ull;
     if (r1 != r5) goto L_5084;
@@ -2626,7 +2635,7 @@ L_1599:
     if (r1 != r5) goto L_5084;
     goto L_1603;
 L_1603:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 64);
     r5 = 0xa900ff7e85f58c3aull;
     if (r1 != r5) goto L_3791;
@@ -2639,7 +2648,7 @@ L_1607:
     if (r1 != 82) goto L_5198;
     goto L_1611;
 L_1611:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld1(r2, 133);
     r6 = 0;
     if (r1 != 1) goto L_3791;
@@ -2665,20 +2674,20 @@ L_1614:
     sbpf_st8(r9, 120, r1);
     goto L_2145;
 L_1632:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     sbpf_st8(r10, -2248, r0);
     sbpf_st8(r10, -2224, r4);
     sbpf_st8(r10, -2128, r5);
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_1636;
 L_1636:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1639;
 L_1639:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -2256, r1);
@@ -2687,7 +2696,7 @@ L_1639:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1645;
 L_1645:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2264, r0);
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -2698,11 +2707,11 @@ L_1648:
     if ((int64_t)r1 < 0) goto L_1651;
     goto L_1650;
 L_1650:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -2256, r0);
     goto L_1651;
 L_1651:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -2713,17 +2722,17 @@ L_1655:
     if ((int64_t)r0 > 0) goto L_1658;
     goto L_1657;
 L_1657:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = sbpf_ld8(r10, -2256);
     goto L_1658;
 L_1658:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r10, -2128);
     r4 = sbpf_ld8(r10, -2224);
     r0 = sbpf_ld8(r10, -2248);
     goto L_1661;
 L_1661:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 3;
     r3 = sbpf_ld8(r10, -2096);
     if (r4 != 82) goto L_5679;
@@ -2734,7 +2743,7 @@ L_1664:
     if (r2 != 0) goto L_5200;
     goto L_1666;
 L_1666:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r0 < r1) goto L_5202;
     goto L_1667;
 L_1667:
@@ -2756,7 +2765,7 @@ L_1667:
     if (r9 == 0) goto L_1691;
     goto L_1682;
 L_1682:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     sbpf_st1(r8, 134, 1);
     r1 = sbpf_ld8(r9, 0);
     r2 = sbpf_ld8(r9, 8);
@@ -2768,21 +2777,21 @@ L_1682:
     sbpf_st8(r8, 138, r1);
     goto L_1691;
 L_1691:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r10, -2224, r7);
     goto L_2145;
 L_1693:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_1694;
 L_1694:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1697;
 L_1697:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -2248, r1);
@@ -2791,7 +2800,7 @@ L_1697:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1703;
 L_1703:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2256, r0);
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -2802,11 +2811,11 @@ L_1706:
     if ((int64_t)r1 < 0) goto L_1709;
     goto L_1708;
 L_1708:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -2248, r0);
     goto L_1709;
 L_1709:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -2817,11 +2826,11 @@ L_1713:
     if ((int64_t)r0 > 0) goto L_1716;
     goto L_1715;
 L_1715:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = sbpf_ld8(r10, -2248);
     goto L_1716;
 L_1716:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = sbpf_ld8(r10, -2096);
     r6 = 3;
     r2 = sbpf_ld8(r9, 80);
@@ -2833,7 +2842,7 @@ L_1720:
     if (r2 != 0) goto L_5200;
     goto L_1722;
 L_1722:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r8 < r1) goto L_5202;
     goto L_1723;
 L_1723:
@@ -2855,7 +2864,7 @@ L_1723:
     if (r7 == 0) goto L_2145;
     goto L_1738;
 L_1738:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     sbpf_st1(r9, 134, 1);
     r1 = sbpf_ld8(r7, 0);
     r2 = sbpf_ld8(r7, 8);
@@ -2873,7 +2882,7 @@ L_1748:
     if (r0 != r6) goto L_1760;
     goto L_1752;
 L_1752:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r3, 136);
     r6 = 0xa69cf7cccd2e4dd4ull;
     if (r0 != r6) goto L_1760;
@@ -2885,7 +2894,7 @@ L_1756:
     if (r0 == r6) goto L_1953;
     goto L_1760;
 L_1760:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r0 = sbpf_ld8(r10, -2080);
     r6 = r0;
     r6 = r6 + 24;
@@ -2900,7 +2909,7 @@ L_1766:
     if (r7 != r8) goto L_1805;
     goto L_1769;
 L_1769:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     sbpf_st8(r10, -2168, r6);
     r6 = 1;
     sbpf_st8(r10, -2128, r6);
@@ -2915,7 +2924,7 @@ L_1775:
     if (r9 != r8) goto L_1843;
     goto L_1778;
 L_1778:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r8 = sbpf_ld8(r3, 188);
     r9 = sbpf_ld8(r0, 32);
     r6 = sbpf_ld8(r10, -2168);
@@ -2927,7 +2936,7 @@ L_1782:
     if (r1 != 355) goto L_2174;
     goto L_1784;
 L_1784:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 40);
     r7 = 0xde8f75eee1f6dd06ull;
     if (r1 == r7) goto L_2162;
@@ -2938,7 +2947,7 @@ L_1788:
     if (r1 != r7) goto L_2174;
     goto L_1791;
 L_1791:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r7 = 0xac79ebce46e1cbd9ull;
     if (r1 != r7) goto L_2174;
@@ -2950,7 +2959,7 @@ L_1795:
     if (r1 != r7) goto L_2174;
     goto L_1799;
 L_1799:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r7 = 0xa900ff7e85f58c3aull;
     if (r1 != r7) goto L_2174;
@@ -2963,7 +2972,7 @@ L_1804:
     r7 = sbpf_ld8(r0, 8);
     goto L_1805;
 L_1805:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != r7) goto L_5279;
     goto L_1806;
 L_1806:
@@ -2973,7 +2982,7 @@ L_1806:
     if (r7 != r1) goto L_5279;
     goto L_1809;
 L_1809:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 24);
     r7 = sbpf_ld8(r3, 136);
     if (r7 != r1) goto L_5279;
@@ -2985,7 +2994,7 @@ L_1812:
     if (r7 != r1) goto L_5279;
     goto L_1815;
 L_1815:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r0, 80);
     if (r1 != 355) goto L_1951;
     goto L_1817;
@@ -2996,7 +3005,7 @@ L_1817:
     if (r1 == r7) goto L_1939;
     goto L_1821;
 L_1821:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = 0x93a165d7e1f6dd06ull;
     if (r1 != r7) goto L_1951;
     goto L_1824;
@@ -3007,7 +3016,7 @@ L_1824:
     if (r1 != r7) goto L_1951;
     goto L_1828;
 L_1828:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r7 = 0x91375b5fed85b41cull;
     if (r1 != r7) goto L_1951;
@@ -3019,17 +3028,17 @@ L_1832:
     if (r1 != r7) goto L_1951;
     goto L_1836;
 L_1836:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_2334;
 L_1837:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = 0xffffffff00000000ull;
     r9 = r9 & r1;
     r0 = 3;
     sbpf_st8(r10, -2200, r9);
     goto L_2140;
 L_1843:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = sbpf_ld8(r10, -2168);
     if (r1 == r7) goto L_1806;
     goto L_1845;
@@ -3037,17 +3046,17 @@ L_1845:
     budget -= 1;
     goto L_5279;
 L_1846:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_1847;
 L_1847:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1850;
 L_1850:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -2128, r1);
@@ -3056,7 +3065,7 @@ L_1850:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1856;
 L_1856:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2184, r0);
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -3067,11 +3076,11 @@ L_1859:
     if ((int64_t)r1 < 0) goto L_1862;
     goto L_1861;
 L_1861:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -2128, r0);
     goto L_1862;
 L_1862:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -3082,25 +3091,25 @@ L_1866:
     if ((int64_t)r0 > 0) goto L_1869;
     goto L_1868;
 L_1868:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = sbpf_ld8(r10, -2128);
     goto L_1869;
 L_1869:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld8(r10, -2152);
     goto L_1895;
 L_1871:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_1872;
 L_1872:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1875;
 L_1875:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r0;
     r9 = 0;
     r1 = r6;
@@ -3108,7 +3117,7 @@ L_1875:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_1880;
 L_1880:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2128, r0);
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -3119,11 +3128,11 @@ L_1883:
     if ((int64_t)r1 < 0) goto L_1886;
     goto L_1885;
 L_1885:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r9 = r0;
     goto L_1886;
 L_1886:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -3134,16 +3143,16 @@ L_1890:
     if ((int64_t)r0 > 0) goto L_1893;
     goto L_1892;
 L_1892:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = r9;
     goto L_1893;
 L_1893:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld8(r10, -2152);
     r9 = sbpf_ld8(r10, -2184);
     goto L_1895;
 L_1895:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 != 165) goto L_5305;
     goto L_1896;
 L_1896:
@@ -3152,7 +3161,7 @@ L_1896:
     if (r2 > 2) goto L_5305;
     goto L_1898;
 L_1898:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 == 0) goto L_5585;
     goto L_1899;
 L_1899:
@@ -3161,7 +3170,7 @@ L_1899:
     if (r2 != 1) goto L_5323;
     goto L_1901;
 L_1901:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r8, 72);
     if (r2 < r1) goto L_5325;
     goto L_1903;
@@ -3182,7 +3191,7 @@ L_1911:
     if (r1 != r2) goto L_1923;
     goto L_1915;
 L_1915:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r2 = 0x270db9834dfc1ab6ull;
     if (r1 != r2) goto L_1923;
@@ -3194,7 +3203,7 @@ L_1919:
     if (r1 == r2) goto L_2284;
     goto L_1923;
 L_1923:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_5329;
     goto L_1925;
@@ -3203,7 +3212,7 @@ L_1925:
     if (r5 == 0) goto L_2300;
     goto L_1926;
 L_1926:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = sbpf_ld8(r4, 124);
     r1 = r0;
     r1 = r1 + r5;
@@ -3215,7 +3224,7 @@ L_1931:
     r2 = 0;
     goto L_1932;
 L_1932:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = r2 & 1;
     if (r2 != 0) goto L_5462;
     goto L_1934;
@@ -3227,7 +3236,7 @@ L_1934:
     sbpf_st8(r3, 152, r1);
     goto L_2145;
 L_1939:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r7 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r7) goto L_1951;
@@ -3239,18 +3248,18 @@ L_1943:
     if (r1 != r7) goto L_1951;
     goto L_1947;
 L_1947:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r7 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r7) goto L_2334;
     goto L_1951;
 L_1951:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_5329;
     goto L_1953;
 L_1953:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = r2;
     r1 = r1 + 88;
     sbpf_st8(r10, -2168, r1);
@@ -3265,7 +3274,7 @@ L_1957:
     sbpf_st8(r2, 124, r1);
     goto L_2145;
 L_1963:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 48);
     r2 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r2) goto L_1975;
@@ -3277,13 +3286,13 @@ L_1967:
     if (r1 != r2) goto L_1975;
     goto L_1971;
 L_1971:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 64);
     r2 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r2) goto L_2427;
     goto L_1975;
 L_1975:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r6, 1);
     if (r1 == 0) goto L_5329;
     goto L_1977;
@@ -3292,7 +3301,7 @@ L_1977:
     if (r5 == 0) goto L_2207;
     goto L_1978;
 L_1978:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == r3) goto L_2207;
     goto L_1979;
 L_1979:
@@ -3303,7 +3312,7 @@ L_1979:
     if (r1 != 165) goto L_5678;
     goto L_1983;
 L_1983:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r3, 152);
     r1 = r1 + r5;
     sbpf_st8(r3, 152, r1);
@@ -3320,7 +3329,7 @@ L_1988:
     sbpf_st8(r3, 72, r1);
     goto L_2145;
 L_1995:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r4, 48);
     r5 = 0xdacd6ce4bc5d4218ull;
     if (r2 != r5) goto L_2007;
@@ -3332,18 +3341,18 @@ L_1999:
     if (r2 != r5) goto L_2007;
     goto L_2003;
 L_2003:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r4, 64);
     r5 = 0xfc8ba1d828f9bdfeull;
     if (r2 == r5) goto L_2443;
     goto L_2007;
 L_2007:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r4, 1);
     if (r2 == 0) goto L_5329;
     goto L_2009;
 L_2009:
-    budget -= 11;
+    budget -= 21;
     r2 = r1;
     r2 = r2 + 88;
     sbpf_st8(r10, -2144, r2);
@@ -3357,10 +3366,10 @@ L_2009:
     r0 = sbpf_sys_memset(r1, r2, r3, r4, r5);
     goto L_2020;
 L_2020:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_2145;
 L_2021:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = 0xffffffff00000000ull;
     r9 = sbpf_ld8(r10, -2272);
     r9 = r9 & r1;
@@ -3380,7 +3389,7 @@ L_2032:
     if (r0 != r7) goto L_2044;
     goto L_2036;
 L_2036:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r3, 136);
     r7 = 0xa69cf7cccd2e4dd4ull;
     if (r0 != r7) goto L_2044;
@@ -3392,7 +3401,7 @@ L_2040:
     if (r0 == r7) goto L_2133;
     goto L_2044;
 L_2044:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r0 = sbpf_ld8(r10, -2080);
     r6 = r0;
     r6 = r6 + 24;
@@ -3408,7 +3417,7 @@ L_2051:
     if (r7 != r9) goto L_2086;
     goto L_2054;
 L_2054:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = sbpf_ld8(r3, 172);
     r8 = sbpf_ld8(r0, 16);
     if (r8 != r9) goto L_2086;
@@ -3420,7 +3429,7 @@ L_2057:
     if (r9 != r8) goto L_2086;
     goto L_2060;
 L_2060:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r3, 188);
     r9 = sbpf_ld8(r0, 32);
     if (r9 != r8) goto L_2086;
@@ -3431,7 +3440,7 @@ L_2063:
     if (r1 != 355) goto L_2540;
     goto L_2065;
 L_2065:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 40);
     r7 = 0xde8f75eee1f6dd06ull;
     if (r1 == r7) goto L_2528;
@@ -3442,7 +3451,7 @@ L_2069:
     if (r1 != r7) goto L_2540;
     goto L_2072;
 L_2072:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r7 = 0xac79ebce46e1cbd9ull;
     if (r1 != r7) goto L_2540;
@@ -3454,7 +3463,7 @@ L_2076:
     if (r1 != r7) goto L_2540;
     goto L_2080;
 L_2080:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r7 = 0xa900ff7e85f58c3aull;
     if (r1 != r7) goto L_2540;
@@ -3467,7 +3476,7 @@ L_2085:
     r7 = sbpf_ld8(r0, 8);
     goto L_2086;
 L_2086:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 4;
     if (r1 != r7) goto L_2160;
     goto L_2088;
@@ -3478,7 +3487,7 @@ L_2088:
     if (r7 != r1) goto L_2160;
     goto L_2091;
 L_2091:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 24);
     r7 = sbpf_ld8(r3, 136);
     if (r7 != r1) goto L_2160;
@@ -3490,7 +3499,7 @@ L_2094:
     if (r7 != r1) goto L_2160;
     goto L_2097;
 L_2097:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r0, 80);
     if (r1 != 355) goto L_2131;
     goto L_2099;
@@ -3501,7 +3510,7 @@ L_2099:
     if (r1 == r6) goto L_2119;
     goto L_2103;
 L_2103:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 0x93a165d7e1f6dd06ull;
     if (r1 != r6) goto L_2131;
     goto L_2106;
@@ -3512,7 +3521,7 @@ L_2106:
     if (r1 != r6) goto L_2131;
     goto L_2110;
 L_2110:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r6 = 0x91375b5fed85b41cull;
     if (r1 != r6) goto L_2131;
@@ -3524,10 +3533,10 @@ L_2114:
     if (r1 != r6) goto L_2131;
     goto L_2118;
 L_2118:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_2847;
 L_2119:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r6 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r6) goto L_2131;
@@ -3539,18 +3548,18 @@ L_2123:
     if (r1 != r6) goto L_2131;
     goto L_2127;
 L_2127:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r6 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r6) goto L_2847;
     goto L_2131;
 L_2131:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_3189;
     goto L_2133;
 L_2133:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == 0) goto L_2813;
     goto L_2134;
 L_2134:
@@ -3563,7 +3572,7 @@ L_2134:
     r0 = 26;
     goto L_2140;
 L_2140:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r0;
     r1 = r0;
     r1 = r1 << (32 & 63);
@@ -3571,7 +3580,7 @@ L_2140:
     if (r1 != 26) goto L_3792;
     goto L_2145;
 L_2145:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = sbpf_ld8(r10, -2104);
     r2 = sbpf_ld8(r10, -2112);
     if (r9 == r2) goto L_3839;
@@ -3591,10 +3600,10 @@ L_2148:
     if (r9 >= 2) goto L_466;
     goto L_2159;
 L_2159:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_4893;
 L_2160:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0;
     goto L_2140;
 L_2162:
@@ -3604,7 +3613,7 @@ L_2162:
     if (r1 != r7) goto L_2174;
     goto L_2166;
 L_2166:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r7 = 0x270db9834dfc1ab6ull;
     if (r1 != r7) goto L_2174;
@@ -3616,7 +3625,7 @@ L_2170:
     if (r1 == r7) goto L_2970;
     goto L_2174;
 L_2174:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_5329;
     goto L_2176;
@@ -3626,7 +3635,7 @@ L_2176:
     if (r1 < r4) goto L_5198;
     goto L_2178;
 L_2178:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = r1;
     r0 = r0 - r4;
     sbpf_st8(r3, 209, r0);
@@ -3637,7 +3646,7 @@ L_2182:
     sbpf_st1(r3, 160, 0);
     goto L_1953;
 L_2184:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 48);
     r2 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r2) goto L_2196;
@@ -3649,13 +3658,13 @@ L_2188:
     if (r1 != r2) goto L_2196;
     goto L_2192;
 L_2192:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 64);
     r2 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r2) goto L_3056;
     goto L_2196;
 L_2196:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r6, 1);
     if (r1 == 0) goto L_5329;
     goto L_2198;
@@ -3665,7 +3674,7 @@ L_2198:
     if (r1 < r5) goto L_5283;
     goto L_2200;
 L_2200:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == r3) goto L_2207;
     goto L_2201;
 L_2201:
@@ -3676,15 +3685,15 @@ L_2201:
     if (r1 != r5) goto L_2206;
     goto L_2205;
 L_2205:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st1(r4, 160, 0);
     goto L_2206;
 L_2206:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 0) goto L_1979;
     goto L_2207;
 L_2207:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_4861;
@@ -3696,7 +3705,7 @@ L_2211:
     if (r1 != r2) goto L_4861;
     goto L_2215;
 L_2215:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_4861;
@@ -3708,7 +3717,7 @@ L_2219:
     if (r1 != r2) goto L_4861;
     goto L_2223;
 L_2223:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_4861;
@@ -3721,7 +3730,7 @@ L_2227:
     if (r1 != r2) goto L_5084;
     goto L_2232;
 L_2232:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 == r2) goto L_2329;
@@ -3739,7 +3748,7 @@ L_2240:
     if (r1 == 2) goto L_5295;
     goto L_2241;
 L_2241:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r4, 152);
     r7 = sbpf_ld8(r10, -2176);
     if (r0 >= r5) goto L_575;
@@ -3755,7 +3764,7 @@ L_2245:
     if (r1 != r4) goto L_5084;
     goto L_2250;
 L_2250:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 48);
     r4 = 0xac79ebce46e1cbd9ull;
     if (r1 != r4) goto L_5084;
@@ -3767,7 +3776,7 @@ L_2254:
     if (r1 != r4) goto L_5084;
     goto L_2258;
 L_2258:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 64);
     r3 = 0xa900ff7e85f58c3aull;
     if (r1 != r3) goto L_5084;
@@ -3779,7 +3788,7 @@ L_2262:
     if (r1 != r3) goto L_5084;
     goto L_2266;
 L_2266:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 48);
     r3 = 0xac79ebce46e1cbd9ull;
     if (r1 != r3) goto L_5084;
@@ -3791,7 +3800,7 @@ L_2270:
     if (r1 != r3) goto L_5084;
     goto L_2274;
 L_2274:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r2, 64);
     goto L_2330;
 L_2276:
@@ -3801,7 +3810,7 @@ L_2276:
     sbpf_st8(r10, -2136, r9);
     goto L_2140;
 L_2280:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 != 2) goto L_2553;
     goto L_2281;
 L_2281:
@@ -3810,7 +3819,7 @@ L_2281:
     r0 = 0;
     goto L_2140;
 L_2284:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 90);
     if (r1 != 1) goto L_6517;
     goto L_2286;
@@ -3824,7 +3833,7 @@ L_2286:
     if (r1 != 3) goto L_2563;
     goto L_2292;
 L_2292:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = r0 + 88;
     r1 = sbpf_ld1(r0, 0);
     r2 = sbpf_ld8(r10, -2264);
@@ -3838,7 +3847,7 @@ L_2297:
     if (r5 != 0) goto L_1926;
     goto L_2300;
 L_2300:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_4861;
@@ -3850,7 +3859,7 @@ L_2304:
     if (r1 != r2) goto L_4861;
     goto L_2308;
 L_2308:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_4861;
@@ -3862,7 +3871,7 @@ L_2312:
     if (r1 != r2) goto L_4861;
     goto L_2316;
 L_2316:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_4861;
@@ -3874,7 +3883,7 @@ L_2320:
     if (r1 != r2) goto L_4861;
     goto L_2324;
 L_2324:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = 6;
     r1 = sbpf_ld8(r3, 56);
     r2 = 0x91375b5fed85b41cull;
@@ -3885,7 +3894,7 @@ L_2329:
     r1 = sbpf_ld8(r3, 64);
     goto L_2330;
 L_2330:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 == r2) goto L_2145;
     goto L_2333;
@@ -3898,7 +3907,7 @@ L_2334:
     if (r1 != 1) goto L_6521;
     goto L_2336;
 L_2336:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = 0;
     sbpf_st8(r10, -2280, r1);
     sbpf_st4(r10, -25, 0);
@@ -3914,12 +3923,12 @@ L_2342:
     if (r1 != 0) goto L_2348;
     goto L_2346;
 L_2346:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = 0;
     sbpf_st8(r10, -2288, r7);
     goto L_2348;
 L_2348:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 11) goto L_6913;
     goto L_2349;
 L_2349:
@@ -3927,7 +3936,7 @@ L_2349:
     if (r1 == 0) goto L_2789;
     goto L_2350;
 L_2350:
-    if ((budget -= 21) < 0) goto L_limit;
+    budget -= 21;
     r9 = sbpf_ld8(r10, -2088);
     r9 = r9 << (3 & 63);
     r8 = sbpf_ld8(r10, -2080);
@@ -3978,7 +3987,7 @@ L_2387:
     sbpf_st8(r10, -2280, r7);
     goto L_2391;
 L_2391:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r9 = sbpf_ld8(r10, -2128);
     r7 = r9;
     r7 = r7 + 32;
@@ -3987,14 +3996,14 @@ L_2391:
     if (r8 == 32) goto L_2371;
     goto L_2397;
 L_2397:
-    budget -= 4;
+    if ((budget -= 4) < 0) goto L_limit;
     sbpf_st8(r10, -2128, r7);
     r7 = sbpf_ld8(r9, 0);
     r6 = sbpf_ld8(r10, -2248);
     if (r7 != r6) goto L_2391;
     goto L_2401;
 L_2401:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = sbpf_ld8(r10, -2264);
     r7 = sbpf_ld8(r6, 16);
     sbpf_st8(r10, -2256, r7);
@@ -4012,7 +4021,7 @@ L_2407:
     if (r7 != r6) goto L_2391;
     goto L_2413;
 L_2413:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r10, -2264);
     r7 = sbpf_ld8(r6, 32);
     r9 = sbpf_ld8(r9, 24);
@@ -4023,7 +4032,7 @@ L_2417:
     if (r1 > 10) goto L_7353;
     goto L_2418;
 L_2418:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r7 = r10;
     r7 = r7 + (uint64_t)-32;
     r7 = r7 + r1;
@@ -4031,7 +4040,7 @@ L_2418:
     if (r9 != 0) goto L_2391;
     goto L_2423;
 L_2423:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r10, -2264);
     r9 = sbpf_ld1(r6, 1);
     if (r9 != 0) goto L_2387;
@@ -4045,7 +4054,7 @@ L_2427:
     if (r1 != 1) goto L_6525;
     goto L_2429;
 L_2429:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = 0;
     sbpf_st8(r10, -2296, r1);
     sbpf_st4(r10, -25, 0);
@@ -4062,7 +4071,7 @@ L_2435:
     if (r2 < r1) goto L_6805;
     goto L_2440;
 L_2440:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r10, -2320, r6);
     if (r5 != 0) goto L_1978;
     goto L_2442;
@@ -4075,7 +4084,7 @@ L_2443:
     if (r2 != 1) goto L_6529;
     goto L_2445;
 L_2445:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r2 = 0;
     sbpf_st8(r10, -2248, r2);
     sbpf_st4(r10, -25, 0);
@@ -4090,11 +4099,11 @@ L_2451:
     if (r2 != 0) goto L_2455;
     goto L_2454;
 L_2454:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = 0;
     goto L_2455;
 L_2455:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 11) goto L_6912;
     goto L_2456;
 L_2456:
@@ -4102,7 +4111,7 @@ L_2456:
     if (r2 == 0) goto L_2798;
     goto L_2457;
 L_2457:
-    if ((budget -= 22) < 0) goto L_limit;
+    budget -= 22;
     r0 = sbpf_ld8(r10, -2080);
     r7 = r0;
     r7 = r7 + 24;
@@ -4151,7 +4160,7 @@ L_2495:
     r5 = sbpf_ld8(r10, -2144);
     goto L_2496;
 L_2496:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r8 = r6;
     r8 = r8 + 32;
     r2 = r2 + 1;
@@ -4159,27 +4168,27 @@ L_2496:
     if (r9 == 32) goto L_2479;
     goto L_2501;
 L_2501:
-    budget -= 4;
+    if ((budget -= 4) < 0) goto L_limit;
     r0 = r6;
     r6 = r8;
     r8 = sbpf_ld8(r0, 0);
     if (r8 != r5) goto L_2496;
     goto L_2505;
 L_2505:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r5 = sbpf_ld8(r10, -2128);
     r8 = sbpf_ld8(r5, 16);
     r7 = sbpf_ld8(r0, 8);
     if (r7 != r8) goto L_2495;
     goto L_2509;
 L_2509:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r5, 24);
     r8 = sbpf_ld8(r0, 16);
     if (r8 != r7) goto L_2495;
     goto L_2512;
 L_2512:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r5, 32);
     r0 = sbpf_ld8(r0, 24);
     if (r0 != r7) goto L_2495;
@@ -4189,7 +4198,7 @@ L_2515:
     if (r2 > 10) goto L_7352;
     goto L_2516;
 L_2516:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = r10;
     r0 = r0 + (uint64_t)-32;
     r0 = r0 + r2;
@@ -4202,7 +4211,7 @@ L_2521:
     if (r7 == 0) goto L_6805;
     goto L_2523;
 L_2523:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r0, 0, 1);
     r0 = sbpf_ld8(r10, -2248);
     r0 = r0 + 1;
@@ -4215,7 +4224,7 @@ L_2528:
     if (r1 != r7) goto L_2540;
     goto L_2532;
 L_2532:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r7 = 0x270db9834dfc1ab6ull;
     if (r1 != r7) goto L_2540;
@@ -4227,7 +4236,7 @@ L_2536:
     if (r1 == r7) goto L_3191;
     goto L_2540;
 L_2540:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_3189;
     goto L_2542;
@@ -4237,12 +4246,12 @@ L_2542:
     if (r1 >= r4) goto L_2547;
     goto L_2544;
 L_2544:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = 1;
     r0 = 0;
     goto L_2140;
 L_2547:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = r1;
     r0 = r0 - r4;
     sbpf_st8(r3, 209, r0);
@@ -4259,7 +4268,7 @@ L_2553:
     if (r2 < r5) goto L_2544;
     goto L_2556;
 L_2556:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r10, -2136);
     r7 = sbpf_ld8(r2, 0);
     goto L_756;
@@ -4270,7 +4279,7 @@ L_2559:
     sbpf_st8(r10, -2192, r9);
     goto L_2140;
 L_2563:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r0, 89);
     r6 = 1;
     sbpf_st8(r10, -2280, r1);
@@ -4281,7 +4290,7 @@ L_2567:
     r6 = 0;
     goto L_2568;
 L_2568:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -2280);
     if (r1 > 11) goto L_6893;
     goto L_2570;
@@ -4340,11 +4349,11 @@ L_2610:
     r9 = r6;
     goto L_2611;
 L_2611:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = sbpf_ld8(r10, -2248);
     goto L_2612;
 L_2612:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r7 = sbpf_ld8(r10, -2128);
     r8 = r7;
     r8 = r8 + 32;
@@ -4359,14 +4368,14 @@ L_2618:
     if (r8 != r6) goto L_2612;
     goto L_2621;
 L_2621:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r8 = sbpf_ld8(r9, 16);
     r6 = r9;
     r9 = sbpf_ld8(r7, 8);
     if (r9 != r8) goto L_2610;
     goto L_2625;
 L_2625:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r6, 24);
     r9 = sbpf_ld8(r7, 16);
     if (r9 != r8) goto L_2610;
@@ -4379,7 +4388,7 @@ L_2628:
     if (r7 != r8) goto L_2611;
     goto L_2632;
 L_2632:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = sbpf_ld8(r10, -2248);
     if (r2 > 10) goto L_7352;
     goto L_2634;
@@ -4392,7 +4401,7 @@ L_2634:
     if (r8 != 0) goto L_2612;
     goto L_2639;
 L_2639:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = sbpf_ld1(r9, 1);
     if (r8 == 0) goto L_6805;
     goto L_2641;
@@ -4411,11 +4420,11 @@ L_2646:
     if (r1 != 0) goto L_2651;
     goto L_2650;
 L_2650:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = 0;
     goto L_2651;
 L_2651:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -2304);
     if (r1 > 11) goto L_6907;
     goto L_2653;
@@ -4443,7 +4452,7 @@ L_2653:
     r1 = r1 + 32;
     goto L_2678;
 L_2674:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = r8;
     r1 = r1 + 8;
     r2 = sbpf_ld8(r10, -2312);
@@ -4472,7 +4481,7 @@ L_2691:
     r2 = sbpf_ld8(r10, -2128);
     goto L_2692;
 L_2692:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = sbpf_ld8(r10, -2248);
     r7 = r1;
     r7 = r7 + 32;
@@ -4489,7 +4498,7 @@ L_2698:
     if (r7 != r2) goto L_2691;
     goto L_2703;
 L_2703:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r2 = sbpf_ld8(r10, -2280);
     r7 = sbpf_ld8(r2, 16);
     sbpf_st8(r10, -2264, r7);
@@ -4509,7 +4518,7 @@ L_2709:
     if (r7 != r1) goto L_2692;
     goto L_2717;
 L_2717:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r7 = sbpf_ld8(r10, -2280);
     r7 = sbpf_ld8(r7, 32);
     r1 = sbpf_ld8(r10, -2288);
@@ -4521,7 +4530,7 @@ L_2722:
     if (r2 > 10) goto L_7352;
     goto L_2723;
 L_2723:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = r10;
     r1 = r1 + (uint64_t)-32;
     r1 = r1 + r2;
@@ -4535,7 +4544,7 @@ L_2728:
     if (r7 == 0) goto L_6805;
     goto L_2731;
 L_2731:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r1, 0, 1);
     r1 = sbpf_ld8(r10, -2296);
     r1 = r1 + 1;
@@ -4551,7 +4560,7 @@ L_2736:
     r9 = sbpf_ld8(r10, -2344);
     goto L_2140;
 L_2744:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 9;
     r9 = sbpf_ld8(r10, -2344);
     goto L_2140;
@@ -4561,13 +4570,13 @@ L_2747:
     sbpf_st8(r10, -2200, r9);
     goto L_2140;
 L_2750:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     sbpf_st8(r10, -2344, r2);
     r9 = 18;
     r0 = 0;
     goto L_2140;
 L_2754:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r4, 120);
     if (r1 != r7) goto L_3358;
     goto L_2756;
@@ -4578,7 +4587,7 @@ L_2756:
     if (r7 != r1) goto L_3358;
     goto L_2759;
 L_2759:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 24);
     r7 = sbpf_ld8(r4, 136);
     if (r7 != r1) goto L_3358;
@@ -4590,7 +4599,7 @@ L_2762:
     if (r7 != r1) goto L_3358;
     goto L_2765;
 L_2765:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r8, 80);
     if (r1 != 355) goto L_2948;
     goto L_2767;
@@ -4601,7 +4610,7 @@ L_2767:
     if (r6 == r1) goto L_2936;
     goto L_2771;
 L_2771:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0x93a165d7e1f6dd06ull;
     if (r6 != r1) goto L_2948;
     goto L_2774;
@@ -4612,7 +4621,7 @@ L_2774:
     if (r1 != r6) goto L_2948;
     goto L_2778;
 L_2778:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 56);
     r6 = 0x91375b5fed85b41cull;
     if (r1 != r6) goto L_2948;
@@ -4624,19 +4633,19 @@ L_2782:
     if (r1 != r6) goto L_2948;
     goto L_2786;
 L_2786:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_3370;
 L_2787:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 3;
     goto L_2140;
 L_2789:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     sbpf_st8(r10, -2280, r1);
     goto L_2791;
 L_2791:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = r0 + 88;
     r1 = sbpf_ld1(r0, 0);
     r6 = sbpf_ld8(r10, -2280);
@@ -4648,12 +4657,12 @@ L_2796:
     sbpf_st8(r10, -2360, r0);
     goto L_1953;
 L_2798:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     sbpf_st8(r10, -2248, r2);
     goto L_2800;
 L_2800:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r4 = r4 + 88;
     r2 = sbpf_ld1(r4, 0);
     r5 = sbpf_ld8(r10, -2248);
@@ -4661,7 +4670,7 @@ L_2800:
     if (r5 < r2) goto L_6805;
     goto L_2805;
 L_2805:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r10, -2368, r4);
     goto L_2009;
 L_2807:
@@ -4669,11 +4678,11 @@ L_2807:
     r9 = 17;
     goto L_2140;
 L_2809:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 10;
     goto L_2140;
 L_2811:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 18;
     goto L_2140;
 L_2813:
@@ -4683,7 +4692,7 @@ L_2813:
     if (r1 != r4) goto L_3356;
     goto L_2817;
 L_2817:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 48);
     r4 = 0xac79ebce46e1cbd9ull;
     if (r1 != r4) goto L_3356;
@@ -4695,7 +4704,7 @@ L_2821:
     if (r1 != r4) goto L_3356;
     goto L_2825;
 L_2825:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 64);
     r3 = 0xa900ff7e85f58c3aull;
     if (r1 != r3) goto L_3356;
@@ -4707,7 +4716,7 @@ L_2829:
     if (r1 != r3) goto L_3356;
     goto L_2833;
 L_2833:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 48);
     r3 = 0xac79ebce46e1cbd9ull;
     if (r1 != r3) goto L_3356;
@@ -4719,7 +4728,7 @@ L_2837:
     if (r1 != r3) goto L_3356;
     goto L_2841;
 L_2841:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_3356;
@@ -4734,7 +4743,7 @@ L_2847:
     if (r1 == 0) goto L_3160;
     goto L_2849;
 L_2849:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 1) goto L_3163;
     goto L_2850;
 L_2850:
@@ -4750,7 +4759,7 @@ L_2850:
     if (r1 == 3) goto L_3184;
     goto L_2859;
 L_2859:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld1(r0, 89);
     r8 = 1;
     if (r1 != 0) goto L_2863;
@@ -4760,7 +4769,7 @@ L_2862:
     r8 = 0;
     goto L_2863;
 L_2863:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 11) goto L_6913;
     goto L_2864;
 L_2864:
@@ -4768,7 +4777,7 @@ L_2864:
     if (r1 == 0) goto L_3182;
     goto L_2865;
 L_2865:
-    if ((budget -= 19) < 0) goto L_limit;
+    budget -= 19;
     r6 = sbpf_ld8(r10, -2088);
     r6 = r6 << (3 & 63);
     r7 = sbpf_ld8(r10, -2080);
@@ -4810,7 +4819,7 @@ L_2889:
     r6 = r0;
     goto L_2906;
 L_2900:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = sbpf_ld8(r10, -2248);
     r9 = r6;
     r9 = r9 + 32;
@@ -4819,14 +4828,14 @@ L_2900:
     if (r7 == 32) goto L_2884;
     goto L_2906;
 L_2906:
-    budget -= 4;
+    if ((budget -= 4) < 0) goto L_limit;
     sbpf_st8(r10, -2248, r9);
     r8 = sbpf_ld8(r6, 0);
     r9 = sbpf_ld8(r10, -2256);
     if (r8 != r9) goto L_2900;
     goto L_2910;
 L_2910:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r8 = sbpf_ld8(r10, -2264);
     r8 = sbpf_ld8(r8, 16);
     r9 = sbpf_ld8(r6, 8);
@@ -4840,7 +4849,7 @@ L_2914:
     if (r9 != r8) goto L_2900;
     goto L_2918;
 L_2918:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r8 = sbpf_ld8(r10, -2264);
     r8 = sbpf_ld8(r8, 32);
     r6 = sbpf_ld8(r6, 24);
@@ -4851,7 +4860,7 @@ L_2922:
     if (r1 > 10) goto L_7353;
     goto L_2923;
 L_2923:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r10;
     r6 = r6 + (uint64_t)-32;
     r6 = r6 + r1;
@@ -4865,14 +4874,14 @@ L_2928:
     if (r8 == 0) goto L_3189;
     goto L_2931;
 L_2931:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r6, 0, 1);
     r6 = sbpf_ld8(r10, -2280);
     r6 = r6 + 1;
     sbpf_st8(r10, -2280, r6);
     goto L_2900;
 L_2936:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 48);
     r6 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r6) goto L_2948;
@@ -4884,13 +4893,13 @@ L_2940:
     if (r1 != r6) goto L_2948;
     goto L_2944;
 L_2944:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 64);
     r6 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r6) goto L_3370;
     goto L_2948;
 L_2948:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r8, 1);
     if (r1 == 0) goto L_3489;
     goto L_2950;
@@ -4899,7 +4908,7 @@ L_2950:
     if (r5 == 0) goto L_3309;
     goto L_2951;
 L_2951:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == r3) goto L_3309;
     goto L_2952;
 L_2952:
@@ -4910,7 +4919,7 @@ L_2952:
     if (r1 != 165) goto L_3467;
     goto L_2956;
 L_2956:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r3, 152);
     r1 = r1 + r5;
     sbpf_st8(r3, 152, r1);
@@ -4929,7 +4938,7 @@ L_2961:
     r0 = 26;
     goto L_2140;
 L_2970:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 90);
     if (r1 != 1) goto L_6923;
     goto L_2972;
@@ -4943,7 +4952,7 @@ L_2972:
     if (r1 == 3) goto L_3173;
     goto L_2978;
 L_2978:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld1(r0, 89);
     r6 = 1;
     if (r1 != 0) goto L_2982;
@@ -4953,7 +4962,7 @@ L_2981:
     r6 = 0;
     goto L_2982;
 L_2982:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 11) goto L_6913;
     goto L_2983;
 L_2983:
@@ -4961,7 +4970,7 @@ L_2983:
     if (r1 == 0) goto L_3171;
     goto L_2984;
 L_2984:
-    if ((budget -= 20) < 0) goto L_limit;
+    budget -= 20;
     r7 = sbpf_ld8(r10, -2088);
     r7 = r7 << (3 & 63);
     r8 = sbpf_ld8(r10, -2080);
@@ -5004,7 +5013,7 @@ L_3009:
     r9 = sbpf_ld8(r10, -2296);
     goto L_3026;
 L_3020:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r9 = sbpf_ld8(r10, -2248);
     r7 = r9;
     r7 = r7 + 32;
@@ -5013,14 +5022,14 @@ L_3020:
     if (r8 == 32) goto L_3004;
     goto L_3026;
 L_3026:
-    budget -= 4;
+    if ((budget -= 4) < 0) goto L_limit;
     sbpf_st8(r10, -2248, r7);
     r7 = sbpf_ld8(r9, 0);
     r6 = sbpf_ld8(r10, -2256);
     if (r7 != r6) goto L_3020;
     goto L_3030;
 L_3030:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r10, -2264);
     r6 = sbpf_ld8(r6, 16);
     r7 = sbpf_ld8(r9, 8);
@@ -5034,7 +5043,7 @@ L_3034:
     if (r7 != r6) goto L_3020;
     goto L_3038;
 L_3038:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r10, -2264);
     r7 = sbpf_ld8(r6, 32);
     r9 = sbpf_ld8(r9, 24);
@@ -5045,7 +5054,7 @@ L_3042:
     if (r1 > 10) goto L_7353;
     goto L_3043;
 L_3043:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r7 = r10;
     r7 = r7 + (uint64_t)-32;
     r7 = r7 + r1;
@@ -5059,7 +5068,7 @@ L_3048:
     if (r9 == 0) goto L_6805;
     goto L_3051;
 L_3051:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r7, 0, 1);
     r6 = sbpf_ld8(r10, -2280);
     r6 = r6 + 1;
@@ -5071,7 +5080,7 @@ L_3056:
     if (r1 != 1) goto L_6927;
     goto L_3058;
 L_3058:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = 0;
     sbpf_st8(r10, -2280, r1);
     sbpf_st4(r10, -25, 0);
@@ -5088,7 +5097,7 @@ L_3064:
     if (r2 < r1) goto L_6805;
     goto L_3069;
 L_3069:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2392, r6);
     r1 = sbpf_ld8(r4, 209);
     if (r1 >= r5) goto L_2200;
@@ -5104,11 +5113,11 @@ L_3073:
     if (r1 != 0) goto L_3078;
     goto L_3077;
 L_3077:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = 0;
     goto L_3078;
 L_3078:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -2288);
     if (r1 > 11) goto L_7123;
     goto L_3080;
@@ -5136,7 +5145,7 @@ L_3080:
     r1 = r1 + 32;
     goto L_3105;
 L_3101:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = r8;
     r1 = r1 + 8;
     r2 = sbpf_ld8(r10, -2296);
@@ -5169,7 +5178,7 @@ L_3119:
     sbpf_st8(r10, -2280, r1);
     goto L_3123;
 L_3123:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r2 = sbpf_ld8(r10, -2248);
     r7 = r2;
     r7 = r7 + 32;
@@ -5195,7 +5204,7 @@ L_3136:
     if (r7 != r2) goto L_3123;
     goto L_3140;
 L_3140:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r7 = sbpf_ld8(r10, -2264);
     r2 = sbpf_ld8(r7, 24);
     r7 = sbpf_ld8(r1, 16);
@@ -5209,7 +5218,7 @@ L_3144:
     if (r1 != r7) goto L_3123;
     goto L_3148;
 L_3148:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -2128);
     if (r1 > 10) goto L_7137;
     goto L_3150;
@@ -5223,7 +5232,7 @@ L_3150:
     if (r7 != 0) goto L_3123;
     goto L_3156;
 L_3156:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r10, -2264);
     r7 = sbpf_ld1(r7, 1);
     if (r7 != 0) goto L_3119;
@@ -5232,7 +5241,7 @@ L_3159:
     budget -= 1;
     goto L_6805;
 L_3160:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 9;
     r9 = sbpf_ld8(r10, -2376);
     goto L_2140;
@@ -5246,12 +5255,12 @@ L_3163:
     r9 = sbpf_ld8(r10, -2376);
     goto L_2140;
 L_3171:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     sbpf_st8(r10, -2280, r1);
     goto L_3173;
 L_3173:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = r0 + 88;
     r1 = sbpf_ld1(r0, 0);
     r6 = sbpf_ld8(r10, -2280);
@@ -5265,15 +5274,15 @@ L_3178:
     if (r1 >= r4) goto L_2178;
     goto L_3181;
 L_3181:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_5198;
 L_3182:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     sbpf_st8(r10, -2280, r1);
     goto L_3184;
 L_3184:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -2376);
     r1 = sbpf_ld1(r1, 0);
     r0 = sbpf_ld8(r10, -2280);
@@ -5281,11 +5290,11 @@ L_3184:
     if (r0 >= r1) goto L_2133;
     goto L_3189;
 L_3189:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 7;
     goto L_2140;
 L_3191:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 90);
     if (r1 == 0) goto L_3344;
     goto L_3193;
@@ -5294,7 +5303,7 @@ L_3193:
     if (r1 != 1) goto L_3347;
     goto L_3194;
 L_3194:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r1 = r0;
     r1 = r1 + 88;
     sbpf_st8(r10, -2400, r1);
@@ -5313,12 +5322,12 @@ L_3203:
     if (r1 != 0) goto L_3209;
     goto L_3207;
 L_3207:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = 0;
     sbpf_st8(r10, -2288, r7);
     goto L_3209;
 L_3209:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 11) goto L_6913;
     goto L_3210;
 L_3210:
@@ -5326,7 +5335,7 @@ L_3210:
     if (r1 == 0) goto L_3362;
     goto L_3211;
 L_3211:
-    if ((budget -= 20) < 0) goto L_limit;
+    budget -= 20;
     r9 = sbpf_ld8(r10, -2088);
     r9 = r9 << (3 & 63);
     r8 = sbpf_ld8(r10, -2080);
@@ -5370,7 +5379,7 @@ L_3236:
     sbpf_st8(r10, -2248, r0);
     goto L_3255;
 L_3248:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r9 = sbpf_ld8(r10, -2248);
     r9 = r9 + 32;
     r1 = sbpf_ld8(r10, -2256);
@@ -5380,7 +5389,7 @@ L_3248:
     if (r7 == 32) goto L_3231;
     goto L_3255;
 L_3255:
-    budget -= 5;
+    if ((budget -= 5) < 0) goto L_limit;
     r1 = sbpf_ld8(r10, -2248);
     sbpf_st8(r10, -2248, r9);
     r8 = sbpf_ld8(r1, 0);
@@ -5388,7 +5397,7 @@ L_3255:
     if (r8 != r9) goto L_3248;
     goto L_3260;
 L_3260:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r6, 16);
     r9 = sbpf_ld8(r1, 8);
     if (r9 != r8) goto L_3248;
@@ -5400,7 +5409,7 @@ L_3263:
     if (r9 != r8) goto L_3248;
     goto L_3266;
 L_3266:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r6, 32);
     r1 = sbpf_ld8(r1, 24);
     if (r1 != r8) goto L_3248;
@@ -5411,7 +5420,7 @@ L_3269:
     if (r1 > 10) goto L_7147;
     goto L_3271;
 L_3271:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = r10;
     r1 = r1 + (uint64_t)-32;
     r8 = sbpf_ld8(r10, -2256);
@@ -5425,7 +5434,7 @@ L_3277:
     if (r8 == 0) goto L_3189;
     goto L_3279;
 L_3279:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r1, 0, 1);
     r1 = sbpf_ld8(r10, -2280);
     r1 = r1 + 1;
@@ -5438,7 +5447,7 @@ L_3284:
     if (r1 != r7) goto L_3296;
     goto L_3288;
 L_3288:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 56);
     r7 = 0x270db9834dfc1ab6ull;
     if (r1 != r7) goto L_3296;
@@ -5450,7 +5459,7 @@ L_3292:
     if (r1 == r7) goto L_3492;
     goto L_3296;
 L_3296:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r8, 1);
     if (r1 == 0) goto L_3489;
     goto L_3298;
@@ -5460,11 +5469,11 @@ L_3298:
     if (r1 >= r5) goto L_3302;
     goto L_3300;
 L_3300:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r10, -2344, r2);
     goto L_2544;
 L_3302:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == r3) goto L_3309;
     goto L_3303;
 L_3303:
@@ -5475,15 +5484,15 @@ L_3303:
     if (r1 != r5) goto L_3308;
     goto L_3307;
 L_3307:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st1(r4, 160, 0);
     goto L_3308;
 L_3308:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 0) goto L_2952;
     goto L_3309;
 L_3309:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r5 = 0x93a165d7e1f6dd06ull;
     if (r1 != r5) goto L_3355;
@@ -5495,7 +5504,7 @@ L_3313:
     if (r1 != r5) goto L_3355;
     goto L_3317;
 L_3317:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r5 = 0x91375b5fed85b41cull;
     if (r1 != r5) goto L_3355;
@@ -5507,7 +5516,7 @@ L_3321:
     if (r1 != r4) goto L_3355;
     goto L_3325;
 L_3325:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 40);
     r4 = 0x93a165d7e1f6dd06ull;
     if (r1 != r4) goto L_3355;
@@ -5519,7 +5528,7 @@ L_3329:
     if (r1 != r4) goto L_3355;
     goto L_3333;
 L_3333:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 56);
     r4 = 0x91375b5fed85b41cull;
     if (r1 != r4) goto L_3355;
@@ -5531,7 +5540,7 @@ L_3337:
     if (r1 != r3) goto L_3355;
     goto L_3341;
 L_3341:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2344, r2);
     r0 = 26;
     goto L_2140;
@@ -5541,7 +5550,7 @@ L_3344:
     r9 = sbpf_ld8(r10, -2400);
     goto L_2140;
 L_3347:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r1 = 0xffffffff00000000ull;
     r2 = sbpf_ld8(r10, -2400);
     r2 = r2 & r1;
@@ -5550,26 +5559,26 @@ L_3347:
     r9 = sbpf_ld8(r10, -2400);
     goto L_2140;
 L_3355:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -2344, r2);
     goto L_3356;
 L_3356:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 6;
     goto L_2140;
 L_3358:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     sbpf_st8(r10, -2344, r2);
     r9 = 4;
     r0 = 0;
     goto L_2140;
 L_3362:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     sbpf_st8(r10, -2280, r1);
     goto L_3364;
 L_3364:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -2400);
     r1 = sbpf_ld1(r1, 0);
     r0 = sbpf_ld8(r10, -2280);
@@ -5585,7 +5594,7 @@ L_3370:
     if (r6 == 0) goto L_3471;
     goto L_3372;
 L_3372:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r6 != 1) goto L_3473;
     goto L_3373;
 L_3373:
@@ -5601,7 +5610,7 @@ L_3373:
     if (r1 == 4) goto L_3484;
     goto L_3382;
 L_3382:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld1(r8, 89);
     r1 = 1;
     sbpf_st8(r10, -2296, r1);
@@ -5613,7 +5622,7 @@ L_3386:
     sbpf_st8(r10, -2296, r1);
     goto L_3388;
 L_3388:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r6 > 11) goto L_7142;
     goto L_3389;
 L_3389:
@@ -5621,7 +5630,7 @@ L_3389:
     if (r6 == 0) goto L_3482;
     goto L_3390;
 L_3390:
-    if ((budget -= 20) < 0) goto L_limit;
+    budget -= 20;
     r9 = sbpf_ld8(r10, -2088);
     r9 = r9 << (3 & 63);
     r7 = sbpf_ld8(r10, -2080);
@@ -5672,7 +5681,7 @@ L_3427:
     sbpf_st8(r10, -2288, r1);
     goto L_3431;
 L_3431:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r9 = sbpf_ld8(r10, -2248);
     r9 = r9 + 32;
     r1 = sbpf_ld8(r10, -2256);
@@ -5682,7 +5691,7 @@ L_3431:
     if (r7 == 32) goto L_3410;
     goto L_3438;
 L_3438:
-    budget -= 5;
+    if ((budget -= 5) < 0) goto L_limit;
     r6 = sbpf_ld8(r10, -2248);
     sbpf_st8(r10, -2248, r9);
     r1 = sbpf_ld8(r6, 0);
@@ -5690,7 +5699,7 @@ L_3438:
     if (r1 != r9) goto L_3431;
     goto L_3443;
 L_3443:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2280);
     r1 = sbpf_ld8(r1, 16);
     r9 = sbpf_ld8(r6, 8);
@@ -5704,7 +5713,7 @@ L_3447:
     if (r9 != r1) goto L_3431;
     goto L_3451;
 L_3451:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2280);
     r1 = sbpf_ld8(r1, 32);
     r6 = sbpf_ld8(r6, 24);
@@ -5716,7 +5725,7 @@ L_3455:
     if (r1 > 10) goto L_7147;
     goto L_3457;
 L_3457:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r10;
     r6 = r6 + (uint64_t)-32;
     r1 = sbpf_ld8(r10, -2256);
@@ -5725,7 +5734,7 @@ L_3457:
     if (r1 != 0) goto L_3431;
     goto L_3463;
 L_3463:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r10, -2280);
     r1 = sbpf_ld1(r1, 1);
     if (r1 != 0) goto L_3427;
@@ -5734,13 +5743,13 @@ L_3466:
     budget -= 1;
     goto L_3489;
 L_3467:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = 3;
     r9 = 0;
     sbpf_st8(r10, -2344, r2);
     goto L_2140;
 L_3471:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 9;
     goto L_3479;
 L_3473:
@@ -5752,17 +5761,17 @@ L_3473:
     r0 = 3;
     goto L_3479;
 L_3479:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2344, r2);
     r9 = sbpf_ld8(r10, -2408);
     goto L_2140;
 L_3482:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     sbpf_st8(r10, -2288, r1);
     goto L_3484;
 L_3484:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -2408);
     r1 = sbpf_ld1(r1, 0);
     r6 = sbpf_ld8(r10, -2288);
@@ -5770,12 +5779,12 @@ L_3484:
     if (r6 >= r1) goto L_2950;
     goto L_3489;
 L_3489:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 7;
     sbpf_st8(r10, -2344, r2);
     goto L_2140;
 L_3492:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = sbpf_ld1(r8, 90);
     if (r7 == 0) goto L_3591;
     goto L_3494;
@@ -5784,7 +5793,7 @@ L_3494:
     if (r7 != 1) goto L_3593;
     goto L_3495;
 L_3495:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r1 = r8;
     r1 = r1 + 88;
     sbpf_st8(r10, -2416, r1);
@@ -5804,12 +5813,12 @@ L_3504:
     if (r7 != 0) goto L_3511;
     goto L_3509;
 L_3509:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 0;
     sbpf_st8(r10, -2296, r6);
     goto L_3511;
 L_3511:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 11) goto L_6913;
     goto L_3512;
 L_3512:
@@ -5817,7 +5826,7 @@ L_3512:
     if (r1 == 0) goto L_3602;
     goto L_3513;
 L_3513:
-    if ((budget -= 20) < 0) goto L_limit;
+    budget -= 20;
     r6 = sbpf_ld8(r10, -2088);
     r6 = r6 << (3 & 63);
     r7 = sbpf_ld8(r10, -2080);
@@ -5868,7 +5877,7 @@ L_3550:
     sbpf_st8(r10, -2288, r1);
     goto L_3554;
 L_3554:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r9 = sbpf_ld8(r10, -2248);
     r9 = r9 + 32;
     r1 = sbpf_ld8(r10, -2256);
@@ -5878,7 +5887,7 @@ L_3554:
     if (r7 == 32) goto L_3533;
     goto L_3561;
 L_3561:
-    budget -= 6;
+    if ((budget -= 6) < 0) goto L_limit;
     r1 = sbpf_ld8(r10, -2248);
     sbpf_st8(r10, -2248, r9);
     r6 = r1;
@@ -5887,7 +5896,7 @@ L_3561:
     if (r1 != r9) goto L_3554;
     goto L_3567;
 L_3567:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2280);
     r1 = sbpf_ld8(r1, 16);
     r9 = sbpf_ld8(r6, 8);
@@ -5901,7 +5910,7 @@ L_3571:
     if (r9 != r1) goto L_3554;
     goto L_3575;
 L_3575:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2280);
     r1 = sbpf_ld8(r1, 32);
     r9 = sbpf_ld8(r6, 24);
@@ -5913,7 +5922,7 @@ L_3579:
     if (r1 > 10) goto L_7147;
     goto L_3581;
 L_3581:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r9 = r10;
     r9 = r9 + (uint64_t)-32;
     r1 = sbpf_ld8(r10, -2256);
@@ -5922,7 +5931,7 @@ L_3581:
     if (r1 != 0) goto L_3554;
     goto L_3587;
 L_3587:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r10, -2280);
     r1 = sbpf_ld1(r1, 1);
     if (r1 != 0) goto L_3550;
@@ -5935,7 +5944,7 @@ L_3591:
     r0 = 9;
     goto L_3599;
 L_3593:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = 0xffffffff00000000ull;
     r3 = sbpf_ld8(r10, -2416);
     r3 = r3 & r1;
@@ -5943,17 +5952,17 @@ L_3593:
     r0 = 3;
     goto L_3599;
 L_3599:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2344, r2);
     r9 = sbpf_ld8(r10, -2416);
     goto L_2140;
 L_3602:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     sbpf_st8(r10, -2288, r1);
     goto L_3604;
 L_3604:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -2416);
     r1 = sbpf_ld1(r1, 0);
     r6 = sbpf_ld8(r10, -2288);
@@ -5971,18 +5980,18 @@ L_3610:
     if (r7 < 6) goto L_3702;
     goto L_3614;
 L_3614:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = r10;
     r2 = r2 + (uint64_t)-2072;
     r3 = r7;
     goto L_3617;
 L_3617:
-    budget -= 2;
+    if ((budget -= 2) < 0) goto L_limit;
     r4 = sbpf_ld1(r1, 0);
     if (r4 != 255) goto L_3656;
     goto L_3619;
 L_3619:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     sbpf_st8(r2, 8, r1);
     r4 = sbpf_ld8(r1, 80);
     r1 = r1 + r4;
@@ -6002,7 +6011,7 @@ L_3626:
     if (r4 != 255) goto L_3674;
     goto L_3633;
 L_3633:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     sbpf_st8(r2, 24, r1);
     r4 = sbpf_ld8(r1, 80);
     r1 = r1 + r4;
@@ -6023,7 +6032,7 @@ L_3640:
     if (r4 != 255) goto L_3693;
     goto L_3648;
 L_3648:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     sbpf_st8(r2, 0, r1);
     r4 = sbpf_ld8(r1, 80);
     r1 = r1 + r4;
@@ -6036,7 +6045,7 @@ L_3655:
     budget -= 1;
     goto L_3702;
 L_3656:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r4 = r4 << (3 & 63);
     r5 = r10;
     r5 = r5 + (uint64_t)-2072;
@@ -6060,7 +6069,7 @@ L_3665:
     if (r4 == 255) goto L_3633;
     goto L_3674;
 L_3674:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r4 = r4 << (3 & 63);
     r5 = r10;
     r5 = r5 + (uint64_t)-2072;
@@ -6085,7 +6094,7 @@ L_3683:
     if (r4 == 255) goto L_3648;
     goto L_3693;
 L_3693:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r4 = r4 << (3 & 63);
     r5 = r10;
     r5 = r5 + (uint64_t)-2072;
@@ -6097,7 +6106,7 @@ L_3693:
     if (r3 > 5) goto L_3617;
     goto L_3702;
 L_3702:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r3 <= 2) goto L_3834;
     goto L_3703;
 L_3703:
@@ -6105,7 +6114,7 @@ L_3703:
     if (r3 == 3) goto L_3841;
     goto L_3704;
 L_3704:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 != 4) goto L_3852;
     goto L_3705;
 L_3705:
@@ -6114,7 +6123,7 @@ L_3705:
     if (r3 != 255) goto L_5703;
     goto L_3707;
 L_3707:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     sbpf_st8(r2, 8, r1);
     r3 = sbpf_ld8(r1, 80);
     r1 = r1 + r3;
@@ -6134,7 +6143,7 @@ L_3714:
     if (r3 != 255) goto L_5721;
     goto L_3721;
 L_3721:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r2, 24, r1);
     goto L_358;
 L_3723:
@@ -6142,7 +6151,7 @@ L_3723:
     if ((int64_t)r5 > 17) goto L_3820;
     goto L_3724;
 L_3724:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 12) goto L_3883;
     goto L_3725;
 L_3725:
@@ -6150,7 +6159,7 @@ L_3725:
     if (r5 == 15) goto L_4040;
     goto L_3726;
 L_3726:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 17) goto L_4113;
     goto L_3727;
 L_3727:
@@ -6158,7 +6167,7 @@ L_3727:
     if (r7 == 0) goto L_4230;
     goto L_3728;
 L_3728:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_5565;
@@ -6170,7 +6179,7 @@ L_3732:
     if (r1 != r2) goto L_5565;
     goto L_3736;
 L_3736:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_5565;
@@ -6182,11 +6191,11 @@ L_3740:
     if (r1 != r2) goto L_5565;
     goto L_3744;
 L_3744:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 != 1) goto L_4232;
     goto L_3745;
 L_3745:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r9 = r4;
     r1 = r10;
     r1 = r1 + (uint64_t)-32;
@@ -6198,7 +6207,7 @@ L_3749:
     if (r1 != 0) goto L_4863;
     goto L_3751;
 L_3751:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r6 = sbpf_ld8(r10, -16);
     r2 = sbpf_ld8(r10, -24);
     r4 = r9;
@@ -6215,17 +6224,17 @@ L_3761:
     if (r6 == r2) goto L_4261;
     goto L_3764;
 L_3764:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_3765;
 L_3765:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_3768;
 L_3768:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -2088, r1);
@@ -6234,7 +6243,7 @@ L_3768:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_3774;
 L_3774:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r0;
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -6244,11 +6253,11 @@ L_3777:
     if ((int64_t)r7 < 0) goto L_3779;
     goto L_3778;
 L_3778:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -2088, r0);
     goto L_3779;
 L_3779:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -6259,15 +6268,15 @@ L_3783:
     if ((int64_t)r0 > 0) goto L_3786;
     goto L_3785;
 L_3785:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = sbpf_ld8(r10, -2088);
     goto L_3786;
 L_3786:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = r9;
     goto L_4846;
 L_3788:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 0;
     r1 = 6;
     goto L_3790;
@@ -6276,29 +6285,29 @@ L_3790:
     sbpf_st8(r10, -2128, r1);
     goto L_3791;
 L_3791:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r9 = sbpf_ld8(r10, -2128);
     goto L_3792;
 L_3792:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r9;
     SBPF_CALL((sbpf_sel = 7358u, f_225)(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3;);
     goto L_3795;
 L_3795:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r6;
     r2 = r9;
     goto L_3797;
 L_3797:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     SBPF_CALL(f_117(0, r1, r2, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1;);
     goto L_3798;
 L_3798:
     if ((budget -= 1) < 0) goto L_limit;
     SBPF_RETURN();
 L_3799:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 7) goto L_3910;
     goto L_3800;
 L_3800:
@@ -6306,7 +6315,7 @@ L_3800:
     if (r5 == 8) goto L_4057;
     goto L_3801;
 L_3801:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 9) goto L_4113;
     goto L_3802;
 L_3802:
@@ -6314,7 +6323,7 @@ L_3802:
     if (r7 < 3) goto L_4230;
     goto L_3803;
 L_3803:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld8(r10, -2064);
     if (r4 == r3) goto L_4745;
     goto L_3805;
@@ -6325,7 +6334,7 @@ L_3805:
     if (r1 != 165) goto L_5162;
     goto L_3808;
 L_3808:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 196);
     if (r1 > 2) goto L_5162;
     goto L_3810;
@@ -6334,7 +6343,7 @@ L_3810:
     if (r1 == 0) goto L_5286;
     goto L_3811;
 L_3811:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 197);
     if (r1 == 1) goto L_3815;
     goto L_3813;
@@ -6344,7 +6353,7 @@ L_3813:
     if (r1 != 0) goto L_5276;
     goto L_3815;
 L_3815:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 217);
     if (r1 == 1) goto L_4266;
     goto L_3817;
@@ -6354,7 +6363,7 @@ L_3817:
     r1 = r1 + 120;
     goto L_4268;
 L_3820:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 18) goto L_3984;
     goto L_3821;
 L_3821:
@@ -6362,7 +6371,7 @@ L_3821:
     if (r5 == 20) goto L_4107;
     goto L_3822;
 L_3822:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 22) goto L_4113;
     goto L_3823;
 L_3823:
@@ -6371,7 +6380,7 @@ L_3823:
     if (r7 == 0) goto L_4988;
     goto L_3825;
 L_3825:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r4, 80);
     if (r1 != 165) goto L_5162;
     goto L_3827;
@@ -6381,7 +6390,7 @@ L_3827:
     if (r1 > 2) goto L_5156;
     goto L_3829;
 L_3829:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = 6;
     r0 = 0;
     if (r1 == 0) goto L_3798;
@@ -6395,12 +6404,12 @@ L_3834:
     if (r3 == 1) goto L_362;
     goto L_3835;
 L_3835:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld1(r1, 0);
     if (r3 != 255) goto L_5764;
     goto L_3837;
 L_3837:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r2, 8, r1);
     goto L_358;
 L_3839:
@@ -6408,7 +6417,7 @@ L_3839:
     r0 = 0;
     goto L_3798;
 L_3841:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld1(r1, 0);
     if (r3 != 255) goto L_5686;
     goto L_3843;
@@ -6423,7 +6432,7 @@ L_3843:
     if (r3 != 255) goto L_5695;
     goto L_3850;
 L_3850:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r2, 16, r1);
     goto L_358;
 L_3852:
@@ -6432,7 +6441,7 @@ L_3852:
     if (r3 != 255) goto L_5729;
     goto L_3854;
 L_3854:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     sbpf_st8(r2, 8, r1);
     r3 = sbpf_ld8(r1, 80);
     r1 = r1 + r3;
@@ -6452,7 +6461,7 @@ L_3861:
     if (r3 != 255) goto L_5747;
     goto L_3868;
 L_3868:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     sbpf_st8(r2, 24, r1);
     r3 = sbpf_ld8(r1, 80);
     r1 = r1 + r3;
@@ -6462,7 +6471,7 @@ L_3868:
     if (r3 != 255) goto L_5756;
     goto L_3875;
 L_3875:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r2, 32, r1);
     goto L_358;
 L_3877:
@@ -6470,7 +6479,7 @@ L_3877:
     if (r9 < 34) goto L_4227;
     goto L_3878;
 L_3878:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld1(r0, 9);
     r1 = sbpf_ld1(r0, 42);
     if (r1 != 0) goto L_4161;
@@ -6484,7 +6493,7 @@ L_3883:
     if (r9 < 9) goto L_5681;
     goto L_3884;
 L_3884:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 < 4) goto L_4157;
     goto L_3885;
 L_3885:
@@ -6494,7 +6503,7 @@ L_3885:
     if (r1 != 165) goto L_4354;
     goto L_3888;
 L_3888:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r4, 196);
     if (r2 > 2) goto L_4354;
     goto L_3890;
@@ -6504,7 +6513,7 @@ L_3890:
     if (r2 == 0) goto L_5801;
     goto L_3892;
 L_3892:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld1(r0, 17);
     r9 = sbpf_ld8(r0, 9);
     r3 = sbpf_ld8(r10, -2056);
@@ -6517,7 +6526,7 @@ L_3897:
     if (r5 != 165) goto L_4354;
     goto L_3899;
 L_3899:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = sbpf_ld1(r3, 196);
     if (r5 > 2) goto L_4354;
     goto L_3901;
@@ -6526,7 +6535,7 @@ L_3901:
     if (r5 == 0) goto L_5801;
     goto L_3902;
 L_3902:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 0;
     if (r2 == 2) goto L_5085;
     goto L_3904;
@@ -6535,7 +6544,7 @@ L_3904:
     if (r5 == 2) goto L_5085;
     goto L_3905;
 L_3905:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r10, -2080);
     r5 = sbpf_ld8(r4, 152);
     if (r5 >= r9) goto L_5237;
@@ -6549,7 +6558,7 @@ L_3910:
     if (r9 < 8) goto L_4227;
     goto L_3911;
 L_3911:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 < 3) goto L_4230;
     goto L_3912;
 L_3912:
@@ -6561,7 +6570,7 @@ L_3912:
     if (r1 != 165) goto L_3792;
     goto L_3917;
 L_3917:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r3, 196);
     if (r1 > 2) goto L_3792;
     goto L_3919;
@@ -6570,7 +6579,7 @@ L_3919:
     if (r1 == 2) goto L_4263;
     goto L_3920;
 L_3920:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 0) goto L_5286;
     goto L_3921;
 L_3921:
@@ -6580,7 +6589,7 @@ L_3921:
     if (r1 == 1) goto L_5782;
     goto L_3924;
 L_3924:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r9 = 3;
     r1 = sbpf_ld8(r3, 88);
     r2 = sbpf_ld8(r4, 8);
@@ -6593,7 +6602,7 @@ L_3928:
     if (r2 != r1) goto L_3792;
     goto L_3931;
 L_3931:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = r7;
     r1 = sbpf_ld8(r3, 104);
     r2 = sbpf_ld8(r4, 24);
@@ -6607,7 +6616,7 @@ L_3935:
     if (r2 != r1) goto L_3792;
     goto L_3939;
 L_3939:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r9 = 0;
     r4 = r7;
     r1 = sbpf_ld8(r4, 80);
@@ -6619,7 +6628,7 @@ L_3943:
     if (r1 != 1) goto L_5161;
     goto L_3945;
 L_3945:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 88);
     if (r1 != 1) goto L_5281;
     goto L_3947;
@@ -6632,7 +6641,7 @@ L_3947:
     if (r2 != r1) goto L_3792;
     goto L_3952;
 L_3952:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 16);
     r2 = sbpf_ld8(r4, 100);
     if (r2 != r1) goto L_3792;
@@ -6644,7 +6653,7 @@ L_3955:
     if (r2 != r1) goto L_3792;
     goto L_3958;
 L_3958:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 32);
     r2 = sbpf_ld8(r4, 116);
     if (r2 != r1) goto L_3792;
@@ -6656,7 +6665,7 @@ L_3961:
     if (r1 != 355) goto L_5099;
     goto L_3964;
 L_3964:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 40);
     r2 = 0xde8f75eee1f6dd06ull;
     if (r1 == r2) goto L_5087;
@@ -6667,7 +6676,7 @@ L_3968:
     if (r1 != r2) goto L_5099;
     goto L_3971;
 L_3971:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_5099;
@@ -6679,7 +6688,7 @@ L_3975:
     if (r1 != r2) goto L_5099;
     goto L_3979;
 L_3979:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_5099;
@@ -6692,11 +6701,11 @@ L_3984:
     if (r9 <= 31) goto L_4227;
     goto L_3985;
 L_3985:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 < 2) goto L_4230;
     goto L_3986;
 L_3986:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r4, 80);
     r1 = r10;
     r1 = r1 + (uint64_t)-32;
@@ -6708,7 +6717,7 @@ L_3990:
     if (r1 == 1) goto L_4863;
     goto L_3992;
 L_3992:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r6 + 128;
     r1 = sbpf_ld8(r10, -24);
     r1 = r1 * r6;
@@ -6722,11 +6731,11 @@ L_3999:
     if (r6 != r2) goto L_4543;
     goto L_4002;
 L_4002:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 << (1 & 63);
     goto L_4564;
 L_4004:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 < 3) goto L_4230;
     goto L_4005;
 L_4005:
@@ -6735,7 +6744,7 @@ L_4005:
     if (r7 == 3) goto L_4988;
     goto L_4007;
 L_4007:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -2048);
     r1 = sbpf_ld8(r2, 8);
     r3 = 0x515c2c1917d5a706ull;
@@ -6748,7 +6757,7 @@ L_4012:
     if (r1 != r3) goto L_5611;
     goto L_4016;
 L_4016:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 24);
     r3 = 0x44fda19b08eeda58ull;
     if (r1 != r3) goto L_5611;
@@ -6760,7 +6769,7 @@ L_4020:
     if (r1 != r3) goto L_5611;
     goto L_4024;
 L_4024:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r9 = sbpf_ld8(r4, 80);
     r8 = sbpf_ld8(r10, -2056);
     r3 = r9;
@@ -6778,11 +6787,11 @@ L_4035:
     if (r6 != r2) goto L_4363;
     goto L_4038;
 L_4038:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 << (1 & 63);
     goto L_4385;
 L_4040:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r9 < 9) goto L_5681;
     goto L_4041;
 L_4041:
@@ -6790,7 +6799,7 @@ L_4041:
     if (r7 < 3) goto L_4159;
     goto L_4042;
 L_4042:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r8 = 3;
     r9 = 0;
     r1 = sbpf_ld8(r4, 80);
@@ -6802,7 +6811,7 @@ L_4046:
     if (r1 > 2) goto L_4356;
     goto L_4048;
 L_4048:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 0) goto L_4055;
     goto L_4049;
 L_4049:
@@ -6812,7 +6821,7 @@ L_4049:
     if (r2 != 82) goto L_4356;
     goto L_4052;
 L_4052:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r3, 133);
     if (r2 == 1) goto L_5035;
     goto L_4054;
@@ -6821,11 +6830,11 @@ L_4054:
     if (r2 != 0) goto L_4356;
     goto L_4055;
 L_4055:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 9;
     goto L_4356;
 L_4057:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r9 < 8) goto L_4227;
     goto L_4058;
 L_4058:
@@ -6833,7 +6842,7 @@ L_4058:
     if (r7 < 3) goto L_4230;
     goto L_4059;
 L_4059:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = 3;
     r9 = 0;
     r1 = sbpf_ld8(r4, 80);
@@ -6845,7 +6854,7 @@ L_4063:
     if (r1 > 2) goto L_3792;
     goto L_4065;
 L_4065:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 0) goto L_5286;
     goto L_4066;
 L_4066:
@@ -6855,7 +6864,7 @@ L_4066:
     if (r2 != 82) goto L_3792;
     goto L_4069;
 L_4069:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r3, 133);
     if (r2 != 1) goto L_4993;
     goto L_4071;
@@ -6866,7 +6875,7 @@ L_4071:
     if (r1 == 2) goto L_3792;
     goto L_4074;
 L_4074:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld1(r4, 197);
     r0 = r4;
     if (r1 == 1) goto L_5782;
@@ -6879,7 +6888,7 @@ L_4077:
     if (r4 < r5) goto L_3792;
     goto L_4081;
 L_4081:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 88);
     r2 = sbpf_ld8(r3, 8);
     if (r2 != r1) goto L_5772;
@@ -6891,7 +6900,7 @@ L_4084:
     if (r2 != r1) goto L_5772;
     goto L_4087;
 L_4087:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 104);
     r2 = sbpf_ld8(r3, 24);
     if (r2 != r1) goto L_5772;
@@ -6904,7 +6913,7 @@ L_4090:
     if (r2 != r1) goto L_5772;
     goto L_4094;
 L_4094:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r4 = r0;
     r1 = sbpf_ld8(r0, 120);
     r2 = 0x6011348d72903300ull;
@@ -6915,7 +6924,7 @@ L_4099:
     if (r1 != 0) goto L_4908;
     goto L_4100;
 L_4100:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r4, 128);
     if (r2 != 0) goto L_4908;
     goto L_4102;
@@ -6925,7 +6934,7 @@ L_4102:
     if (r2 != 0) goto L_4908;
     goto L_4104;
 L_4104:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r4, 144);
     if (r2 != 0) goto L_4908;
     goto L_4106;
@@ -6933,7 +6942,7 @@ L_4106:
     budget -= 1;
     goto L_5147;
 L_4107:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r9 < 34) goto L_4227;
     goto L_4108;
 L_4108:
@@ -6943,11 +6952,11 @@ L_4108:
     if (r1 != 0) goto L_4199;
     goto L_4111;
 L_4111:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 0;
     goto L_4203;
 L_4113:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = r10;
     r1 = r1 + (uint64_t)-2072;
     r2 = r7;
@@ -6961,13 +6970,13 @@ L_4119:
     r9 = r1;
     goto L_4356;
 L_4122:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = 4;
     r2 = sbpf_ld8(r4, 120);
     if (r2 != r1) goto L_3832;
     goto L_4125;
 L_4125:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 16);
     r2 = sbpf_ld8(r4, 128);
     if (r2 != r1) goto L_3832;
@@ -6980,7 +6989,7 @@ L_4128:
     if (r2 != r1) goto L_3792;
     goto L_4132;
 L_4132:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 32);
     r2 = sbpf_ld8(r4, 144);
     if (r2 != r1) goto L_3792;
@@ -6991,7 +7000,7 @@ L_4135:
     if (r1 != 355) goto L_5007;
     goto L_4137;
 L_4137:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 40);
     r2 = 0xde8f75eee1f6dd06ull;
     if (r1 == r2) goto L_4995;
@@ -7002,7 +7011,7 @@ L_4141:
     if (r1 != r2) goto L_5007;
     goto L_4144;
 L_4144:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_5007;
@@ -7014,7 +7023,7 @@ L_4148:
     if (r1 != r2) goto L_5007;
     goto L_4152;
 L_4152:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_5007;
@@ -7027,7 +7036,7 @@ L_4157:
     r8 = 10;
     goto L_4355;
 L_4159:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 10;
     goto L_4356;
 L_4161:
@@ -7035,7 +7044,7 @@ L_4161:
     if (r1 != 1) goto L_4227;
     goto L_4162;
 L_4162:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r9 < 66) goto L_4227;
     goto L_4163;
 L_4163:
@@ -7044,7 +7053,7 @@ L_4163:
     r9 = r9 + 43;
     goto L_4165;
 L_4165:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 <= 1) goto L_4230;
     goto L_4166;
 L_4166:
@@ -7055,7 +7064,7 @@ L_4166:
     if (r1 != r3) goto L_5613;
     goto L_4171;
 L_4171:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 16);
     r3 = 0x7ff14a3d4cc98c21ull;
     if (r1 != r3) goto L_5613;
@@ -7067,7 +7076,7 @@ L_4175:
     if (r1 != r3) goto L_5613;
     goto L_4179;
 L_4179:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     sbpf_st8(r10, -2088, r5);
     r1 = sbpf_ld8(r2, 32);
     r3 = 0x000000008ad9dbe3ull;
@@ -7086,7 +7095,7 @@ L_4184:
     if (r6 == r2) goto L_4510;
     goto L_4194;
 L_4194:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x4000000000000000ull;
     if (r6 != r2) goto L_4482;
     goto L_4197;
@@ -7095,7 +7104,7 @@ L_4197:
     r1 = r1 << (1 & 63);
     goto L_4510;
 L_4199:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 1) goto L_4227;
     goto L_4200;
 L_4200:
@@ -7103,7 +7112,7 @@ L_4200:
     if (r9 < 66) goto L_4227;
     goto L_4201;
 L_4201:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = r0;
     r9 = r9 + 43;
     goto L_4203;
@@ -7112,7 +7121,7 @@ L_4203:
     if (r7 == 0) goto L_4230;
     goto L_4204;
 L_4204:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st8(r10, -2096, r0);
     r6 = sbpf_ld8(r4, 80);
     r1 = r10;
@@ -7125,7 +7134,7 @@ L_4209:
     if (r1 == 1) goto L_4863;
     goto L_4211;
 L_4211:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     sbpf_st8(r10, -2080, r8);
     r6 = r6 + 128;
     r1 = sbpf_ld8(r10, -24);
@@ -7142,7 +7151,7 @@ L_4221:
     if (r6 != r2) goto L_4661;
     goto L_4224;
 L_4224:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = r1 << (1 & 63);
     goto L_4225;
 L_4225:
@@ -7150,12 +7159,12 @@ L_4225:
     r4 = sbpf_ld8(r10, -2096);
     goto L_4686;
 L_4227:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 0;
     r9 = 12;
     goto L_3792;
 L_4230:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 10;
     goto L_3792;
 L_4232:
@@ -7166,7 +7175,7 @@ L_4232:
     if (r1 != r3) goto L_5684;
     goto L_4237;
 L_4237:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 16);
     r3 = 0x7ff14a3d4cc98c21ull;
     if (r1 != r3) goto L_5684;
@@ -7178,7 +7187,7 @@ L_4241:
     if (r1 != r3) goto L_5684;
     goto L_4245;
 L_4245:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 32);
     r3 = 0x000000008ad9dbe3ull;
     if (r1 != r3) goto L_5684;
@@ -7195,16 +7204,16 @@ L_4249:
     if (r6 == r2) goto L_4846;
     goto L_4258;
 L_4258:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x4000000000000000ull;
     if (r6 != r2) goto L_4823;
     goto L_4261;
 L_4261:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 << (1 & 63);
     goto L_4846;
 L_4263:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 0;
     r9 = 17;
     goto L_3792;
@@ -7214,7 +7223,7 @@ L_4266:
     r1 = r1 + 221;
     goto L_4268;
 L_4268:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = r4;
     r2 = sbpf_ld8(r4, 120);
     r4 = 0x6011348d72903300ull;
@@ -7225,7 +7234,7 @@ L_4273:
     if (r2 != 0) goto L_4747;
     goto L_4274;
 L_4274:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r0, 128);
     if (r2 != 0) goto L_4747;
     goto L_4276;
@@ -7235,7 +7244,7 @@ L_4276:
     if (r2 != 0) goto L_4747;
     goto L_4278;
 L_4278:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r0, 144);
     if (r2 != 0) goto L_4747;
     goto L_4280;
@@ -7243,7 +7252,7 @@ L_4280:
     budget -= 1;
     goto L_4729;
 L_4281:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r4 = sbpf_ld8(r1, 21096);
     r3 = r4;
     r3 = r3 + 7;
@@ -7259,7 +7268,7 @@ L_4289:
     if (r3 != 3) goto L_344;
     goto L_4291;
 L_4291:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = 3;
     r7 = 0;
     r3 = sbpf_ld1(r1, 204);
@@ -7270,7 +7279,7 @@ L_4295:
     if (r3 == 0) goto L_5471;
     goto L_4296;
 L_4296:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = sbpf_ld1(r1, 10708);
     if (r5 > 2) goto L_5078;
     goto L_4298;
@@ -7279,7 +7288,7 @@ L_4298:
     if (r5 == 0) goto L_5471;
     goto L_4299;
 L_4299:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 0;
     r7 = 17;
     if (r3 == 2) goto L_5078;
@@ -7289,7 +7298,7 @@ L_4302:
     if (r5 == 2) goto L_5078;
     goto L_4303;
 L_4303:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r2, 31361);
     r7 = 1;
     r3 = sbpf_ld8(r1, 160);
@@ -7302,7 +7311,7 @@ L_4307:
     if (r0 != r5) goto L_5077;
     goto L_4310;
 L_4310:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r1, 10608);
     r0 = sbpf_ld8(r1, 104);
     if (r0 != r5) goto L_5077;
@@ -7314,7 +7323,7 @@ L_4313:
     if (r0 != r5) goto L_5077;
     goto L_4316;
 L_4316:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r1, 10624);
     r0 = sbpf_ld8(r1, 120);
     if (r0 != r5) goto L_5077;
@@ -7326,7 +7335,7 @@ L_4319:
     if (r0 != 1) goto L_4784;
     goto L_4322;
 L_4322:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld8(r1, 172);
     if (r0 != r5) goto L_4784;
     goto L_4324;
@@ -7337,7 +7346,7 @@ L_4324:
     if (r8 != r0) goto L_4784;
     goto L_4327;
 L_4327:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r1, 21040);
     r8 = sbpf_ld8(r1, 188);
     if (r8 != r0) goto L_4784;
@@ -7349,7 +7358,7 @@ L_4330:
     if (r8 != r0) goto L_4784;
     goto L_4333;
 L_4333:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 != 355) goto L_5628;
     goto L_4334;
 L_4334:
@@ -7359,7 +7368,7 @@ L_4334:
     if (r4 == r5) goto L_5616;
     goto L_4338;
 L_4338:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = 0x93a165d7e1f6dd06ull;
     if (r4 != r5) goto L_5628;
     goto L_4341;
@@ -7370,7 +7379,7 @@ L_4341:
     if (r4 != r5) goto L_5628;
     goto L_4345;
 L_4345:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r1, 21072);
     r5 = 0x91375b5fed85b41cull;
     if (r4 != r5) goto L_5628;
@@ -7382,18 +7391,18 @@ L_4349:
     if (r4 != r5) goto L_5628;
     goto L_4353;
 L_4353:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6698;
 L_4354:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = 0;
     goto L_4355;
 L_4355:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r9 = r6;
     goto L_4356;
 L_4356:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = 0;
     r1 = r8;
     r1 = r1 << (32 & 63);
@@ -7405,17 +7414,17 @@ L_4361:
     r6 = r8;
     goto L_3792;
 L_4363:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_4364;
 L_4364:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_4367;
 L_4367:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -2088, r1);
@@ -7424,7 +7433,7 @@ L_4367:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_4373;
 L_4373:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r0;
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -7434,11 +7443,11 @@ L_4376:
     if ((int64_t)r7 < 0) goto L_4378;
     goto L_4377;
 L_4377:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -2088, r0);
     goto L_4378;
 L_4378:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -7449,11 +7458,11 @@ L_4382:
     if ((int64_t)r0 > 0) goto L_4385;
     goto L_4384;
 L_4384:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = sbpf_ld8(r10, -2088);
     goto L_4385;
 L_4385:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -2064);
     r3 = sbpf_ld8(r2, 8);
     r4 = 0x8481abfe57889b06ull;
@@ -7466,7 +7475,7 @@ L_4390:
     if (r3 != r4) goto L_4403;
     goto L_4394;
 L_4394:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r2, 24);
     r4 = 0x553beb1adc39c4daull;
     if (r3 != r4) goto L_4403;
@@ -7479,11 +7488,11 @@ L_4398:
     if (r3 == r4) goto L_4404;
     goto L_4403;
 L_4403:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r0 = 0;
     goto L_4404;
 L_4404:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 3;
     if (r9 != 165) goto L_6556;
     goto L_4406;
@@ -7494,7 +7503,7 @@ L_4406:
     if (r3 > 2) goto L_5856;
     goto L_4409;
 L_4409:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 != 0) goto L_4820;
     goto L_4410;
 L_4410:
@@ -7504,7 +7513,7 @@ L_4410:
     if (r5 < r1) goto L_6556;
     goto L_4413;
 L_4413:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r8 = r8 + 8;
     r4 = r2;
     r4 = r4 + 8;
@@ -7544,7 +7553,7 @@ L_4442:
     if (r1 != r5) goto L_5673;
     goto L_4446;
 L_4446:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 48);
     r5 = 0xac79ebce46e1cbd9ull;
     if (r1 != r5) goto L_5673;
@@ -7556,7 +7565,7 @@ L_4450:
     if (r1 != r5) goto L_5673;
     goto L_4454;
 L_4454:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 64);
     r5 = 0xa900ff7e85f58c3aull;
     if (r1 != r5) goto L_5673;
@@ -7568,7 +7577,7 @@ L_4458:
     if (r1 != 82) goto L_3792;
     goto L_4461;
 L_4461:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r2, 133);
     if (r1 != 1) goto L_3792;
     goto L_4463;
@@ -7594,20 +7603,20 @@ L_4463:
     r0 = 0;
     goto L_3798;
 L_4482:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     sbpf_st8(r10, -2104, r3);
     sbpf_st8(r10, -2080, r4);
     sbpf_st8(r10, -2096, r0);
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_4486;
 L_4486:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_4489;
 L_4489:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -2112, r1);
@@ -7616,7 +7625,7 @@ L_4489:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_4495;
 L_4495:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r0;
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -7626,11 +7635,11 @@ L_4498:
     if ((int64_t)r7 < 0) goto L_4500;
     goto L_4499;
 L_4499:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -2112, r0);
     goto L_4500;
 L_4500:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -7641,17 +7650,17 @@ L_4504:
     if ((int64_t)r0 > 0) goto L_4507;
     goto L_4506;
 L_4506:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = sbpf_ld8(r10, -2112);
     goto L_4507;
 L_4507:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r10, -2096);
     r4 = sbpf_ld8(r10, -2080);
     r3 = sbpf_ld8(r10, -2104);
     goto L_4510;
 L_4510:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 3;
     if (r8 != 82) goto L_6556;
     goto L_4512;
@@ -7661,7 +7670,7 @@ L_4512:
     if (r2 != 0) goto L_4819;
     goto L_4514;
 L_4514:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 < r1) goto L_5032;
     goto L_4515;
 L_4515:
@@ -7685,7 +7694,7 @@ L_4515:
     if (r9 == 0) goto L_3798;
     goto L_4532;
 L_4532:
-    if ((budget -= 11) < 0) goto L_limit;
+    budget -= 11;
     sbpf_st1(r4, 134, 1);
     r1 = sbpf_ld8(r9, 0);
     r2 = sbpf_ld8(r9, 8);
@@ -7698,17 +7707,17 @@ L_4532:
     sbpf_st8(r5, 138, r1);
     goto L_3798;
 L_4543:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_4544;
 L_4544:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_4547;
 L_4547:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r0;
     r9 = 0;
     r1 = r6;
@@ -7716,7 +7725,7 @@ L_4547:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_4552;
 L_4552:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r0;
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -7726,11 +7735,11 @@ L_4555:
     if ((int64_t)r7 < 0) goto L_4557;
     goto L_4556;
 L_4556:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r9 = r0;
     goto L_4557;
 L_4557:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -7741,11 +7750,11 @@ L_4561:
     if ((int64_t)r0 > 0) goto L_4564;
     goto L_4563;
 L_4563:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = r9;
     goto L_4564;
 L_4564:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = sbpf_ld8(r10, -2064);
     r2 = sbpf_ld8(r3, 8);
     r4 = 0x8481abfe57889b06ull;
@@ -7758,7 +7767,7 @@ L_4569:
     if (r2 != r4) goto L_4582;
     goto L_4573;
 L_4573:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r3, 24);
     r4 = 0x553beb1adc39c4daull;
     if (r2 != r4) goto L_4582;
@@ -7771,11 +7780,11 @@ L_4577:
     if (r2 == r4) goto L_4583;
     goto L_4582;
 L_4582:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = 0;
     goto L_4583;
 L_4583:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = 3;
     r2 = sbpf_ld8(r10, -2072);
     r4 = sbpf_ld8(r2, 80);
@@ -7787,7 +7796,7 @@ L_4587:
     if (r4 > 2) goto L_5856;
     goto L_4589;
 L_4589:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 0;
     if (r4 != 0) goto L_5164;
     goto L_4591;
@@ -7797,7 +7806,7 @@ L_4591:
     if (r0 < r1) goto L_6556;
     goto L_4593;
 L_4593:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r5 = r3;
     r5 = r5 + 8;
     r4 = r2;
@@ -7836,7 +7845,7 @@ L_4621:
     if (r1 != r0) goto L_5673;
     goto L_4625;
 L_4625:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 48);
     r0 = 0xac79ebce46e1cbd9ull;
     if (r1 != r0) goto L_5673;
@@ -7848,7 +7857,7 @@ L_4629:
     if (r1 != r0) goto L_5673;
     goto L_4633;
 L_4633:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 64);
     r0 = 0xa900ff7e85f58c3aull;
     if (r1 != r0) goto L_5673;
@@ -7860,7 +7869,7 @@ L_4637:
     if (r1 != 82) goto L_3792;
     goto L_4640;
 L_4640:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r3, 133);
     if (r1 != 1) goto L_3792;
     goto L_4642;
@@ -7886,18 +7895,18 @@ L_4642:
     r0 = 0;
     goto L_3798;
 L_4661:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r10, -2088, r3);
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_4663;
 L_4663:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_4666;
 L_4666:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -2104, r1);
@@ -7906,7 +7915,7 @@ L_4666:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_4672;
 L_4672:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r0;
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -7916,11 +7925,11 @@ L_4675:
     if ((int64_t)r7 < 0) goto L_4677;
     goto L_4676;
 L_4676:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -2104, r0);
     goto L_4677;
 L_4677:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -7931,16 +7940,16 @@ L_4681:
     if ((int64_t)r0 > 0) goto L_4684;
     goto L_4683;
 L_4683:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = sbpf_ld8(r10, -2104);
     goto L_4684;
 L_4684:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld8(r10, -2096);
     r3 = sbpf_ld8(r10, -2088);
     goto L_4686;
 L_4686:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 3;
     r2 = sbpf_ld8(r8, 80);
     if (r2 != 82) goto L_6556;
@@ -7951,7 +7960,7 @@ L_4689:
     if (r2 != 0) goto L_4819;
     goto L_4691;
 L_4691:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 < r1) goto L_5032;
     goto L_4692;
 L_4692:
@@ -7973,7 +7982,7 @@ L_4692:
     if (r9 == 0) goto L_3798;
     goto L_4707;
 L_4707:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     sbpf_st1(r8, 134, 1);
     r1 = sbpf_ld8(r9, 0);
     r2 = sbpf_ld8(r9, 8);
@@ -7991,7 +8000,7 @@ L_4717:
     if (r2 != r4) goto L_4747;
     goto L_4721;
 L_4721:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r0, 136);
     r4 = 0xa69cf7cccd2e4dd4ull;
     if (r2 != r4) goto L_4747;
@@ -8003,7 +8012,7 @@ L_4725:
     if (r2 != r4) goto L_4747;
     goto L_4729;
 L_4729:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 8);
     r2 = 0x6011348d72903300ull;
     if (r1 != r2) goto L_4745;
@@ -8015,7 +8024,7 @@ L_4733:
     if (r4 != r2) goto L_4745;
     goto L_4737;
 L_4737:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r3, 24);
     r2 = 0xa69cf7cccd2e4dd4ull;
     if (r4 != r2) goto L_4745;
@@ -8027,11 +8036,11 @@ L_4741:
     if (r4 == r2) goto L_4882;
     goto L_4745;
 L_4745:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 3;
     goto L_3792;
 L_4747:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r9 = 4;
     r4 = sbpf_ld8(r10, -2056);
     r2 = sbpf_ld8(r4, 8);
@@ -8039,7 +8048,7 @@ L_4747:
     if (r5 != r2) goto L_3832;
     goto L_4752;
 L_4752:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r4, 16);
     r5 = sbpf_ld8(r1, 8);
     if (r5 != r2) goto L_3832;
@@ -8052,7 +8061,7 @@ L_4755:
     if (r5 != r2) goto L_3792;
     goto L_4759;
 L_4759:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r4, 32);
     r1 = sbpf_ld8(r1, 24);
     if (r1 != r2) goto L_3792;
@@ -8063,7 +8072,7 @@ L_4762:
     if (r1 != 355) goto L_4880;
     goto L_4764;
 L_4764:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r2 = 0xde8f75eee1f6dd06ull;
     if (r1 == r2) goto L_4868;
@@ -8074,7 +8083,7 @@ L_4768:
     if (r1 != r2) goto L_4880;
     goto L_4771;
 L_4771:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_4880;
@@ -8086,7 +8095,7 @@ L_4775:
     if (r1 != r2) goto L_4880;
     goto L_4779;
 L_4779:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_4880;
@@ -8095,7 +8104,7 @@ L_4783:
     budget -= 1;
     goto L_5784;
 L_4784:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = 4;
     r0 = sbpf_ld8(r1, 128);
     if (r0 != r5) goto L_5078;
@@ -8107,7 +8116,7 @@ L_4787:
     if (r0 != r5) goto L_5078;
     goto L_4790;
 L_4790:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r1, 21040);
     r0 = sbpf_ld8(r1, 144);
     if (r0 != r5) goto L_5078;
@@ -8119,7 +8128,7 @@ L_4793:
     if (r0 != r5) goto L_5078;
     goto L_4796;
 L_4796:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 != 355) goto L_5180;
     goto L_4797;
 L_4797:
@@ -8129,7 +8138,7 @@ L_4797:
     if (r4 == r5) goto L_5168;
     goto L_4801;
 L_4801:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = 0x93a165d7e1f6dd06ull;
     if (r4 != r5) goto L_5180;
     goto L_4804;
@@ -8140,7 +8149,7 @@ L_4804:
     if (r4 != r5) goto L_5180;
     goto L_4808;
 L_4808:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r1, 21072);
     r5 = 0x91375b5fed85b41cull;
     if (r4 != r5) goto L_5180;
@@ -8152,14 +8161,14 @@ L_4812:
     if (r4 != r5) goto L_5180;
     goto L_4816;
 L_4816:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6155;
 L_4817:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 10;
     goto L_3791;
 L_4819:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 != 1) goto L_3792;
     goto L_4820;
 L_4820:
@@ -8168,18 +8177,18 @@ L_4820:
     r9 = 6;
     goto L_3792;
 L_4823:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r10, -2080, r4);
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_4825;
 L_4825:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_4828;
 L_4828:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r0;
     r9 = 0;
     r1 = r6;
@@ -8187,7 +8196,7 @@ L_4828:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_4833;
 L_4833:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r0;
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -8197,11 +8206,11 @@ L_4836:
     if ((int64_t)r7 < 0) goto L_4838;
     goto L_4837;
 L_4837:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r9 = r0;
     goto L_4838;
 L_4838:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -8212,15 +8221,15 @@ L_4842:
     if ((int64_t)r0 > 0) goto L_4845;
     goto L_4844;
 L_4844:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = r9;
     goto L_4845;
 L_4845:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r4 = sbpf_ld8(r10, -2080);
     goto L_4846;
 L_4846:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 3;
     r9 = 0;
     if (r8 != 165) goto L_3792;
@@ -8231,7 +8240,7 @@ L_4849:
     if (r2 > 2) goto L_3792;
     goto L_4851;
 L_4851:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 == 0) goto L_5286;
     goto L_4852;
 L_4852:
@@ -8240,7 +8249,7 @@ L_4852:
     if (r2 != 1) goto L_5158;
     goto L_4854;
 L_4854:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r4, 72);
     if (r2 < r1) goto L_5130;
     goto L_4856;
@@ -8252,16 +8261,16 @@ L_4856:
     r0 = 0;
     goto L_3798;
 L_4861:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 6;
     goto L_3791;
 L_4863:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = sbpf_ld4(r10, -24);
     r6 = sbpf_ld4(r10, -28);
     goto L_3792;
 L_4866:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 0;
     goto L_3791;
 L_4868:
@@ -8271,7 +8280,7 @@ L_4868:
     if (r1 != r2) goto L_4880;
     goto L_4872;
 L_4872:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r2 = 0x270db9834dfc1ab6ull;
     if (r1 != r2) goto L_4880;
@@ -8283,12 +8292,12 @@ L_4876:
     if (r1 == r2) goto L_5784;
     goto L_4880;
 L_4880:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r4, 1);
     if (r2 == 0) goto L_6805;
     goto L_4882;
 L_4882:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 19;
     r4 = sbpf_ld8(r0, 72);
     r2 = sbpf_ld8(r3, 72);
     r2 = r2 + r4;
@@ -8304,7 +8313,7 @@ L_4891:
     r0 = 0;
     goto L_3798;
 L_4893:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 0;
     r1 = 12;
     goto L_3790;
@@ -8315,7 +8324,7 @@ L_4896:
     if (r2 != r0) goto L_4908;
     goto L_4900;
 L_4900:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r4, 136);
     r0 = 0xa69cf7cccd2e4dd4ull;
     if (r2 != r0) goto L_4908;
@@ -8327,7 +8336,7 @@ L_4904:
     if (r2 == r0) goto L_5147;
     goto L_4908;
 L_4908:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     sbpf_st8(r10, -2088, r5);
     r2 = r10;
     r2 = r2 + (uint64_t)-2048;
@@ -8344,7 +8353,7 @@ L_4916:
     if (r2 != r8) goto L_4953;
     goto L_4919;
 L_4919:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r5, 172);
     r9 = sbpf_ld8(r0, 16);
     if (r9 != r8) goto L_4953;
@@ -8356,7 +8365,7 @@ L_4922:
     if (r9 != r8) goto L_4953;
     goto L_4925;
 L_4925:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r5, 188);
     r9 = sbpf_ld8(r0, 32);
     if (r9 != r8) goto L_4953;
@@ -8369,7 +8378,7 @@ L_4928:
     if (r1 != 355) goto L_5600;
     goto L_4932;
 L_4932:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 40);
     r2 = 0xde8f75eee1f6dd06ull;
     if (r1 == r2) goto L_5588;
@@ -8380,7 +8389,7 @@ L_4936:
     if (r1 != r2) goto L_5600;
     goto L_4939;
 L_4939:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_5600;
@@ -8392,7 +8401,7 @@ L_4943:
     if (r1 != r2) goto L_5600;
     goto L_4947;
 L_4947:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_5600;
@@ -8405,7 +8414,7 @@ L_4952:
     r2 = sbpf_ld8(r0, 8);
     goto L_4953;
 L_4953:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 4;
     if (r1 != r2) goto L_3792;
     goto L_4955;
@@ -8417,7 +8426,7 @@ L_4955:
     if (r2 != r1) goto L_3792;
     goto L_4959;
 L_4959:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 24);
     r2 = sbpf_ld8(r5, 136);
     if (r2 != r1) goto L_3792;
@@ -8429,7 +8438,7 @@ L_4962:
     if (r2 != r1) goto L_3792;
     goto L_4965;
 L_4965:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 80);
     r5 = sbpf_ld8(r10, -2088);
     if (r1 != 355) goto L_5145;
@@ -8441,7 +8450,7 @@ L_4968:
     if (r1 == r2) goto L_5133;
     goto L_4972;
 L_4972:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_5145;
     goto L_4975;
@@ -8452,7 +8461,7 @@ L_4975:
     if (r1 != r2) goto L_5145;
     goto L_4979;
 L_4979:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_5145;
@@ -8464,14 +8473,14 @@ L_4983:
     if (r1 != r2) goto L_5145;
     goto L_4987;
 L_4987:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_5940;
 L_4988:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 10;
     goto L_3792;
 L_4990:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = 0;
     r6 = 3;
     goto L_3792;
@@ -8480,7 +8489,7 @@ L_4993:
     if (r2 != 0) goto L_3792;
     goto L_4994;
 L_4994:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_5286;
 L_4995:
     budget -= 3;
@@ -8489,7 +8498,7 @@ L_4995:
     if (r1 != r2) goto L_5007;
     goto L_4999;
 L_4999:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r2 = 0x270db9834dfc1ab6ull;
     if (r1 != r2) goto L_5007;
@@ -8501,7 +8510,7 @@ L_5003:
     if (r1 == r2) goto L_5804;
     goto L_5007;
 L_5007:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_6805;
     goto L_5009;
@@ -8511,7 +8520,7 @@ L_5009:
     if (r8 == 0) goto L_5532;
     goto L_5011;
 L_5011:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == r3) goto L_5532;
     goto L_5012;
 L_5012:
@@ -8525,7 +8534,7 @@ L_5012:
     if (r1 != 165) goto L_3792;
     goto L_5019;
 L_5019:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = sbpf_ld8(r3, 152);
     r1 = r1 + r8;
     sbpf_st8(r3, 152, r1);
@@ -8554,7 +8563,7 @@ L_5035:
     if (r1 == 2) goto L_4356;
     goto L_5038;
 L_5038:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld1(r4, 197);
     r6 = r4;
     if (r1 == 1) goto L_6402;
@@ -8567,7 +8576,7 @@ L_5041:
     if (r5 < r4) goto L_4356;
     goto L_5045;
 L_5045:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 88);
     r2 = sbpf_ld8(r3, 8);
     if (r2 != r1) goto L_6398;
@@ -8579,7 +8588,7 @@ L_5048:
     if (r2 != r1) goto L_6398;
     goto L_5051;
 L_5051:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 104);
     r2 = sbpf_ld8(r3, 24);
     if (r2 != r1) goto L_6398;
@@ -8592,7 +8601,7 @@ L_5054:
     if (r2 != r1) goto L_6398;
     goto L_5058;
 L_5058:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld1(r0, 17);
     r2 = sbpf_ld1(r3, 132);
     if (r1 != r2) goto L_6450;
@@ -8605,7 +8614,7 @@ L_5061:
     if (r1 == r2) goto L_5331;
     goto L_5066;
 L_5066:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 0) goto L_5346;
     goto L_5067;
 L_5067:
@@ -8615,7 +8624,7 @@ L_5067:
     if (r2 != 0) goto L_5346;
     goto L_5070;
 L_5070:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r10, -2080);
     r2 = sbpf_ld8(r2, 136);
     if (r2 != 0) goto L_5346;
@@ -8627,14 +8636,14 @@ L_5073:
     if (r2 != 0) goto L_5346;
     goto L_5076;
 L_5076:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_5495;
 L_5077:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = 3;
     goto L_5078;
 L_5078:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r7;
     SBPF_CALL((sbpf_sel = 7358u, f_225)(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3;);
@@ -8645,10 +8654,10 @@ L_5081:
     r2 = r7;
     goto L_3797;
 L_5084:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_3791;
 L_5085:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 17;
     goto L_4355;
 L_5087:
@@ -8658,7 +8667,7 @@ L_5087:
     if (r1 != r2) goto L_5099;
     goto L_5091;
 L_5091:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 56);
     r2 = 0x270db9834dfc1ab6ull;
     if (r1 != r2) goto L_5099;
@@ -8670,7 +8679,7 @@ L_5095:
     if (r1 == r2) goto L_5923;
     goto L_5099;
 L_5099:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r5, 1);
     if (r1 == 0) goto L_6805;
     goto L_5101;
@@ -8679,7 +8688,7 @@ L_5101:
     if (r4 == 0) goto L_5116;
     goto L_5102;
 L_5102:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r5 = sbpf_ld8(r7, 124);
     r1 = r5;
     r1 = r1 + r4;
@@ -8691,7 +8700,7 @@ L_5107:
     r2 = 0;
     goto L_5108;
 L_5108:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = r2 & 1;
     if (r2 != 0) goto L_5130;
     goto L_5110;
@@ -8704,7 +8713,7 @@ L_5110:
     r0 = 0;
     goto L_3798;
 L_5116:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_5565;
@@ -8716,7 +8725,7 @@ L_5120:
     if (r1 != r2) goto L_5565;
     goto L_5124;
 L_5124:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_5565;
@@ -8731,7 +8740,7 @@ L_5130:
     r9 = 14;
     goto L_3792;
 L_5133:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r2 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r2) goto L_5145;
@@ -8743,18 +8752,18 @@ L_5137:
     if (r1 != r2) goto L_5145;
     goto L_5141;
 L_5141:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r2 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r2) goto L_5940;
     goto L_5145;
 L_5145:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_6805;
     goto L_5147;
 L_5147:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 0) goto L_5822;
     goto L_5148;
 L_5148:
@@ -8768,20 +8777,20 @@ L_5148:
     r0 = 0;
     goto L_3798;
 L_5156:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 3;
     goto L_3792;
 L_5158:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 0;
     r9 = 19;
     goto L_3792;
 L_5161:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 0) goto L_5286;
     goto L_5162;
 L_5162:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 3;
     goto L_3792;
 L_5164:
@@ -8789,11 +8798,11 @@ L_5164:
     r9 = 6;
     goto L_3792;
 L_5166:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 3;
     goto L_5568;
 L_5168:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r1, 21064);
     r5 = 0xdacd6ce4bc5d4218ull;
     if (r4 != r5) goto L_5180;
@@ -8805,13 +8814,13 @@ L_5172:
     if (r4 != r5) goto L_5180;
     goto L_5176;
 L_5176:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r1, 21080);
     r5 = 0xfc8ba1d828f9bdfeull;
     if (r4 == r5) goto L_6155;
     goto L_5180;
 L_5180:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld1(r1, 21017);
     if (r4 == 0) goto L_6159;
     goto L_5182;
@@ -8820,7 +8829,7 @@ L_5182:
     if (r2 == 0) goto L_5638;
     goto L_5183;
 L_5183:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r3 = r3 - r2;
     sbpf_st8(r1, 160, r3);
     r3 = sbpf_ld8(r1, 10664);
@@ -8840,22 +8849,22 @@ L_5191:
     sbpf_st8(r1, 10584, r3);
     goto L_3798;
 L_5198:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 0;
     goto L_3791;
 L_5200:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 != 1) goto L_3791;
     goto L_5201;
 L_5201:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_4820;
 L_5202:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_5568;
 L_5204:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = 4;
     r3 = sbpf_ld8(r1, 128);
     if (r3 != r5) goto L_5078;
@@ -8867,7 +8876,7 @@ L_5207:
     if (r5 != r3) goto L_5078;
     goto L_5210;
 L_5210:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r1, 31464);
     r5 = sbpf_ld8(r1, 144);
     if (r5 != r3) goto L_5078;
@@ -8879,7 +8888,7 @@ L_5213:
     if (r5 != r3) goto L_5078;
     goto L_5216;
 L_5216:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 != 355) goto L_5443;
     goto L_5217;
 L_5217:
@@ -8889,7 +8898,7 @@ L_5217:
     if (r4 == r3) goto L_5431;
     goto L_5221;
 L_5221:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = 0x93a165d7e1f6dd06ull;
     if (r4 != r3) goto L_5443;
     goto L_5224;
@@ -8900,7 +8909,7 @@ L_5224:
     if (r3 != r4) goto L_5443;
     goto L_5228;
 L_5228:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r1, 31496);
     r4 = 0x91375b5fed85b41cull;
     if (r3 != r4) goto L_5443;
@@ -8912,7 +8921,7 @@ L_5232:
     if (r3 != r4) goto L_5443;
     goto L_5236;
 L_5236:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6445;
 L_5237:
     budget -= 4;
@@ -8922,7 +8931,7 @@ L_5237:
     if (r2 != r0) goto L_4355;
     goto L_5241;
 L_5241:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st8(r10, -2088, r9);
     r9 = r7;
     r0 = sbpf_ld8(r3, 96);
@@ -8936,7 +8945,7 @@ L_5246:
     if (r7 != r0) goto L_4355;
     goto L_5249;
 L_5249:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r3, 112);
     r7 = sbpf_ld8(r4, 112);
     if (r7 != r0) goto L_4355;
@@ -8949,7 +8958,7 @@ L_5252:
     if (r7 != r2) goto L_4355;
     goto L_5256;
 L_5256:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -2080);
     r2 = sbpf_ld8(r2, 96);
     r7 = sbpf_ld8(r0, 16);
@@ -8963,7 +8972,7 @@ L_5260:
     if (r7 != r2) goto L_4355;
     goto L_5264;
 L_5264:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -2080);
     r2 = sbpf_ld8(r2, 112);
     r7 = sbpf_ld8(r0, 32);
@@ -8976,7 +8985,7 @@ L_5268:
     if (r2 != 82) goto L_7132;
     goto L_5271;
 L_5271:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r0, 133);
     if (r2 == 1) goto L_6348;
     goto L_5273;
@@ -8985,16 +8994,16 @@ L_5273:
     if (r2 != 0) goto L_7132;
     goto L_5274;
 L_5274:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 9;
     goto L_4355;
 L_5276:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 0;
     r9 = 11;
     goto L_3792;
 L_5279:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 4;
     goto L_5568;
 L_5281:
@@ -9002,7 +9011,7 @@ L_5281:
     r9 = 5;
     goto L_3792;
 L_5283:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 1;
     goto L_5568;
 L_5285:
@@ -9010,15 +9019,15 @@ L_5285:
     if (r4 != 0) goto L_5288;
     goto L_5286;
 L_5286:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 9;
     goto L_3792;
 L_5288:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0xffffffff00000000ull;
     goto L_5314;
 L_5291:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 0) goto L_5311;
     goto L_5292;
 L_5292:
@@ -9027,21 +9036,21 @@ L_5292:
     r9 = sbpf_ld8(r10, -2208);
     goto L_3792;
 L_5295:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 17;
     goto L_5568;
 L_5297:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0xffffffff00000000ull;
     r9 = sbpf_ld8(r10, -2216);
     goto L_5314;
 L_5301:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0xffffffff00000000ull;
     r9 = sbpf_ld8(r10, -2240);
     goto L_5314;
 L_5305:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = 0xffffffff00000000ull;
     r3 = r3 & r1;
     r6 = 3;
@@ -9053,22 +9062,22 @@ L_5311:
     r9 = sbpf_ld8(r10, -2208);
     goto L_5314;
 L_5314:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = r9 & r1;
     r6 = 3;
     goto L_3792;
 L_5317:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 3;
     goto L_3791;
 L_5319:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = 0;
     sbpf_st8(r10, -2128, r1);
     r6 = 10;
     goto L_3791;
 L_5323:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 19;
     goto L_5568;
 L_5325:
@@ -9084,7 +9093,7 @@ L_5329:
     r6 = 7;
     goto L_3791;
 L_5331:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -2080);
     r2 = sbpf_ld8(r2, 128);
     r0 = 0xdb00ffbf11c9bd79ull;
@@ -9098,14 +9107,14 @@ L_5336:
     if (r2 != r0) goto L_5346;
     goto L_5341;
 L_5341:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -2080);
     r2 = sbpf_ld8(r2, 144);
     r0 = 0x00000000e13800e1ull;
     if (r2 == r0) goto L_5495;
     goto L_5346;
 L_5346:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r2 = r10;
     r2 = r2 + (uint64_t)-2048;
     sbpf_st8(r10, -2088, r2);
@@ -9121,7 +9130,7 @@ L_5353:
     if (r2 != r8) goto L_5390;
     goto L_5356;
 L_5356:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r6, 172);
     r9 = sbpf_ld8(r0, 16);
     if (r9 != r8) goto L_5390;
@@ -9134,7 +9143,7 @@ L_5359:
     if (r9 != r8) goto L_5390;
     goto L_5363;
 L_5363:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r10, -2080);
     r8 = sbpf_ld8(r6, 188);
     r9 = sbpf_ld8(r0, 32);
@@ -9146,7 +9155,7 @@ L_5367:
     if (r1 != 355) goto L_6055;
     goto L_5369;
 L_5369:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 40);
     r2 = 0xde8f75eee1f6dd06ull;
     if (r1 == r2) goto L_6043;
@@ -9157,7 +9166,7 @@ L_5373:
     if (r1 != r2) goto L_6055;
     goto L_5376;
 L_5376:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_6055;
@@ -9169,7 +9178,7 @@ L_5380:
     if (r1 != r2) goto L_6055;
     goto L_5384;
 L_5384:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_6055;
@@ -9182,7 +9191,7 @@ L_5389:
     r2 = sbpf_ld8(r0, 8);
     goto L_5390;
 L_5390:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 4;
     if (r1 != r2) goto L_6490;
     goto L_5392;
@@ -9195,7 +9204,7 @@ L_5392:
     if (r2 != r1) goto L_4356;
     goto L_5397;
 L_5397:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 24);
     r2 = sbpf_ld8(r6, 136);
     if (r2 != r1) goto L_4356;
@@ -9207,7 +9216,7 @@ L_5400:
     if (r2 != r1) goto L_4356;
     goto L_5403;
 L_5403:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r0, 80);
     if (r1 != 355) goto L_5493;
     goto L_5405;
@@ -9218,7 +9227,7 @@ L_5405:
     if (r1 == r2) goto L_5481;
     goto L_5409;
 L_5409:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_5493;
     goto L_5412;
@@ -9229,7 +9238,7 @@ L_5412:
     if (r1 != r2) goto L_5493;
     goto L_5416;
 L_5416:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_5493;
@@ -9241,20 +9250,20 @@ L_5420:
     if (r1 != r2) goto L_5493;
     goto L_5424;
 L_5424:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6492;
 L_5425:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 1;
     r9 = sbpf_ld8(r10, -2232);
     goto L_3792;
 L_5428:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 1;
     r9 = sbpf_ld8(r10, -2224);
     goto L_3792;
 L_5431:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r1, 31488);
     r4 = 0xdacd6ce4bc5d4218ull;
     if (r3 != r4) goto L_5443;
@@ -9266,13 +9275,13 @@ L_5435:
     if (r3 != r4) goto L_5443;
     goto L_5439;
 L_5439:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r1, 31504);
     r4 = 0xfc8ba1d828f9bdfeull;
     if (r3 == r4) goto L_6445;
     goto L_5443;
 L_5443:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld1(r1, 31441);
     if (r3 == 0) goto L_6159;
     goto L_5445;
@@ -9281,7 +9290,7 @@ L_5445:
     if (r2 == 0) goto L_5880;
     goto L_5446;
 L_5446:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r3 = sbpf_ld8(r10, -2080);
     r3 = r3 - r2;
     sbpf_st8(r1, 160, r3);
@@ -9302,16 +9311,16 @@ L_5455:
     sbpf_st8(r1, 21008, r3);
     goto L_3798;
 L_5462:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 0;
     r1 = 14;
     goto L_3790;
 L_5465:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 11;
     goto L_5568;
 L_5467:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 10;
     goto L_5568;
 L_5469:
@@ -9320,11 +9329,11 @@ L_5469:
     if (r0 != 0) goto L_6905;
     goto L_5471;
 L_5471:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 9;
     goto L_5078;
 L_5473:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r2 = r2 << (3 & 63);
     r3 = r10;
     r3 = r3 + (uint64_t)-2072;
@@ -9334,7 +9343,7 @@ L_5473:
     r1 = r1 + 8;
     goto L_362;
 L_5481:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r2 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r2) goto L_5493;
@@ -9346,13 +9355,13 @@ L_5485:
     if (r1 != r2) goto L_5493;
     goto L_5489;
 L_5489:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r2 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r2) goto L_6492;
     goto L_5493;
 L_5493:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_6721;
     goto L_5495;
@@ -9361,7 +9370,7 @@ L_5495:
     if (r4 == 0) goto L_6452;
     goto L_5496;
 L_5496:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r5 = r5 - r4;
     r1 = sbpf_ld8(r10, -2080);
     sbpf_st8(r1, 152, r5);
@@ -9374,12 +9383,12 @@ L_5502:
     r8 = 26;
     goto L_4356;
 L_5504:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 1;
     r9 = sbpf_ld8(r10, -2184);
     goto L_3792;
 L_5507:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r2 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r2) goto L_5519;
@@ -9391,13 +9400,13 @@ L_5511:
     if (r1 != r2) goto L_5519;
     goto L_5515;
 L_5515:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r2 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r2) goto L_6498;
     goto L_5519;
 L_5519:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_6805;
     goto L_5521;
@@ -9408,7 +9417,7 @@ L_5521:
     if (r1 < r8) goto L_5675;
     goto L_5524;
 L_5524:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == r3) goto L_5532;
     goto L_5525;
 L_5525:
@@ -9419,16 +9428,16 @@ L_5525:
     if (r1 != r8) goto L_5530;
     goto L_5529;
 L_5529:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st1(r5, 160, 0);
     goto L_5530;
 L_5530:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = r5;
     if (r8 != 0) goto L_5012;
     goto L_5532;
 L_5532:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_5565;
@@ -9440,7 +9449,7 @@ L_5536:
     if (r1 != r2) goto L_5565;
     goto L_5540;
 L_5540:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_5565;
@@ -9450,7 +9459,7 @@ L_5544:
     r1 = sbpf_ld8(r4, 64);
     goto L_5545;
 L_5545:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_5565;
     goto L_5548;
@@ -9461,7 +9470,7 @@ L_5548:
     if (r1 != r2) goto L_5565;
     goto L_5552;
 L_5552:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_5565;
@@ -9473,37 +9482,37 @@ L_5556:
     if (r1 != r2) goto L_5565;
     goto L_5560;
 L_5560:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = 0;
     r1 = sbpf_ld8(r3, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 == r2) goto L_3798;
     goto L_5565;
 L_5565:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 6;
     goto L_3792;
 L_5567:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = 12;
     goto L_5568;
 L_5568:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -2128, r1);
     r6 = 0;
     goto L_3791;
 L_5571:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0xffffffff00000000ull;
     r9 = sbpf_ld8(r10, -2160);
     goto L_5314;
 L_5575:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0xffffffff00000000ull;
     r9 = sbpf_ld8(r10, -2144);
     goto L_5314;
 L_5579:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 9;
     r9 = sbpf_ld8(r10, -2240);
     goto L_3792;
@@ -9524,7 +9533,7 @@ L_5588:
     if (r1 != r2) goto L_5600;
     goto L_5592;
 L_5592:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r2 = 0x270db9834dfc1ab6ull;
     if (r1 != r2) goto L_5600;
@@ -9536,7 +9545,7 @@ L_5596:
     if (r1 == r2) goto L_6533;
     goto L_5600;
 L_5600:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_6805;
     goto L_5602;
@@ -9546,7 +9555,7 @@ L_5602:
     if (r1 < r5) goto L_3792;
     goto L_5604;
 L_5604:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r2 = r1;
     r5 = sbpf_ld8(r10, -2088);
     r2 = r2 - r5;
@@ -9558,16 +9567,16 @@ L_5609:
     sbpf_st1(r4, 160, 0);
     goto L_5147;
 L_5611:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 1;
     goto L_3792;
 L_5613:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 1;
     r9 = 0;
     goto L_3792;
 L_5616:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r1, 21064);
     r5 = 0xdacd6ce4bc5d4218ull;
     if (r4 != r5) goto L_5628;
@@ -9579,13 +9588,13 @@ L_5620:
     if (r4 != r5) goto L_5628;
     goto L_5624;
 L_5624:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r1, 21080);
     r5 = 0xfc8ba1d828f9bdfeull;
     if (r4 == r5) goto L_6698;
     goto L_5628;
 L_5628:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld1(r1, 21017);
     if (r4 == 0) goto L_6159;
     goto L_5630;
@@ -9595,7 +9604,7 @@ L_5630:
     if (r4 < r2) goto L_5078;
     goto L_5632;
 L_5632:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r5 = r4;
     r5 = r5 - r2;
     sbpf_st8(r1, 217, r5);
@@ -9606,11 +9615,11 @@ L_5636:
     sbpf_st1(r1, 168, 0);
     goto L_5637;
 L_5637:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 != 0) goto L_5183;
     goto L_5638;
 L_5638:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = 6;
     r2 = sbpf_ld8(r1, 48);
     r3 = 0x93a165d7e1f6dd06ull;
@@ -9623,7 +9632,7 @@ L_5643:
     if (r2 != r3) goto L_6160;
     goto L_5647;
 L_5647:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r1, 64);
     r3 = 0x91375b5fed85b41cull;
     if (r2 != r3) goto L_6160;
@@ -9635,7 +9644,7 @@ L_5651:
     if (r2 != r3) goto L_6160;
     goto L_5655;
 L_5655:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r1, 10552);
     r3 = 0x93a165d7e1f6dd06ull;
     if (r2 != r3) goto L_6160;
@@ -9647,7 +9656,7 @@ L_5659:
     if (r2 != r3) goto L_6160;
     goto L_5663;
 L_5663:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r1, 10568);
     r3 = 0x91375b5fed85b41cull;
     if (r2 != r3) goto L_6160;
@@ -9660,32 +9669,32 @@ L_5667:
     if (r1 == r2) goto L_3798;
     goto L_5672;
 L_5672:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6160;
 L_5673:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 6;
     goto L_3792;
 L_5675:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 0;
     r9 = 1;
     goto L_3792;
 L_5678:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = 3;
     goto L_5679;
 L_5679:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_3790;
 L_5681:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = 12;
     r8 = 0;
     goto L_4356;
 L_5684:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 1;
     goto L_3792;
 L_5686:
@@ -9701,7 +9710,7 @@ L_5686:
     if (r3 == 255) goto L_3850;
     goto L_5695;
 L_5695:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r3 = r3 << (3 & 63);
     r4 = r10;
     r4 = r4 + (uint64_t)-2072;
@@ -9711,7 +9720,7 @@ L_5695:
     r1 = r1 + 8;
     goto L_362;
 L_5703:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r3 = r3 << (3 & 63);
     r4 = r10;
     r4 = r4 + (uint64_t)-2072;
@@ -9735,7 +9744,7 @@ L_5712:
     if (r3 == 255) goto L_3721;
     goto L_5721;
 L_5721:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r3 = r3 << (3 & 63);
     r4 = r10;
     r4 = r4 + (uint64_t)-2072;
@@ -9745,7 +9754,7 @@ L_5721:
     r1 = r1 + 8;
     goto L_362;
 L_5729:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r3 = r3 << (3 & 63);
     r4 = r10;
     r4 = r4 + (uint64_t)-2072;
@@ -9769,7 +9778,7 @@ L_5738:
     if (r3 == 255) goto L_3868;
     goto L_5747;
 L_5747:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r3 = r3 << (3 & 63);
     r4 = r10;
     r4 = r4 + (uint64_t)-2072;
@@ -9801,7 +9810,7 @@ L_5764:
     r1 = r1 + 8;
     goto L_362;
 L_5772:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 3;
     goto L_3792;
 L_5774:
@@ -9811,7 +9820,7 @@ L_5774:
     if (r1 == 2) goto L_6400;
     goto L_5777;
 L_5777:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 152);
     sbpf_st8(r10, -2088, r1);
     if (r1 >= r8) goto L_415;
@@ -9821,11 +9830,11 @@ L_5780:
     r9 = 1;
     goto L_3792;
 L_5782:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 10;
     goto L_3792;
 L_5784:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 90);
     if (r1 != 1) goto L_6161;
     goto L_5786;
@@ -9843,7 +9852,7 @@ L_5786:
     if (r7 != 24) goto L_5958;
     goto L_5796;
 L_5796:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r4, 88);
     r2 = sbpf_ld8(r10, -2112);
     r2 = r2 & 255;
@@ -9853,12 +9862,12 @@ L_5800:
     budget -= 1;
     goto L_6805;
 L_5801:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 0;
     r8 = 9;
     goto L_4355;
 L_5804:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 90);
     if (r1 != 1) goto L_6161;
     goto L_5806;
@@ -9877,7 +9886,7 @@ L_5806:
     if (r2 != 24) goto L_6070;
     goto L_5817;
 L_5817:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r0, 88);
     r2 = sbpf_ld8(r10, -2136);
     r2 = r2 & 255;
@@ -9894,7 +9903,7 @@ L_5822:
     if (r1 != r2) goto L_5856;
     goto L_5827;
 L_5827:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_5856;
@@ -9906,7 +9915,7 @@ L_5831:
     if (r1 != r2) goto L_5856;
     goto L_5835;
 L_5835:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_5856;
@@ -9918,7 +9927,7 @@ L_5839:
     if (r1 != r2) goto L_5856;
     goto L_5843;
 L_5843:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_5856;
@@ -9930,14 +9939,14 @@ L_5847:
     if (r1 != r2) goto L_5856;
     goto L_5851;
 L_5851:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = 0;
     r1 = sbpf_ld8(r3, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 == r2) goto L_3798;
     goto L_5856;
 L_5856:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_3792;
 L_5857:
     budget -= 3;
@@ -9946,7 +9955,7 @@ L_5857:
     if (r3 != r4) goto L_5869;
     goto L_5861;
 L_5861:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r1, 31496);
     r4 = 0x270db9834dfc1ab6ull;
     if (r3 != r4) goto L_5869;
@@ -9958,7 +9967,7 @@ L_5865:
     if (r3 == r4) goto L_6898;
     goto L_5869;
 L_5869:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld1(r1, 31441);
     if (r3 == 0) goto L_6159;
     goto L_5871;
@@ -9969,7 +9978,7 @@ L_5871:
     if (r4 < r2) goto L_5078;
     goto L_5874;
 L_5874:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = r4;
     r3 = r3 - r2;
     sbpf_st8(r1, 217, r3);
@@ -9980,11 +9989,11 @@ L_5878:
     sbpf_st1(r1, 168, 0);
     goto L_5879;
 L_5879:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 != 0) goto L_5446;
     goto L_5880;
 L_5880:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = 6;
     r2 = sbpf_ld8(r1, 48);
     r3 = 0x93a165d7e1f6dd06ull;
@@ -9997,7 +10006,7 @@ L_5885:
     if (r2 != r3) goto L_6160;
     goto L_5889;
 L_5889:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r1, 64);
     r3 = 0x91375b5fed85b41cull;
     if (r2 != r3) goto L_6160;
@@ -10009,7 +10018,7 @@ L_5893:
     if (r2 != r3) goto L_6160;
     goto L_5897;
 L_5897:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r1, 20976);
     r3 = 0x93a165d7e1f6dd06ull;
     if (r2 != r3) goto L_6160;
@@ -10021,7 +10030,7 @@ L_5901:
     if (r2 != r3) goto L_6160;
     goto L_5905;
 L_5905:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r1, 20992);
     r3 = 0x91375b5fed85b41cull;
     if (r2 != r3) goto L_6160;
@@ -10034,10 +10043,10 @@ L_5909:
     if (r1 == r2) goto L_3798;
     goto L_5914;
 L_5914:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6160;
 L_5915:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 0;
     goto L_5078;
 L_5917:
@@ -10048,11 +10057,11 @@ L_5917:
     if (r2 != 2) goto L_6165;
     goto L_5921;
 L_5921:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 0;
     goto L_4355;
 L_5923:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r5, 90);
     if (r1 != 1) goto L_6161;
     goto L_5925;
@@ -10070,7 +10079,7 @@ L_5925:
     if (r0 != 24) goto L_6178;
     goto L_5935;
 L_5935:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r5, 88);
     r2 = sbpf_ld8(r10, -2120);
     r2 = r2 & 255;
@@ -10085,7 +10094,7 @@ L_5940:
     if (r1 != 1) goto L_6554;
     goto L_5942;
 L_5942:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = 0;
     sbpf_st8(r10, -2128, r1);
     r7 = r7 << (3 & 63);
@@ -10105,11 +10114,11 @@ L_5952:
     if (r2 < r1) goto L_6805;
     goto L_5956;
 L_5956:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = sbpf_ld8(r10, -2088);
     goto L_5147;
 L_5958:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r4, 89);
     r5 = 1;
     sbpf_st8(r10, -2120, r2);
@@ -10120,7 +10129,7 @@ L_5962:
     r5 = 0;
     goto L_5963;
 L_5963:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -2120);
     if (r2 > 11) goto L_7024;
     goto L_5965;
@@ -10176,7 +10185,7 @@ L_6002:
     r7 = r9;
     goto L_6003;
 L_6003:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r9 = sbpf_ld8(r10, -2088);
     goto L_6004;
 L_6004:
@@ -10195,14 +10204,14 @@ L_6009:
     if (r6 != r9) goto L_6004;
     goto L_6013;
 L_6013:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r7, 16);
     r9 = r7;
     r7 = sbpf_ld8(r1, 8);
     if (r7 != r6) goto L_6002;
     goto L_6017;
 L_6017:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r9, 24);
     r7 = sbpf_ld8(r1, 16);
     if (r7 != r6) goto L_6002;
@@ -10215,7 +10224,7 @@ L_6020:
     if (r1 != r6) goto L_6003;
     goto L_6024;
 L_6024:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_7352;
     goto L_6025;
 L_6025:
@@ -10227,7 +10236,7 @@ L_6025:
     if (r6 != 0) goto L_6003;
     goto L_6030;
 L_6030:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = sbpf_ld1(r7, 1);
     if (r6 == 0) goto L_6805;
     goto L_6032;
@@ -10239,14 +10248,14 @@ L_6032:
     sbpf_st8(r10, -2112, r1);
     goto L_6003;
 L_6037:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 1;
     r1 = sbpf_ld8(r10, -2096);
     r6 = sbpf_ld8(r10, -2104);
     if (r6 != r1) goto L_5985;
     goto L_6041;
 L_6041:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_5985;
 L_6043:
@@ -10256,7 +10265,7 @@ L_6043:
     if (r1 != r2) goto L_6055;
     goto L_6047;
 L_6047:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r2 = 0x270db9834dfc1ab6ull;
     if (r1 != r2) goto L_6055;
@@ -10268,7 +10277,7 @@ L_6051:
     if (r1 == r2) goto L_6917;
     goto L_6055;
 L_6055:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_6721;
     goto L_6057;
@@ -10281,7 +10290,7 @@ L_6057:
     if (r1 < r4) goto L_4356;
     goto L_6062;
 L_6062:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r2 = r1;
     r2 = r2 - r4;
     r0 = sbpf_ld8(r10, -2080);
@@ -10289,12 +10298,12 @@ L_6062:
     if (r1 != r4) goto L_5495;
     goto L_6067;
 L_6067:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r10, -2080);
     sbpf_st1(r1, 160, 0);
     goto L_5495;
 L_6070:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r0, 89);
     r4 = 1;
     sbpf_st8(r10, -2144, r2);
@@ -10305,7 +10314,7 @@ L_6074:
     r4 = 0;
     goto L_6075;
 L_6075:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -2144);
     if (r2 > 11) goto L_7029;
     goto L_6077;
@@ -10360,7 +10369,7 @@ L_6113:
     r7 = r4;
     goto L_6114;
 L_6114:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r4 = sbpf_ld8(r10, -2104);
     goto L_6115;
 L_6115:
@@ -10379,14 +10388,14 @@ L_6121:
     if (r6 != r4) goto L_6115;
     goto L_6124;
 L_6124:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r7, 16);
     r4 = r7;
     r7 = sbpf_ld8(r9, 8);
     if (r7 != r6) goto L_6113;
     goto L_6128;
 L_6128:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r4, 24);
     r7 = sbpf_ld8(r9, 16);
     if (r7 != r6) goto L_6113;
@@ -10398,7 +10407,7 @@ L_6131:
     if (r7 != r6) goto L_6147;
     goto L_6134;
 L_6134:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_7352;
     goto L_6135;
 L_6135:
@@ -10410,7 +10419,7 @@ L_6135:
     if (r7 != 0) goto L_6147;
     goto L_6140;
 L_6140:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r10, -2112);
     r7 = sbpf_ld1(r4, 1);
     if (r7 == 0) goto L_6805;
@@ -10423,18 +10432,18 @@ L_6143:
     sbpf_st8(r10, -2136, r6);
     goto L_6147;
 L_6147:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = sbpf_ld8(r10, -2112);
     goto L_6114;
 L_6149:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 1;
     r6 = sbpf_ld8(r10, -2128);
     r1 = sbpf_ld8(r10, -2120);
     if (r6 != r1) goto L_6096;
     goto L_6153;
 L_6153:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_6096;
 L_6155:
@@ -10443,7 +10452,7 @@ L_6155:
     if (r4 != 1) goto L_6703;
     goto L_6157;
 L_6157:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld1(r1, 21104);
     if (r4 == 0) goto L_5182;
     goto L_6159;
@@ -10452,19 +10461,19 @@ L_6159:
     r6 = 7;
     goto L_6160;
 L_6160:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_5078;
 L_6161:
     budget -= 1;
     if (r1 != 0) goto L_6395;
     goto L_6162;
 L_6162:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 9;
     r9 = 0;
     goto L_3792;
 L_6165:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = 1;
     r2 = sbpf_ld8(r10, -2080);
     r5 = sbpf_ld8(r2, 152);
@@ -10482,10 +10491,10 @@ L_6171:
     if (r7 != r2) goto L_4355;
     goto L_6177;
 L_6177:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_5256;
 L_6178:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r5, 89);
     r0 = 1;
     sbpf_st8(r10, -2128, r2);
@@ -10496,7 +10505,7 @@ L_6182:
     r0 = 0;
     goto L_6183;
 L_6183:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -2128);
     if (r2 > 11) goto L_7291;
     goto L_6185;
@@ -10554,7 +10563,7 @@ L_6224:
     r6 = r8;
     goto L_6225;
 L_6225:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r8 = sbpf_ld8(r10, -2096);
     goto L_6226;
 L_6226:
@@ -10573,14 +10582,14 @@ L_6232:
     if (r1 != r8) goto L_6226;
     goto L_6235;
 L_6235:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r6, 16);
     r8 = r6;
     r6 = sbpf_ld8(r0, 8);
     if (r6 != r1) goto L_6224;
     goto L_6239;
 L_6239:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 24);
     r6 = sbpf_ld8(r0, 16);
     if (r6 != r1) goto L_6224;
@@ -10593,7 +10602,7 @@ L_6242:
     if (r0 != r1) goto L_6225;
     goto L_6246;
 L_6246:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_7352;
     goto L_6247;
 L_6247:
@@ -10605,7 +10614,7 @@ L_6247:
     if (r0 != 0) goto L_6225;
     goto L_6252;
 L_6252:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld1(r6, 1);
     if (r0 == 0) goto L_6805;
     goto L_6254;
@@ -10617,14 +10626,14 @@ L_6254:
     sbpf_st8(r10, -2120, r1);
     goto L_6225;
 L_6259:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 1;
     r1 = sbpf_ld8(r10, -2112);
     r0 = sbpf_ld8(r10, -2104);
     if (r0 != r1) goto L_6206;
     goto L_6263;
 L_6263:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_6206;
 L_6265:
@@ -10635,11 +10644,11 @@ L_6265:
     if (r2 != 0) goto L_6270;
     goto L_6269;
 L_6269:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r5 = 0;
     goto L_6270;
 L_6270:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -2136);
     if (r2 > 11) goto L_7118;
     goto L_6272;
@@ -10664,7 +10673,7 @@ L_6272:
     r1 = r1 + (uint64_t)-2040;
     goto L_6296;
 L_6290:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r2 = r2 << (3 & 63);
     r5 = sbpf_ld8(r10, -2104);
     r1 = r5;
@@ -10694,7 +10703,7 @@ L_6308:
     r5 = r8;
     goto L_6309;
 L_6309:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = sbpf_ld8(r10, -2112);
     goto L_6310;
 L_6310:
@@ -10719,7 +10728,7 @@ L_6319:
     if (r7 != r6) goto L_6309;
     goto L_6322;
 L_6322:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r5, 24);
     r7 = sbpf_ld8(r8, 16);
     if (r7 != r6) goto L_6309;
@@ -10731,12 +10740,12 @@ L_6325:
     if (r7 != r6) goto L_6309;
     goto L_6328;
 L_6328:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = r5;
     if (r2 > 10) goto L_7352;
     goto L_6330;
 L_6330:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r10;
     r6 = r6 + (uint64_t)-32;
     r6 = r6 + r2;
@@ -10749,14 +10758,14 @@ L_6335:
     if (r7 == 0) goto L_6805;
     goto L_6337;
 L_6337:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r6, 0, 1);
     r5 = sbpf_ld8(r10, -2128);
     r5 = r5 + 1;
     sbpf_st8(r10, -2128, r5);
     goto L_6308;
 L_6342:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 1;
     r1 = sbpf_ld8(r10, -2104);
     r5 = sbpf_ld8(r10, -2120);
@@ -10773,7 +10782,7 @@ L_6348:
     if (r1 != r2) goto L_4355;
     goto L_6351;
 L_6351:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r7 = r10;
     r7 = r7 + (uint64_t)-2040;
     r0 = sbpf_ld8(r10, -2048);
@@ -10789,7 +10798,7 @@ L_6358:
     if (r2 != r1) goto L_6404;
     goto L_6361;
 L_6361:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r0, 16);
     r4 = sbpf_ld8(r10, -2080);
     r8 = sbpf_ld8(r4, 172);
@@ -10803,7 +10812,7 @@ L_6365:
     if (r8 != r2) goto L_6404;
     goto L_6369;
 L_6369:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r0, 32);
     r4 = sbpf_ld8(r10, -2080);
     r8 = sbpf_ld8(r4, 188);
@@ -10815,7 +10824,7 @@ L_6373:
     if (r1 != 355) goto L_6943;
     goto L_6375;
 L_6375:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 40);
     r2 = 0xde8f75eee1f6dd06ull;
     if (r1 == r2) goto L_6931;
@@ -10826,7 +10835,7 @@ L_6379:
     if (r1 != r2) goto L_6943;
     goto L_6382;
 L_6382:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_6943;
@@ -10838,7 +10847,7 @@ L_6386:
     if (r1 != r2) goto L_6943;
     goto L_6390;
 L_6390:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_6943;
@@ -10847,16 +10856,16 @@ L_6394:
     budget -= 1;
     goto L_7249;
 L_6395:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 3;
     r9 = 0;
     goto L_3792;
 L_6398:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 3;
     goto L_4356;
 L_6400:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 17;
     goto L_3792;
 L_6402:
@@ -10864,7 +10873,7 @@ L_6402:
     r9 = 10;
     goto L_4356;
 L_6404:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = 4;
     r2 = sbpf_ld8(r10, -2080);
     r2 = sbpf_ld8(r2, 120);
@@ -10878,7 +10887,7 @@ L_6408:
     if (r2 != r1) goto L_5921;
     goto L_6412;
 L_6412:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r0, 24);
     r2 = sbpf_ld8(r10, -2080);
     r2 = sbpf_ld8(r2, 136);
@@ -10893,7 +10902,7 @@ L_6416:
     if (r2 != r1) goto L_4355;
     goto L_6421;
 L_6421:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r0, 80);
     if (r1 != 355) goto L_6570;
     goto L_6423;
@@ -10904,7 +10913,7 @@ L_6423:
     if (r1 == r2) goto L_6558;
     goto L_6427;
 L_6427:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_6570;
     goto L_6430;
@@ -10915,7 +10924,7 @@ L_6430:
     if (r1 != r2) goto L_6570;
     goto L_6434;
 L_6434:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_6570;
@@ -10927,10 +10936,10 @@ L_6438:
     if (r1 != r2) goto L_6570;
     goto L_6442;
 L_6442:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_7128;
 L_6443:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = 18;
     goto L_5078;
 L_6445:
@@ -10939,19 +10948,19 @@ L_6445:
     if (r4 != 1) goto L_6903;
     goto L_6447;
 L_6447:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld1(r1, 31528);
     if (r3 == 0) goto L_5445;
     goto L_6449;
 L_6449:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6159;
 L_6450:
     budget -= 2;
     r9 = 18;
     goto L_4356;
 L_6452:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2080);
     r1 = sbpf_ld8(r1, 40);
     r2 = 0x93a165d7e1f6dd06ull;
@@ -10965,7 +10974,7 @@ L_6457:
     if (r1 != r2) goto L_6488;
     goto L_6462;
 L_6462:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2080);
     r1 = sbpf_ld8(r1, 56);
     r2 = 0x91375b5fed85b41cull;
@@ -10979,7 +10988,7 @@ L_6467:
     if (r1 != r2) goto L_6488;
     goto L_6472;
 L_6472:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_6488;
@@ -10991,19 +11000,19 @@ L_6476:
     if (r1 != r2) goto L_6488;
     goto L_6480;
 L_6480:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_6488;
     goto L_6484;
 L_6484:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 == r2) goto L_5502;
     goto L_6488;
 L_6488:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 6;
     goto L_4356;
 L_6490:
@@ -11016,7 +11025,7 @@ L_6492:
     if (r1 == 1) goto L_6707;
     goto L_6494;
 L_6494:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 0) goto L_6920;
     goto L_6495;
 L_6495:
@@ -11031,7 +11040,7 @@ L_6498:
     if (r1 != 1) goto L_6890;
     goto L_6501;
 L_6501:
-    if ((budget -= 11) < 0) goto L_limit;
+    budget -= 11;
     r1 = 0;
     sbpf_st8(r10, -2136, r1);
     r7 = sbpf_ld8(r10, -2120);
@@ -11045,7 +11054,7 @@ L_6501:
     if (r7 != 24) goto L_6607;
     goto L_6512;
 L_6512:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r0, 88);
     r2 = sbpf_ld8(r10, -2136);
     r2 = r2 & 255;
@@ -11059,12 +11068,12 @@ L_6517:
     if (r1 != 0) goto L_6599;
     goto L_6518;
 L_6518:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 9;
     r9 = sbpf_ld8(r10, -2352);
     goto L_3792;
 L_6521:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 0) goto L_6603;
     goto L_6522;
 L_6522:
@@ -11073,7 +11082,7 @@ L_6522:
     r9 = sbpf_ld8(r10, -2360);
     goto L_3792;
 L_6525:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 0) goto L_6690;
     goto L_6526;
 L_6526:
@@ -11082,7 +11091,7 @@ L_6526:
     r9 = sbpf_ld8(r10, -2320);
     goto L_3792;
 L_6529:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 != 0) goto L_6694;
     goto L_6530;
 L_6530:
@@ -11091,7 +11100,7 @@ L_6530:
     r9 = sbpf_ld8(r10, -2368);
     goto L_3792;
 L_6533:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 90);
     if (r1 != 1) goto L_6554;
     goto L_6535;
@@ -11109,7 +11118,7 @@ L_6535:
     if (r7 != 24) goto L_6723;
     goto L_6545;
 L_6545:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r0, 88);
     r2 = sbpf_ld8(r10, -2136);
     r2 = r2 & 255;
@@ -11123,19 +11132,19 @@ L_6549:
     if (r1 >= r5) goto L_5604;
     goto L_6553;
 L_6553:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_3792;
 L_6554:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 3;
     if (r1 == 0) goto L_6162;
     goto L_6556;
 L_6556:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 0;
     goto L_3792;
 L_6558:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 48);
     r2 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r2) goto L_6570;
@@ -11147,13 +11156,13 @@ L_6562:
     if (r1 != r2) goto L_6570;
     goto L_6566;
 L_6566:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 64);
     r2 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r2) goto L_7128;
     goto L_6570;
 L_6570:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_7166;
     goto L_6572;
@@ -11163,7 +11172,7 @@ L_6572:
     if (r1 == 0) goto L_6963;
     goto L_6574;
 L_6574:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -2080);
     if (r1 == r3) goto L_6963;
     goto L_6576;
@@ -11177,7 +11186,7 @@ L_6576:
     if (r1 != 165) goto L_7134;
     goto L_6582;
 L_6582:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r1 = sbpf_ld8(r3, 152);
     r2 = sbpf_ld8(r10, -2088);
     r1 = r1 + r2;
@@ -11198,11 +11207,11 @@ L_6589:
     sbpf_st8(r3, 72, r1);
     goto L_6597;
 L_6597:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 26;
     goto L_4355;
 L_6599:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0xffffffff00000000ull;
     r9 = sbpf_ld8(r10, -2352);
     goto L_5314;
@@ -11219,11 +11228,11 @@ L_6607:
     if (r2 != 0) goto L_6612;
     goto L_6611;
 L_6611:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = 0;
     goto L_6612;
 L_6612:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -2120);
     if (r2 > 11) goto L_7024;
     goto L_6614;
@@ -11292,19 +11301,19 @@ L_6657:
     if (r6 != r7) goto L_6652;
     goto L_6662;
 L_6662:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r4, 16);
     r7 = sbpf_ld8(r9, 8);
     if (r7 != r6) goto L_6652;
     goto L_6665;
 L_6665:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r4, 24);
     r7 = sbpf_ld8(r9, 16);
     if (r7 != r6) goto L_6652;
     goto L_6668;
 L_6668:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r4, 32);
     r7 = sbpf_ld8(r9, 24);
     if (r7 != r6) goto L_6652;
@@ -11314,7 +11323,7 @@ L_6671:
     if (r2 > 10) goto L_7352;
     goto L_6672;
 L_6672:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r10;
     r6 = r6 + (uint64_t)-32;
     r6 = r6 + r2;
@@ -11327,21 +11336,21 @@ L_6677:
     if (r7 == 0) goto L_6805;
     goto L_6679;
 L_6679:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r6, 0, 1);
     r6 = sbpf_ld8(r10, -2136);
     r6 = r6 + 1;
     sbpf_st8(r10, -2136, r6);
     goto L_6652;
 L_6684:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 1;
     r1 = sbpf_ld8(r10, -2112);
     r4 = sbpf_ld8(r10, -2128);
     if (r4 != r1) goto L_6632;
     goto L_6688;
 L_6688:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_6632;
 L_6690:
@@ -11360,15 +11369,15 @@ L_6698:
     if (r4 != 1) goto L_6703;
     goto L_6700;
 L_6700:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld1(r1, 21104);
     if (r4 == 0) goto L_5630;
     goto L_6702;
 L_6702:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6159;
 L_6703:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 3;
     r7 = 0;
     if (r4 != 0) goto L_5078;
@@ -11377,7 +11386,7 @@ L_6706:
     budget -= 1;
     goto L_5471;
 L_6707:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = 0;
     sbpf_st8(r10, -2120, r1);
     r7 = r7 << (3 & 63);
@@ -11390,7 +11399,7 @@ L_6707:
     if (r7 != 24) goto L_6807;
     goto L_6717;
 L_6717:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r0, 88);
     r2 = sbpf_ld8(r10, -2120);
     r2 = r2 & 255;
@@ -11401,7 +11410,7 @@ L_6721:
     r8 = 7;
     goto L_4356;
 L_6723:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r0, 89);
     r5 = 1;
     sbpf_st8(r10, -2144, r2);
@@ -11412,7 +11421,7 @@ L_6727:
     r5 = 0;
     goto L_6728;
 L_6728:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -2144);
     if (r2 > 11) goto L_7029;
     goto L_6730;
@@ -11480,19 +11489,19 @@ L_6772:
     if (r7 != r9) goto L_6767;
     goto L_6777;
 L_6777:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r5, 16);
     r9 = sbpf_ld8(r1, 8);
     if (r9 != r7) goto L_6767;
     goto L_6780;
 L_6780:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r5, 24);
     r9 = sbpf_ld8(r1, 16);
     if (r9 != r7) goto L_6767;
     goto L_6783;
 L_6783:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r5, 32);
     r1 = sbpf_ld8(r1, 24);
     if (r1 != r7) goto L_6767;
@@ -11502,7 +11511,7 @@ L_6786:
     if (r2 > 10) goto L_7352;
     goto L_6787;
 L_6787:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = r10;
     r1 = r1 + (uint64_t)-32;
     r1 = r1 + r2;
@@ -11515,25 +11524,25 @@ L_6792:
     if (r7 == 0) goto L_6805;
     goto L_6794;
 L_6794:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r1, 0, 1);
     r1 = sbpf_ld8(r10, -2136);
     r1 = r1 + 1;
     sbpf_st8(r10, -2136, r1);
     goto L_6767;
 L_6799:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 1;
     r1 = sbpf_ld8(r10, -2104);
     r5 = sbpf_ld8(r10, -2128);
     if (r1 != r5) goto L_6748;
     goto L_6803;
 L_6803:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_6748;
 L_6805:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 7;
     goto L_3792;
 L_6807:
@@ -11544,11 +11553,11 @@ L_6807:
     if (r2 != 0) goto L_6812;
     goto L_6811;
 L_6811:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = 0;
     goto L_6812;
 L_6812:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -2128);
     if (r2 > 11) goto L_7291;
     goto L_6814;
@@ -11608,7 +11617,7 @@ L_6852:
     sbpf_st8(r10, -2120, r6);
     goto L_6856;
 L_6856:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = sbpf_ld8(r10, -2096);
     r6 = r6 + 32;
     r2 = r2 + 1;
@@ -11630,7 +11639,7 @@ L_6866:
     if (r9 != r6) goto L_6856;
     goto L_6869;
 L_6869:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r7, 24);
     r9 = sbpf_ld8(r8, 16);
     if (r9 != r6) goto L_6856;
@@ -11642,7 +11651,7 @@ L_6872:
     if (r8 != r6) goto L_6856;
     goto L_6875;
 L_6875:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_7352;
     goto L_6876;
 L_6876:
@@ -11654,26 +11663,26 @@ L_6876:
     if (r8 != 0) goto L_6856;
     goto L_6881;
 L_6881:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = sbpf_ld1(r7, 1);
     if (r8 != 0) goto L_6852;
     goto L_6883;
 L_6883:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6721;
 L_6884:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 1;
     r1 = sbpf_ld8(r10, -2088);
     r6 = sbpf_ld8(r10, -2112);
     if (r1 != r6) goto L_6832;
     goto L_6888;
 L_6888:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_6832;
 L_6890:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = 0;
     if (r1 != 0) goto L_5162;
     goto L_6892;
@@ -11681,36 +11690,36 @@ L_6892:
     budget -= 1;
     goto L_5286;
 L_6893:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2280);
     r2 = 11;
     r3 = 0x0000000100019be8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_6898;
 L_6898:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld1(r1, 31530);
     if (r4 != 1) goto L_6903;
     goto L_6900;
 L_6900:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld1(r1, 31528);
     if (r3 == 0) goto L_5871;
     goto L_6902;
 L_6902:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6159;
 L_6903:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = 0;
     if (r4 == 0) goto L_5471;
     goto L_6905;
 L_6905:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 3;
     goto L_5078;
 L_6907:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2304);
     r2 = 11;
     r3 = 0x0000000100019be8ull;
@@ -11721,18 +11730,18 @@ L_6912:
     r1 = r2;
     goto L_6913;
 L_6913:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = 11;
     r3 = 0x0000000100019be8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_6917;
 L_6917:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 90);
     if (r1 == 1) goto L_7009;
     goto L_6919;
 L_6919:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 0) goto L_6495;
     goto L_6920;
 L_6920:
@@ -11745,12 +11754,12 @@ L_6923:
     if (r1 != 0) goto L_7001;
     goto L_6924;
 L_6924:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 9;
     r9 = sbpf_ld8(r10, -2384);
     goto L_3792;
 L_6927:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 0) goto L_7005;
     goto L_6928;
 L_6928:
@@ -11765,7 +11774,7 @@ L_6931:
     if (r1 != r2) goto L_6943;
     goto L_6935;
 L_6935:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r0, 56);
     r2 = 0x270db9834dfc1ab6ull;
     if (r1 != r2) goto L_6943;
@@ -11777,7 +11786,7 @@ L_6939:
     if (r1 == r2) goto L_7249;
     goto L_6943;
 L_6943:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 1);
     if (r1 == 0) goto L_7166;
     goto L_6945;
@@ -11791,7 +11800,7 @@ L_6945:
     if (r1 < r2) goto L_4355;
     goto L_6951;
 L_6951:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -2080);
     if (r2 == r3) goto L_6963;
     goto L_6953;
@@ -11805,17 +11814,17 @@ L_6953:
     if (r1 != r0) goto L_6961;
     goto L_6959;
 L_6959:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -2080);
     sbpf_st1(r1, 160, 0);
     goto L_6961;
 L_6961:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -2088);
     if (r1 != 0) goto L_6576;
     goto L_6963;
 L_6963:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2080);
     r1 = sbpf_ld8(r1, 40);
     r2 = 0x93a165d7e1f6dd06ull;
@@ -11829,7 +11838,7 @@ L_6968:
     if (r1 != r2) goto L_7116;
     goto L_6973;
 L_6973:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2080);
     r1 = sbpf_ld8(r1, 56);
     r2 = 0x91375b5fed85b41cull;
@@ -11843,7 +11852,7 @@ L_6978:
     if (r1 != r2) goto L_7116;
     goto L_6983;
 L_6983:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_7116;
@@ -11855,7 +11864,7 @@ L_6987:
     if (r1 != r2) goto L_7116;
     goto L_6991;
 L_6991:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_7116;
@@ -11867,11 +11876,11 @@ L_6995:
     if (r1 != r2) goto L_7116;
     goto L_6999;
 L_6999:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 26;
     goto L_4355;
 L_7001:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0xffffffff00000000ull;
     r9 = sbpf_ld8(r10, -2384);
     goto L_5314;
@@ -11894,31 +11903,31 @@ L_7009:
     if (r7 != 24) goto L_7034;
     goto L_7019;
 L_7019:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r0, 88);
     r2 = sbpf_ld8(r10, -2120);
     r2 = r2 & 255;
     if (r2 >= r1) goto L_6057;
     goto L_7023;
 L_7023:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6721;
 L_7024:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2120);
     r2 = 11;
     r3 = 0x0000000100019be8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_7029;
 L_7029:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2144);
     r2 = 11;
     r3 = 0x0000000100019be8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_7034;
 L_7034:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r0, 89);
     r6 = 1;
     sbpf_st8(r10, -2128, r2);
@@ -11929,7 +11938,7 @@ L_7038:
     r6 = 0;
     goto L_7039;
 L_7039:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -2128);
     if (r2 > 11) goto L_7291;
     goto L_7041;
@@ -11988,7 +11997,7 @@ L_7078:
     sbpf_st8(r10, -2120, r1);
     goto L_7082;
 L_7082:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r9 = sbpf_ld8(r10, -2096);
     r9 = r9 + 32;
     r2 = r2 + 1;
@@ -12010,7 +12019,7 @@ L_7092:
     if (r9 != r7) goto L_7082;
     goto L_7095;
 L_7095:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r6, 24);
     r9 = sbpf_ld8(r1, 16);
     if (r9 != r7) goto L_7082;
@@ -12022,7 +12031,7 @@ L_7098:
     if (r1 != r9) goto L_7082;
     goto L_7101;
 L_7101:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_7352;
     goto L_7102;
 L_7102:
@@ -12034,37 +12043,37 @@ L_7102:
     if (r9 != 0) goto L_7082;
     goto L_7107;
 L_7107:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = sbpf_ld1(r6, 1);
     if (r9 != 0) goto L_7078;
     goto L_7109;
 L_7109:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_6721;
 L_7110:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 1;
     r1 = sbpf_ld8(r10, -2088);
     r6 = sbpf_ld8(r10, -2112);
     if (r1 != r6) goto L_7059;
     goto L_7114;
 L_7114:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_7059;
 L_7116:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 6;
     goto L_4355;
 L_7118:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2136);
     r2 = 11;
     r3 = 0x0000000100019be8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_7123;
 L_7123:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2288);
     r2 = 11;
     r3 = 0x0000000100019be8ull;
@@ -12076,42 +12085,42 @@ L_7128:
     if (r1 == 1) goto L_7152;
     goto L_7130;
 L_7130:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 0;
     if (r1 == 0) goto L_5274;
     goto L_7132;
 L_7132:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 3;
     goto L_4355;
 L_7134:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = 0;
     r8 = 3;
     goto L_4355;
 L_7137:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2128);
     r2 = 11;
     r3 = 0x0000000100019c00ull;
     SBPF_CALL((sbpf_sel = 11585u, f_11560)(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_7142;
 L_7142:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = r6;
     r2 = 11;
     r3 = 0x0000000100019be8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_7147;
 L_7147:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2256);
     r2 = 11;
     r3 = 0x0000000100019c00ull;
     SBPF_CALL((sbpf_sel = 11585u, f_11560)(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_7152;
 L_7152:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = 0;
     sbpf_st8(r10, -2120, r1);
     r9 = r9 << (3 & 63);
@@ -12124,7 +12133,7 @@ L_7152:
     if (r9 != 32) goto L_7168;
     goto L_7162;
 L_7162:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r0, 88);
     r2 = sbpf_ld8(r10, -2120);
     r2 = r2 & 255;
@@ -12142,11 +12151,11 @@ L_7168:
     if (r2 != 0) goto L_7173;
     goto L_7172;
 L_7172:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = 0;
     goto L_7173;
 L_7173:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -2128);
     if (r2 > 11) goto L_7291;
     goto L_7175;
@@ -12205,7 +12214,7 @@ L_7212:
     sbpf_st8(r10, -2120, r6);
     goto L_7216;
 L_7216:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = sbpf_ld8(r10, -2096);
     r6 = r6 + 32;
     r2 = r2 + 1;
@@ -12227,7 +12236,7 @@ L_7226:
     if (r9 != r6) goto L_7216;
     goto L_7229;
 L_7229:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r4, 24);
     r9 = sbpf_ld8(r8, 16);
     if (r9 != r6) goto L_7216;
@@ -12239,7 +12248,7 @@ L_7232:
     if (r8 != r6) goto L_7216;
     goto L_7235;
 L_7235:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_7352;
     goto L_7236;
 L_7236:
@@ -12251,25 +12260,25 @@ L_7236:
     if (r8 != 0) goto L_7216;
     goto L_7241;
 L_7241:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = sbpf_ld1(r4, 1);
     if (r8 != 0) goto L_7212;
     goto L_7243;
 L_7243:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_7166;
 L_7244:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = 1;
     r1 = sbpf_ld8(r10, -2112);
     if (r7 != r1) goto L_7193;
     goto L_7247;
 L_7247:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_7193;
 L_7249:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r0, 90);
     if (r1 != 1) goto L_7130;
     goto L_7251;
@@ -12287,17 +12296,17 @@ L_7251:
     if (r9 != 32) goto L_7266;
     goto L_7261;
 L_7261:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r0, 88);
     r6 = sbpf_ld8(r10, -2120);
     r6 = r6 & 255;
     if (r6 >= r1) goto L_6945;
     goto L_7265;
 L_7265:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_7166;
 L_7266:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld1(r0, 89);
     r2 = 1;
     sbpf_st8(r10, -2128, r6);
@@ -12308,7 +12317,7 @@ L_7270:
     r2 = 0;
     goto L_7271;
 L_7271:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = sbpf_ld8(r10, -2128);
     if (r6 > 11) goto L_7291;
     goto L_7273;
@@ -12333,14 +12342,14 @@ L_7273:
     r1 = r1 + (uint64_t)-2032;
     goto L_7301;
 L_7291:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -2128);
     r2 = 11;
     r3 = 0x0000000100019be8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_7296;
 L_7296:
-    budget -= 5;
+    if ((budget -= 5) < 0) goto L_limit;
     r2 = r2 << (3 & 63);
     r1 = r7;
     r1 = r1 + r2;
@@ -12348,7 +12357,7 @@ L_7296:
     if (r7 == r2) goto L_7261;
     goto L_7301;
 L_7301:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r8 = r7;
     r7 = r1;
     r1 = sbpf_ld8(r10, -2128);
@@ -12383,19 +12392,19 @@ L_7320:
     if (r9 != r4) goto L_7315;
     goto L_7325;
 L_7325:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r6, 16);
     r9 = sbpf_ld8(r1, 8);
     if (r9 != r4) goto L_7315;
     goto L_7328;
 L_7328:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r6, 24);
     r9 = sbpf_ld8(r1, 16);
     if (r9 != r4) goto L_7315;
     goto L_7331;
 L_7331:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = sbpf_ld8(r6, 32);
     r1 = sbpf_ld8(r1, 24);
     if (r1 != r9) goto L_7315;
@@ -12405,7 +12414,7 @@ L_7334:
     if (r2 > 10) goto L_7352;
     goto L_7335;
 L_7335:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = r10;
     r1 = r1 + (uint64_t)-32;
     r1 = r1 + r2;
@@ -12413,45 +12422,45 @@ L_7335:
     if (r9 != 0) goto L_7315;
     goto L_7340;
 L_7340:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = sbpf_ld1(r6, 1);
     if (r9 == 0) goto L_7166;
     goto L_7342;
 L_7342:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r1, 0, 1);
     r1 = sbpf_ld8(r10, -2120);
     r1 = r1 + 1;
     sbpf_st8(r10, -2120, r1);
     goto L_7315;
 L_7347:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = 1;
     r1 = sbpf_ld8(r10, -2112);
     if (r7 != r1) goto L_7296;
     goto L_7350;
 L_7350:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_7296;
 L_7352:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = r2;
     goto L_7353;
 L_7353:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = 11;
     r3 = 0x0000000100019c00ull;
     SBPF_CALL((sbpf_sel = 11585u, f_11560)(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_7357;
 L_7357:
-    budget -= 3;
+    if ((budget -= 3) < 0) goto L_limit;
     r1 = r1 << (32 & 63);
     r1 = r1 >> (32 & 63);
     if ((int64_t)r1 > 12) goto L_7368;
     goto L_7360;
 L_7360:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r1 <= 5) goto L_7376;
     goto L_7361;
 L_7361:
@@ -12459,7 +12468,7 @@ L_7361:
     if ((int64_t)r1 <= 8) goto L_7390;
     goto L_7362;
 L_7362:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r1 > 10) goto L_7414;
     goto L_7363;
 L_7363:
@@ -12467,12 +12476,12 @@ L_7363:
     if (r1 != 9) goto L_7458;
     goto L_7364;
 L_7364:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x00000001000193f8ull;
     r2 = 27;
     goto L_7509;
 L_7368:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r1 <= 18) goto L_7383;
     goto L_7369;
 L_7369:
@@ -12480,7 +12489,7 @@ L_7369:
     if ((int64_t)r1 <= 21) goto L_7396;
     goto L_7370;
 L_7370:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r1 > 23) goto L_7419;
     goto L_7371;
 L_7371:
@@ -12488,7 +12497,7 @@ L_7371:
     if (r1 != 22) goto L_7462;
     goto L_7372;
 L_7372:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0000000100019563ull;
     r2 = 26;
     goto L_7509;
@@ -12497,7 +12506,7 @@ L_7376:
     if ((int64_t)r1 > 2) goto L_7402;
     goto L_7377;
 L_7377:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 0) goto L_7432;
     goto L_7378;
 L_7378:
@@ -12505,7 +12514,7 @@ L_7378:
     if (r1 != 1) goto L_7474;
     goto L_7379;
 L_7379:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x00000001000192bcull;
     r2 = 22;
     goto L_7509;
@@ -12514,7 +12523,7 @@ L_7383:
     if ((int64_t)r1 > 15) goto L_7408;
     goto L_7384;
 L_7384:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 13) goto L_7438;
     goto L_7385;
 L_7385:
@@ -12522,12 +12531,12 @@ L_7385:
     if (r1 != 14) goto L_7478;
     goto L_7386;
 L_7386:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0000000100019477ull;
     r2 = 19;
     goto L_7509;
 L_7390:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 6) goto L_7424;
     goto L_7391;
 L_7391:
@@ -12535,12 +12544,12 @@ L_7391:
     if (r1 != 7) goto L_7450;
     goto L_7392;
 L_7392:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0000000100019353ull;
     r2 = 31;
     goto L_7509;
 L_7396:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 19) goto L_7428;
     goto L_7397;
 L_7397:
@@ -12548,12 +12557,12 @@ L_7397:
     if (r1 != 20) goto L_7454;
     goto L_7398;
 L_7398:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x000000010001950eull;
     r2 = 40;
     goto L_7509;
 L_7402:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 3) goto L_7442;
     goto L_7403;
 L_7403:
@@ -12561,12 +12570,12 @@ L_7403:
     if (r1 != 4) goto L_7482;
     goto L_7404;
 L_7404:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0000000100019308ull;
     r2 = 26;
     goto L_7509;
 L_7408:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 16) goto L_7446;
     goto L_7409;
 L_7409:
@@ -12574,7 +12583,7 @@ L_7409:
     if (r1 != 17) goto L_7486;
     goto L_7410;
 L_7410:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x00000001000194bdull;
     r2 = 19;
     goto L_7509;
@@ -12583,7 +12592,7 @@ L_7414:
     if (r1 != 11) goto L_7466;
     goto L_7415;
 L_7415:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x000000010001942eull;
     r2 = 26;
     goto L_7509;
@@ -12592,7 +12601,7 @@ L_7419:
     if (r1 != 24) goto L_7470;
     goto L_7420;
 L_7420:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0000000100019598ull;
     r2 = 16;
     goto L_7509;
@@ -12614,7 +12623,7 @@ L_7432:
     if (r1 < 20) goto L_7490;
     goto L_7436;
 L_7436:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 1;
     goto L_7491;
 L_7438:
@@ -12633,57 +12642,57 @@ L_7446:
     r2 = 24;
     goto L_7509;
 L_7450:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0000000100019398ull;
     r2 = 32;
     goto L_7509;
 L_7454:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0000000100019536ull;
     r2 = 45;
     goto L_7509;
 L_7458:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0000000100019413ull;
     r2 = 27;
     goto L_7509;
 L_7462:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x000000010001957dull;
     r2 = 25;
     goto L_7509;
 L_7466:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0000000100019448ull;
     r2 = 28;
     goto L_7509;
 L_7470:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x00000001000195b8ull;
     r2 = 25;
     goto L_7509;
 L_7474:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x00000001000192d2ull;
     r2 = 29;
     goto L_7509;
 L_7478:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x000000010001948aull;
     r2 = 27;
     goto L_7509;
 L_7482:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0000000100019322ull;
     r2 = 24;
     goto L_7509;
 L_7486:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x00000001000194d0ull;
     r2 = 41;
     goto L_7509;
 L_7490:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r2 = r2 | 26;
     goto L_7491;
 L_7491:
@@ -12693,7 +12702,7 @@ L_7491:
     if (r1 != 26) goto L_7506;
     goto L_7494;
 L_7494:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r2 = r2 << (24 & 63);
     r2 = (uint64_t)((int64_t)r2 >> (56 & 63));
     r2 = r2 << (3 & 63);
@@ -12705,12 +12714,12 @@ L_7494:
     r2 = sbpf_ld8(r3, 0);
     goto L_7509;
 L_7506:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0x00000001000192aeull;
     r2 = 14;
     goto L_7509;
 L_7509:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 101;
     r0 = sbpf_sys_log(r1, r2, r3, r4, r5);
     goto L_7510;
 L_7510:
@@ -12722,19 +12731,20 @@ L_limit:
 }
 
 SBPF_FN f_0(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_0:
-    budget -= 3;
+    if ((budget -= 3) < 0) goto L_limit;
     r7 = r1;
     r1 = sbpf_ld1(r7, 65);
     if (r1 == 0) goto L_5;
     goto L_3;
 L_3:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = 0;
     goto L_114;
 L_5:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r5 = sbpf_ld8(r7, 16);
     r8 = sbpf_ld8(r7, 40);
     r1 = sbpf_ld8(r7, 24);
@@ -12747,7 +12757,7 @@ L_10:
     if (r8 < r9) goto L_103;
     goto L_12;
 L_12:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = r7;
     r1 = r1 + 48;
     r2 = sbpf_ld1(r7, 56);
@@ -12782,18 +12792,18 @@ L_32:
     if (r8 == r9) goto L_102;
     goto L_33;
 L_33:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = 0;
     goto L_34;
 L_34:
-    budget -= 4;
+    if ((budget -= 4) < 0) goto L_limit;
     r4 = r2;
     r4 = r4 + r1;
     r4 = sbpf_ld1(r4, 0);
     if (r4 == r6) goto L_46;
     goto L_38;
 L_38:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 + 1;
     if (r1 < r3) goto L_34;
     goto L_40;
@@ -12801,7 +12811,7 @@ L_40:
     budget -= 1;
     goto L_102;
 L_41:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -40);
     SBPF_CALL(f_11825(0, r1, r2, r3, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_43;
@@ -12812,7 +12822,7 @@ L_43:
     if (r0 == 0) goto L_102;
     goto L_46;
 L_46:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r9 = r9 + r1;
     r9 = r9 + 1;
     sbpf_st8(r7, 32, r9);
@@ -12820,12 +12830,12 @@ L_46:
     if (r9 < r1) goto L_25;
     goto L_51;
 L_51:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -24);
     if (r9 > r1) goto L_25;
     goto L_53;
 L_53:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r8 = r9;
     r3 = sbpf_ld8(r10, -8);
     r8 = r8 - r3;
@@ -12835,7 +12845,7 @@ L_53:
     SBPF_CALL(f_12371(0, r1, r2, r3, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r4 = x_.r4;);
     goto L_60;
 L_60:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r5 = sbpf_ld8(r10, -16);
     r0 = r0 << (32 & 63);
     r0 = r0 >> (32 & 63);
@@ -12868,18 +12878,18 @@ L_76:
     if (r8 == r9) goto L_102;
     goto L_77;
 L_77:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = 0;
     goto L_78;
 L_78:
-    budget -= 4;
+    if ((budget -= 4) < 0) goto L_limit;
     r4 = r2;
     r4 = r4 + r1;
     r4 = sbpf_ld1(r4, 0);
     if (r4 == r6) goto L_90;
     goto L_82;
 L_82:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 + 1;
     if (r1 < r3) goto L_78;
     goto L_84;
@@ -12887,7 +12897,7 @@ L_84:
     budget -= 1;
     goto L_102;
 L_85:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -40);
     SBPF_CALL(f_11825(0, r1, r2, r3, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_87;
@@ -12898,7 +12908,7 @@ L_87:
     if (r0 == 0) goto L_102;
     goto L_90;
 L_90:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r9 = r9 + r1;
     r9 = r9 + 1;
     sbpf_st8(r7, 32, r9);
@@ -12906,23 +12916,23 @@ L_90:
     if (r9 < r1) goto L_70;
     goto L_95;
 L_95:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -24);
     if (r9 > r1) goto L_70;
     goto L_97;
 L_97:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -8);
     r2 = 4;
     r3 = 0x0000000100019bb8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_102;
 L_102:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r7, 32, r8);
     goto L_103;
 L_103:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r7, 0);
     r5 = r5 + r1;
     r8 = sbpf_ld8(r7, 8);
@@ -12934,7 +12944,7 @@ L_108:
     r2 = 0;
     goto L_109;
 L_109:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld1(r7, 64);
     if (r3 != 0) goto L_112;
     goto L_111;
@@ -12943,11 +12953,11 @@ L_111:
     r5 = r2;
     goto L_112;
 L_112:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st1(r7, 65, 1);
     goto L_113;
 L_113:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r8 = r8 - r1;
     goto L_114;
 L_114:
@@ -12961,16 +12971,17 @@ L_limit:
 }
 
 SBPF_FN f_117(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_117:
-    budget -= 4;
+    if ((budget -= 4) < 0) goto L_limit;
     r0 = r2;
     r1 = r1 << (32 & 63);
     r1 = r1 >> (32 & 63);
     if ((int64_t)r1 > 12) goto L_128;
     goto L_121;
 L_121:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r1 <= 5) goto L_135;
     goto L_122;
 L_122:
@@ -12978,7 +12989,7 @@ L_122:
     if ((int64_t)r1 <= 8) goto L_149;
     goto L_123;
 L_123:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r1 > 10) goto L_169;
     goto L_124;
 L_124:
@@ -12986,11 +12997,11 @@ L_124:
     if (r1 != 9) goto L_204;
     goto L_125;
 L_125:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000a00000000ull;
     goto L_224;
 L_128:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r1 <= 18) goto L_143;
     goto L_129;
 L_129:
@@ -12998,7 +13009,7 @@ L_129:
     if ((int64_t)r1 <= 21) goto L_154;
     goto L_130;
 L_130:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r1 > 23) goto L_173;
     goto L_131;
 L_131:
@@ -13006,7 +13017,7 @@ L_131:
     if (r1 != 22) goto L_207;
     goto L_132;
 L_132:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000001700000000ull;
     goto L_224;
 L_135:
@@ -13014,7 +13025,7 @@ L_135:
     if ((int64_t)r1 > 2) goto L_159;
     goto L_136;
 L_136:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 0) goto L_183;
     goto L_137;
 L_137:
@@ -13023,7 +13034,7 @@ L_137:
     if (r1 == 1) goto L_224;
     goto L_140;
 L_140:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000300000000ull;
     goto L_224;
 L_143:
@@ -13031,7 +13042,7 @@ L_143:
     if ((int64_t)r1 > 15) goto L_164;
     goto L_144;
 L_144:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 13) goto L_189;
     goto L_145;
 L_145:
@@ -13039,11 +13050,11 @@ L_145:
     if (r1 != 14) goto L_216;
     goto L_146;
 L_146:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000f00000000ull;
     goto L_224;
 L_149:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 6) goto L_177;
     goto L_150;
 L_150:
@@ -13051,11 +13062,11 @@ L_150:
     if (r1 != 7) goto L_198;
     goto L_151;
 L_151:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000800000000ull;
     goto L_224;
 L_154:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 19) goto L_180;
     goto L_155;
 L_155:
@@ -13063,11 +13074,11 @@ L_155:
     if (r1 != 20) goto L_201;
     goto L_156;
 L_156:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000001500000000ull;
     goto L_224;
 L_159:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 3) goto L_192;
     goto L_160;
 L_160:
@@ -13075,11 +13086,11 @@ L_160:
     if (r1 != 4) goto L_219;
     goto L_161;
 L_161:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000500000000ull;
     goto L_224;
 L_164:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 == 16) goto L_195;
     goto L_165;
 L_165:
@@ -13087,7 +13098,7 @@ L_165:
     if (r1 != 17) goto L_222;
     goto L_166;
 L_166:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000001200000000ull;
     goto L_224;
 L_169:
@@ -13095,7 +13106,7 @@ L_169:
     if (r1 != 11) goto L_210;
     goto L_170;
 L_170:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000c00000000ull;
     goto L_224;
 L_173:
@@ -13103,7 +13114,7 @@ L_173:
     if (r1 != 24) goto L_213;
     goto L_174;
 L_174:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000001900000000ull;
     goto L_224;
 L_177:
@@ -13121,7 +13132,7 @@ L_183:
     if (r0 != 0) goto L_224;
     goto L_186;
 L_186:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000100000000ull;
     goto L_224;
 L_189:
@@ -13137,39 +13148,39 @@ L_195:
     r0 = 0x0000001100000000ull;
     goto L_224;
 L_198:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000900000000ull;
     goto L_224;
 L_201:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000001600000000ull;
     goto L_224;
 L_204:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000b00000000ull;
     goto L_224;
 L_207:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000001800000000ull;
     goto L_224;
 L_210:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000d00000000ull;
     goto L_224;
 L_213:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000001a00000000ull;
     goto L_224;
 L_216:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000001000000000ull;
     goto L_224;
 L_219:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x0000000600000000ull;
     goto L_224;
 L_222:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r0 = 0x0000001300000000ull;
     goto L_224;
 L_224:
@@ -13181,7 +13192,8 @@ L_limit:
 }
 
 SBPF_FN f_7511(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
     uint32_t sel = sbpf_sel;
     sbpf_sel = 0;
     switch (sel) {
@@ -13189,7 +13201,7 @@ SBPF_FN f_7511(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, 
     case 11532u: goto L_11531;
     }
 L_7511:
-    budget -= 5;
+    if ((budget -= 5) < 0) goto L_limit;
     r6 = r1;
     r0 = 0;
     r1 = 12;
@@ -13197,7 +13209,7 @@ L_7511:
     if ((int64_t)r5 <= 13) goto L_7558;
     goto L_7516;
 L_7516:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r5 > 22) goto L_7635;
     goto L_7517;
 L_7517:
@@ -13205,7 +13217,7 @@ L_7517:
     if ((int64_t)r5 > 18) goto L_7774;
     goto L_7518;
 L_7518:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 14) goto L_7946;
     goto L_7519;
 L_7519:
@@ -13213,7 +13225,7 @@ L_7519:
     if (r5 != 16) goto L_9923;
     goto L_7520;
 L_7520:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 <= 31) goto L_9923;
     goto L_7521;
 L_7521:
@@ -13222,7 +13234,7 @@ L_7521:
     if (r2 < 2) goto L_9923;
     goto L_7523;
 L_7523:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     if (r2 == 2) goto L_9923;
     goto L_7525;
@@ -13235,7 +13247,7 @@ L_7525:
     if (r2 != r5) goto L_9923;
     goto L_7531;
 L_7531:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r4, 16);
     r5 = 0x7ff14a3d4cc98c21ull;
     if (r2 != r5) goto L_9923;
@@ -13247,7 +13259,7 @@ L_7535:
     if (r2 != r5) goto L_9923;
     goto L_7539;
 L_7539:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r4, 32);
     r5 = 0x000000008ad9dbe3ull;
     if (r2 != r5) goto L_9923;
@@ -13265,7 +13277,7 @@ L_7543:
     if (r7 == r4) goto L_8954;
     goto L_7553;
 L_7553:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = 0x4000000000000000ull;
     if (r7 != r4) goto L_8926;
     goto L_7556;
@@ -13274,7 +13286,7 @@ L_7556:
     r2 = r2 << (1 & 63);
     goto L_8954;
 L_7558:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r5 <= 5) goto L_7704;
     goto L_7559;
 L_7559:
@@ -13282,7 +13294,7 @@ L_7559:
     if ((int64_t)r5 > 10) goto L_7738;
     goto L_7560;
 L_7560:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 6) goto L_7872;
     goto L_7561;
 L_7561:
@@ -13290,7 +13302,7 @@ L_7561:
     if (r5 != 10) goto L_9923;
     goto L_7562;
 L_7562:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 < 3) goto L_9922;
     goto L_7563;
 L_7563:
@@ -13302,7 +13314,7 @@ L_7563:
     if (r4 != 165) goto L_9923;
     goto L_7568;
 L_7568:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld1(r3, 196);
     if (r4 > 2) goto L_9923;
     goto L_7570;
@@ -13311,7 +13323,7 @@ L_7570:
     if (r4 == 2) goto L_7894;
     goto L_7571;
 L_7571:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 9;
     if (r4 == 0) goto L_9923;
     goto L_7573;
@@ -13323,7 +13335,7 @@ L_7573:
     if (r4 == 1) goto L_9923;
     goto L_7577;
 L_7577:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = 3;
     r4 = sbpf_ld8(r3, 88);
     r5 = sbpf_ld8(r6, 8);
@@ -13337,7 +13349,7 @@ L_7582:
     if (r7 != r4) goto L_9923;
     goto L_7585;
 L_7585:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r3, 104);
     r7 = sbpf_ld8(r5, 24);
     if (r7 != r4) goto L_9923;
@@ -13349,7 +13361,7 @@ L_7588:
     if (r7 != r4) goto L_9923;
     goto L_7591;
 L_7591:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0;
     r4 = sbpf_ld8(r5, 80);
     if (r4 != 82) goto L_9071;
@@ -13360,7 +13372,7 @@ L_7594:
     if (r4 != 1) goto L_8335;
     goto L_7596;
 L_7596:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r5, 134);
     if (r1 != 1) goto L_9855;
     goto L_7598;
@@ -13372,7 +13384,7 @@ L_7598:
     if (r1 != r0) goto L_10391;
     goto L_7602;
 L_7602:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 16);
     r0 = sbpf_ld8(r5, 146);
     if (r0 != r1) goto L_10391;
@@ -13384,7 +13396,7 @@ L_7605:
     if (r0 != r1) goto L_10391;
     goto L_7608;
 L_7608:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r7 = sbpf_ld8(r4, 32);
     r5 = sbpf_ld8(r5, 162);
     r0 = 0;
@@ -13397,7 +13409,7 @@ L_7613:
     if (r1 != 355) goto L_10013;
     goto L_7615;
 L_7615:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r5 = 0xde8f75eee1f6dd06ull;
     if (r1 == r5) goto L_10001;
@@ -13408,7 +13420,7 @@ L_7619:
     if (r1 != r5) goto L_10013;
     goto L_7622;
 L_7622:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 48);
     r5 = 0xac79ebce46e1cbd9ull;
     if (r1 != r5) goto L_10013;
@@ -13420,7 +13432,7 @@ L_7626:
     if (r1 != r5) goto L_10013;
     goto L_7630;
 L_7630:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 64);
     r5 = 0xa900ff7e85f58c3aull;
     if (r1 != r5) goto L_10013;
@@ -13433,7 +13445,7 @@ L_7635:
     if ((int64_t)r5 > 37) goto L_7807;
     goto L_7636;
 L_7636:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 23) goto L_7983;
     goto L_7637;
 L_7637:
@@ -13441,7 +13453,7 @@ L_7637:
     if (r5 != 24) goto L_9923;
     goto L_7638;
 L_7638:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = r10;
     r1 = r1 + (uint64_t)-344;
     r7 = r2;
@@ -13458,7 +13470,7 @@ L_7644:
     if (r4 != 0) goto L_9923;
     goto L_7649;
 L_7649:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 == 0) goto L_8206;
     goto L_7650;
 L_7650:
@@ -13470,7 +13482,7 @@ L_7650:
     if (r1 != r3) goto L_9923;
     goto L_7656;
 L_7656:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 48);
     r3 = 0xac79ebce46e1cbd9ull;
     if (r1 != r3) goto L_9923;
@@ -13482,7 +13494,7 @@ L_7660:
     if (r1 != r3) goto L_9923;
     goto L_7664;
 L_7664:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r2, 64);
     r3 = 0xa900ff7e85f58c3aull;
     if (r1 != r3) goto L_9923;
@@ -13495,12 +13507,12 @@ L_7668:
     if (r3 != 82) goto L_9923;
     goto L_7672;
 L_7672:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld1(r2, 133);
     if (r3 != 1) goto L_9923;
     goto L_7674;
 L_7674:
-    if ((budget -= 16) < 0) goto L_limit;
+    budget -= 16;
     r1 = sbpf_ld8(r10, -328);
     r3 = sbpf_ld8(r10, -336);
     r7 = sbpf_ld1(r2, 132);
@@ -13524,7 +13536,7 @@ L_7691:
     if (r0 == 0) goto L_10037;
     goto L_7693;
 L_7693:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     sbpf_st8(r10, -352, r0);
     r1 = r10;
     r1 = r1 + (uint64_t)-72;
@@ -13536,11 +13548,11 @@ L_7697:
     if (r0 == 0) goto L_7700;
     goto L_7699;
 L_7699:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r2 = r1;
     goto L_7700;
 L_7700:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 1;
     if (r0 == 0) goto L_7833;
     goto L_7702;
@@ -13553,7 +13565,7 @@ L_7704:
     if (r5 == 2) goto L_8165;
     goto L_7705;
 L_7705:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 4) goto L_7897;
     goto L_7706;
 L_7706:
@@ -13561,7 +13573,7 @@ L_7706:
     if (r5 != 5) goto L_9923;
     goto L_7707;
 L_7707:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 10;
     if (r2 == 0) goto L_9923;
     goto L_7709;
@@ -13573,7 +13585,7 @@ L_7709:
     if (r4 != 165) goto L_9071;
     goto L_7713;
 L_7713:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld1(r3, 196);
     if (r4 > 2) goto L_9071;
     goto L_7715;
@@ -13582,7 +13594,7 @@ L_7715:
     if (r4 == 0) goto L_8308;
     goto L_7716;
 L_7716:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 == 1) goto L_9923;
     goto L_7717;
 L_7717:
@@ -13591,7 +13603,7 @@ L_7717:
     if (r4 == 2) goto L_8310;
     goto L_7719;
 L_7719:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r4 = sbpf_ld8(r6, 8);
     r5 = r4;
     r5 = r5 + 8;
@@ -13605,7 +13617,7 @@ L_7724:
     if (r7 != r1) goto L_9093;
     goto L_7727;
 L_7727:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 16);
     r8 = sbpf_ld8(r3, 172);
     if (r8 != r1) goto L_9092;
@@ -13617,7 +13629,7 @@ L_7730:
     if (r8 != r1) goto L_9092;
     goto L_7733;
 L_7733:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r8 = sbpf_ld8(r4, 32);
     r9 = sbpf_ld8(r3, 188);
     r1 = r7;
@@ -13627,7 +13639,7 @@ L_7737:
     budget -= 1;
     goto L_9097;
 L_7738:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 11) goto L_7883;
     goto L_7739;
 L_7739:
@@ -13635,7 +13647,7 @@ L_7739:
     if (r5 != 13) goto L_9923;
     goto L_7740;
 L_7740:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 < 9) goto L_9923;
     goto L_7741;
 L_7741:
@@ -13643,7 +13655,7 @@ L_7741:
     if (r2 < 4) goto L_8204;
     goto L_7742;
 L_7742:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = 3;
     r1 = 0;
     r4 = sbpf_ld8(r6, 0);
@@ -13656,7 +13668,7 @@ L_7747:
     if (r5 > 2) goto L_9923;
     goto L_7749;
 L_7749:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 2) goto L_8211;
     goto L_7750;
 L_7750:
@@ -13665,7 +13677,7 @@ L_7750:
     if (r5 == 0) goto L_9923;
     goto L_7752;
 L_7752:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r0 = 0;
     r1 = 3;
     r7 = sbpf_ld8(r4, 88);
@@ -13680,7 +13692,7 @@ L_7758:
     if (r8 != r7) goto L_9923;
     goto L_7761;
 L_7761:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r4, 104);
     r8 = sbpf_ld8(r5, 24);
     if (r8 != r7) goto L_9923;
@@ -13692,7 +13704,7 @@ L_7764:
     if (r8 != r7) goto L_9923;
     goto L_7767;
 L_7767:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0;
     r0 = sbpf_ld8(r5, 80);
     if (r0 != 82) goto L_8499;
@@ -13703,14 +13715,14 @@ L_7770:
     if (r0 == 1) goto L_8981;
     goto L_7772;
 L_7772:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r0 == 0) goto L_7981;
     goto L_7773;
 L_7773:
     budget -= 1;
     goto L_8499;
 L_7774:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 19) goto L_8085;
     goto L_7775;
 L_7775:
@@ -13718,7 +13730,7 @@ L_7775:
     if (r5 != 21) goto L_9923;
     goto L_7776;
 L_7776:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 2;
     if (r2 == 0) goto L_8209;
     goto L_7778;
@@ -13730,7 +13742,7 @@ L_7778:
     if (r3 != r4) goto L_9857;
     goto L_7783;
 L_7783:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r2, 48);
     r4 = 0xac79ebce46e1cbd9ull;
     if (r3 != r4) goto L_9857;
@@ -13742,7 +13754,7 @@ L_7787:
     if (r3 != r4) goto L_9857;
     goto L_7791;
 L_7791:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r2, 64);
     r4 = 0xa900ff7e85f58c3aull;
     if (r3 != r4) goto L_9857;
@@ -13753,25 +13765,25 @@ L_7795:
     if (r3 != 82) goto L_9923;
     goto L_7797;
 L_7797:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r2, 133);
     if (r2 != 1) goto L_9923;
     goto L_7799;
 L_7799:
-    budget -= 5;
+    budget -= 105;
     sbpf_st8(r10, -344, 165);
     r1 = r10;
     r1 = r1 + (uint64_t)-344;
     r2 = 8;
-    sbpf_trap(SBPF_HALT_UNKNOWN_SYSCALL, 0xa226d3ebu);
+    r0 = sbpf_sys_set_return_data(r1, r2, r3, r4, r5);
     goto L_7804;
 L_7804:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 2;
     r0 = 26;
     goto L_9923;
 L_7807:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 38) goto L_8110;
     goto L_7808;
 L_7808:
@@ -13779,7 +13791,7 @@ L_7808:
     if (r5 != 45) goto L_9923;
     goto L_7809;
 L_7809:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == 0) goto L_9923;
     goto L_7810;
 L_7810:
@@ -13788,7 +13800,7 @@ L_7810:
     if (r5 != 0) goto L_9918;
     goto L_7812;
 L_7812:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 <= 2) goto L_9922;
     goto L_7813;
 L_7813:
@@ -13799,7 +13811,7 @@ L_7813:
     if (r4 != 165) goto L_9071;
     goto L_7817;
 L_7817:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = sbpf_ld1(r3, 196);
     if (r4 > 2) goto L_9071;
     goto L_7819;
@@ -13809,7 +13821,7 @@ L_7819:
     if (r4 == 0) goto L_9923;
     goto L_7821;
 L_7821:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r3, 197);
     if (r1 != 1) goto L_8538;
     goto L_7823;
@@ -13819,7 +13831,7 @@ L_7823:
     if (r5 == 0) goto L_9089;
     goto L_7825;
 L_7825:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 >= r7) goto L_9147;
     goto L_7826;
 L_7826:
@@ -13840,7 +13852,7 @@ L_7833:
     if (r9 == 0) goto L_8501;
     goto L_7835;
 L_7835:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r2 = r8;
     r2 = r2 + r9;
     r1 = sbpf_ld1(r2, -1);
@@ -13856,7 +13868,7 @@ L_7841:
     if ((int64_t)r4 >= -64) goto L_7857;
     goto L_7845;
 L_7845:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = sbpf_ld1(r2, -3);
     r3 = r3 << (56 & 63);
     r3 = (uint64_t)((int64_t)r3 >> (56 & 63));
@@ -13873,7 +13885,7 @@ L_7849:
     r3 = r5;
     goto L_7863;
 L_7857:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = r2 + (uint64_t)-2;
     r4 = r4 & 31;
     r3 = r4;
@@ -13884,7 +13896,7 @@ L_7861:
     r3 = r3 & 15;
     goto L_7863;
 L_7863:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = r4 & 63;
     r3 = r3 << (6 & 63);
     r3 = r3 | r4;
@@ -13898,14 +13910,14 @@ L_7866:
     if (r3 == 48) goto L_7833;
     goto L_7871;
 L_7871:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_8502;
 L_7872:
     budget -= 1;
     if (r4 < 2) goto L_9923;
     goto L_7873;
 L_7873:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld1(r3, 0);
     r1 = r7;
     if (r7 < 4) goto L_7877;
@@ -13915,7 +13927,7 @@ L_7876:
     r1 = 12;
     goto L_7877;
 L_7877:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 > 3) goto L_9923;
     goto L_7878;
 L_7878:
@@ -13925,7 +13937,7 @@ L_7878:
     if (r5 != 0) goto L_8251;
     goto L_7881;
 L_7881:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = 0;
     goto L_8254;
 L_7883:
@@ -13933,7 +13945,7 @@ L_7883:
     if (r2 < 3) goto L_9922;
     goto L_7884;
 L_7884:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = 3;
     r1 = 0;
     r3 = sbpf_ld8(r6, 0);
@@ -13946,7 +13958,7 @@ L_7889:
     if (r4 > 2) goto L_9923;
     goto L_7891;
 L_7891:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == 2) goto L_8312;
     goto L_7892;
 L_7892:
@@ -13955,7 +13967,7 @@ L_7892:
     if (r4 == 0) goto L_9923;
     goto L_7894;
 L_7894:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 0;
     r1 = 13;
     goto L_9923;
@@ -13964,7 +13976,7 @@ L_7897:
     if (r4 < 8) goto L_9923;
     goto L_7898;
 L_7898:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 <= 2) goto L_9922;
     goto L_7899;
 L_7899:
@@ -13975,7 +13987,7 @@ L_7899:
     if (r5 != 165) goto L_9071;
     goto L_7903;
 L_7903:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = sbpf_ld1(r4, 196);
     if (r5 > 2) goto L_9071;
     goto L_7905;
@@ -13984,7 +13996,7 @@ L_7905:
     if (r5 == 2) goto L_8310;
     goto L_7906;
 L_7906:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 9;
     if (r5 == 0) goto L_9923;
     goto L_7908;
@@ -13998,7 +14010,7 @@ L_7908:
     if (r7 != r8) goto L_9923;
     goto L_7914;
 L_7914:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r5, 16);
     r8 = sbpf_ld8(r4, 128);
     if (r8 != r7) goto L_9923;
@@ -14010,7 +14022,7 @@ L_7917:
     if (r8 != r7) goto L_9923;
     goto L_7920;
 L_7920:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r5, 32);
     r8 = sbpf_ld8(r4, 144);
     if (r8 != r7) goto L_9923;
@@ -14022,7 +14034,7 @@ L_7923:
     if (r1 != 355) goto L_9294;
     goto L_7926;
 L_7926:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 40);
     r0 = 0xde8f75eee1f6dd06ull;
     if (r1 == r0) goto L_9282;
@@ -14033,7 +14045,7 @@ L_7930:
     if (r1 != r0) goto L_9294;
     goto L_7933;
 L_7933:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 48);
     r0 = 0xac79ebce46e1cbd9ull;
     if (r1 != r0) goto L_9294;
@@ -14045,7 +14057,7 @@ L_7937:
     if (r1 != r0) goto L_9294;
     goto L_7941;
 L_7941:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 64);
     r0 = 0xa900ff7e85f58c3aull;
     if (r1 != r0) goto L_9294;
@@ -14058,7 +14070,7 @@ L_7946:
     if (r4 < 9) goto L_9923;
     goto L_7947;
 L_7947:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 < 3) goto L_8204;
     goto L_7948;
 L_7948:
@@ -14070,7 +14082,7 @@ L_7948:
     if (r5 != 165) goto L_9923;
     goto L_7953;
 L_7953:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = sbpf_ld1(r4, 196);
     if (r5 > 2) goto L_9923;
     goto L_7955;
@@ -14079,7 +14091,7 @@ L_7955:
     if (r5 == 2) goto L_8211;
     goto L_7956;
 L_7956:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 9;
     if (r5 == 0) goto L_9923;
     goto L_7958;
@@ -14090,7 +14102,7 @@ L_7958:
     if (r1 == 1) goto L_10097;
     goto L_7961;
 L_7961:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = 3;
     r7 = sbpf_ld8(r4, 88);
     r5 = sbpf_ld8(r6, 0);
@@ -14104,7 +14116,7 @@ L_7966:
     if (r8 != r7) goto L_9923;
     goto L_7969;
 L_7969:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r4, 104);
     r8 = sbpf_ld8(r5, 24);
     if (r8 != r7) goto L_9923;
@@ -14116,7 +14128,7 @@ L_7972:
     if (r8 != r7) goto L_9923;
     goto L_7975;
 L_7975:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0;
     r0 = sbpf_ld8(r5, 80);
     if (r0 != 82) goto L_8499;
@@ -14127,7 +14139,7 @@ L_7978:
     if (r0 == 1) goto L_9022;
     goto L_7980;
 L_7980:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r0 != 0) goto L_8499;
     goto L_7981;
 L_7981:
@@ -14139,7 +14151,7 @@ L_7983:
     if (r4 < 8) goto L_9923;
     goto L_7984;
 L_7984:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 == 0) goto L_8206;
     goto L_7985;
 L_7985:
@@ -14151,7 +14163,7 @@ L_7985:
     if (r1 != r2) goto L_9923;
     goto L_7991;
 L_7991:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_9923;
@@ -14163,7 +14175,7 @@ L_7995:
     if (r1 != r2) goto L_9923;
     goto L_7999;
 L_7999:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_9923;
@@ -14176,7 +14188,7 @@ L_8003:
     if (r2 != 82) goto L_9923;
     goto L_8007;
 L_8007:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r6, 133);
     if (r2 != 1) goto L_9923;
     goto L_8009;
@@ -14190,7 +14202,7 @@ L_8009:
     if (r1 == 0) goto L_8337;
     goto L_8015;
 L_8015:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -352, r9);
     r7 = 0;
     r9 = 0;
@@ -14223,7 +14235,7 @@ L_8032:
     if (r0 == 0) goto L_8543;
     goto L_8039;
 L_8039:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = r8;
     if (r8 < 257) goto L_8042;
     goto L_8041;
@@ -14232,7 +14244,7 @@ L_8041:
     r4 = 257;
     goto L_8042;
 L_8042:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r3 = 1;
     r3 = r3 - r9;
     r5 = r0;
@@ -14245,12 +14257,12 @@ L_8048:
     r1 = r5;
     goto L_8049;
 L_8049:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st8(r10, -360, r1);
     if (r8 <= r0) goto L_8866;
     goto L_8051;
 L_8051:
-    budget -= 8;
+    budget -= 18;
     sbpf_st8(r10, -384, r3);
     r4 = r4 - r0;
     sbpf_st8(r10, -376, r4);
@@ -14261,7 +14273,7 @@ L_8051:
     r0 = sbpf_sys_memcpy(r1, r2, r3, r4, r5);
     goto L_8059;
 L_8059:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r4 = sbpf_ld8(r10, -376);
     r2 = sbpf_ld8(r10, -368);
     r8 = r8 + r4;
@@ -14275,11 +14287,11 @@ L_8064:
     if (r7 < 257) goto L_8068;
     goto L_8067;
 L_8067:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = 257;
     goto L_8068;
 L_8068:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = r7 - r2;
     if (r3 < r2) goto L_8071;
     goto L_8070;
@@ -14288,7 +14300,7 @@ L_8070:
     r3 = r2;
     goto L_8071;
 L_8071:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 19;
     r2 = r10;
     r2 = r2 + (uint64_t)-72;
     r7 = r7 + r2;
@@ -14307,18 +14319,18 @@ L_8080:
     if (r1 > 257) goto L_8550;
     goto L_8084;
 L_8084:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_8552;
 L_8085:
     budget -= 1;
     if (r4 == 0) goto L_9923;
     goto L_8086;
 L_8086:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 == 0) goto L_9922;
     goto L_8087;
 L_8087:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r9 = r2;
     r7 = sbpf_ld1(r3, 0);
     sbpf_st8(r10, -352, r6);
@@ -14334,7 +14346,7 @@ L_8095:
     if (r1 == 1) goto L_9647;
     goto L_8097;
 L_8097:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r6 = r6 + 128;
     r1 = sbpf_ld8(r10, -336);
     r1 = r1 * r6;
@@ -14349,7 +14361,7 @@ L_8105:
     if (r6 != r2) goto L_8701;
     goto L_8108;
 L_8108:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 << (1 & 63);
     goto L_8727;
 L_8110:
@@ -14357,7 +14369,7 @@ L_8110:
     if (r2 < 3) goto L_9922;
     goto L_8111;
 L_8111:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r3 = r6;
     r3 = r3 + 24;
     r8 = sbpf_ld8(r6, 0);
@@ -14369,7 +14381,7 @@ L_8116:
     if (r7 == 355) goto L_8214;
     goto L_8117;
 L_8117:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 13;
     if (r7 != 165) goto L_9923;
     goto L_8119;
@@ -14380,7 +14392,7 @@ L_8119:
     if (r4 > 2) goto L_9071;
     goto L_8122;
 L_8122:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 9;
     if (r4 == 0) goto L_9923;
     goto L_8124;
@@ -14392,7 +14404,7 @@ L_8124:
     if (r4 == 1) goto L_9923;
     goto L_8128;
 L_8128:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = 4;
     r5 = sbpf_ld8(r8, 120);
     r4 = sbpf_ld8(r6, 16);
@@ -14406,7 +14418,7 @@ L_8133:
     if (r9 != r5) goto L_9923;
     goto L_8136;
 L_8136:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r4, 24);
     r9 = sbpf_ld8(r8, 136);
     if (r9 != r5) goto L_9923;
@@ -14418,7 +14430,7 @@ L_8139:
     if (r9 != r5) goto L_9923;
     goto L_8142;
 L_8142:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -352, r6);
     r1 = sbpf_ld8(r4, 80);
     if (r1 != 355) goto L_9640;
@@ -14430,7 +14442,7 @@ L_8145:
     if (r1 == r5) goto L_9533;
     goto L_8149;
 L_8149:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = 0x93a165d7e1f6dd06ull;
     if (r1 != r5) goto L_9640;
     goto L_8152;
@@ -14441,7 +14453,7 @@ L_8152:
     if (r1 != r5) goto L_9640;
     goto L_8156;
 L_8156:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r5 = 0x91375b5fed85b41cull;
     if (r1 != r5) goto L_9640;
@@ -14453,10 +14465,10 @@ L_8160:
     if (r1 != r5) goto L_9640;
     goto L_8164;
 L_8164:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9545;
 L_8165:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == 0) goto L_9923;
     goto L_8166;
 L_8166:
@@ -14464,7 +14476,7 @@ L_8166:
     if (r2 < 2) goto L_9922;
     goto L_8167;
 L_8167:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r0 = 1;
     r1 = 0;
     r4 = sbpf_ld8(r6, 8);
@@ -14479,7 +14491,7 @@ L_8174:
     if (r5 != r7) goto L_9923;
     goto L_8178;
 L_8178:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r4, 24);
     r7 = 0x44fda19b08eeda58ull;
     if (r5 != r7) goto L_9923;
@@ -14491,7 +14503,7 @@ L_8182:
     if (r5 != r7) goto L_9923;
     goto L_8186;
 L_8186:
-    if ((budget -= 12) < 0) goto L_limit;
+    budget -= 12;
     r0 = sbpf_ld1(r3, 0);
     r8 = sbpf_ld8(r6, 0);
     r9 = sbpf_ld8(r8, 80);
@@ -14511,11 +14523,11 @@ L_8199:
     if (r7 != r4) goto L_8342;
     goto L_8202;
 L_8202:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = r3 << (1 & 63);
     goto L_8372;
 L_8204:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 10;
     goto L_9923;
 L_8206:
@@ -14528,12 +14540,12 @@ L_8209:
     r0 = 10;
     goto L_9923;
 L_8211:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 0;
     r1 = 17;
     goto L_9923;
 L_8214:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = 4;
     r5 = sbpf_ld8(r8, 8);
     r4 = sbpf_ld8(r6, 16);
@@ -14547,7 +14559,7 @@ L_8219:
     if (r9 != r5) goto L_9923;
     goto L_8222;
 L_8222:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r4, 24);
     r9 = sbpf_ld8(r8, 24);
     if (r9 != r5) goto L_9923;
@@ -14559,7 +14571,7 @@ L_8225:
     if (r9 != r5) goto L_9923;
     goto L_8228;
 L_8228:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -352, r6);
     r1 = sbpf_ld8(r4, 80);
     if (r1 != 355) goto L_9640;
@@ -14571,7 +14583,7 @@ L_8231:
     if (r1 == r5) goto L_9233;
     goto L_8235;
 L_8235:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = 0x93a165d7e1f6dd06ull;
     if (r1 != r5) goto L_9640;
     goto L_8238;
@@ -14582,7 +14594,7 @@ L_8238:
     if (r1 != r5) goto L_9640;
     goto L_8242;
 L_8242:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r5 = 0x91375b5fed85b41cull;
     if (r1 != r5) goto L_9640;
@@ -14594,10 +14606,10 @@ L_8246:
     if (r1 != r5) goto L_9640;
     goto L_8250;
 L_8250:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9245;
 L_8251:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 1) goto L_9923;
     goto L_8252;
 L_8252:
@@ -14605,7 +14617,7 @@ L_8252:
     if (r4 < 34) goto L_9923;
     goto L_8253;
 L_8253:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r3 = r3 + 2;
     goto L_8254;
 L_8254:
@@ -14613,7 +14625,7 @@ L_8254:
     if (r2 <= 1) goto L_9922;
     goto L_8255;
 L_8255:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r5 = r6;
     r5 = r5 + 16;
     r4 = sbpf_ld8(r6, 0);
@@ -14625,7 +14637,7 @@ L_8260:
     if (r0 != 165) goto L_9073;
     goto L_8261;
 L_8261:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = sbpf_ld1(r4, 196);
     if (r8 > 2) goto L_9298;
     goto L_8263;
@@ -14634,7 +14646,7 @@ L_8263:
     if (r8 == 2) goto L_9443;
     goto L_8264;
 L_8264:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 9;
     if (r8 == 0) goto L_9227;
     goto L_8266;
@@ -14644,7 +14656,7 @@ L_8266:
     if (r7 == 3) goto L_9697;
     goto L_8268;
 L_8268:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 != 2) goto L_9231;
     goto L_8269;
 L_8269:
@@ -14655,7 +14667,7 @@ L_8269:
     if (r8 != r9) goto L_10035;
     goto L_8273;
 L_8273:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r7, 16);
     r9 = sbpf_ld8(r4, 128);
     if (r9 != r8) goto L_10035;
@@ -14667,7 +14679,7 @@ L_8276:
     if (r9 != r8) goto L_10035;
     goto L_8279;
 L_8279:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r7, 32);
     r9 = sbpf_ld8(r4, 144);
     if (r9 != r8) goto L_10035;
@@ -14678,7 +14690,7 @@ L_8282:
     if (r8 != 355) goto L_9871;
     goto L_8284;
 L_8284:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r7, 40);
     r9 = 0xde8f75eee1f6dd06ull;
     if (r8 == r9) goto L_9859;
@@ -14689,7 +14701,7 @@ L_8288:
     if (r8 != r9) goto L_9871;
     goto L_8291;
 L_8291:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r7, 48);
     r9 = 0xac79ebce46e1cbd9ull;
     if (r8 != r9) goto L_9871;
@@ -14701,7 +14713,7 @@ L_8295:
     if (r8 != r9) goto L_9871;
     goto L_8299;
 L_8299:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r7, 64);
     r9 = 0xa900ff7e85f58c3aull;
     if (r8 != r9) goto L_9871;
@@ -14715,16 +14727,16 @@ L_8304:
     if (r4 == 1) goto L_8887;
     goto L_8306;
 L_8306:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     if (r4 != 0) goto L_9071;
     goto L_8308;
 L_8308:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 9;
     goto L_9923;
 L_8310:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 17;
     goto L_9923;
 L_8312:
@@ -14735,7 +14747,7 @@ L_8312:
     if (r4 == 1) goto L_9923;
     goto L_8316;
 L_8316:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = 3;
     r4 = sbpf_ld8(r3, 88);
     r5 = sbpf_ld8(r6, 8);
@@ -14749,7 +14761,7 @@ L_8321:
     if (r7 != r4) goto L_9923;
     goto L_8324;
 L_8324:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r3, 104);
     r7 = sbpf_ld8(r5, 24);
     if (r7 != r4) goto L_9923;
@@ -14761,7 +14773,7 @@ L_8327:
     if (r7 != r4) goto L_9923;
     goto L_8330;
 L_8330:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0;
     r4 = sbpf_ld8(r5, 80);
     if (r4 != 82) goto L_9071;
@@ -14772,14 +14784,14 @@ L_8333:
     if (r4 == 1) goto L_9816;
     goto L_8335;
 L_8335:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 == 0) goto L_8308;
     goto L_8336;
 L_8336:
     budget -= 1;
     goto L_9071;
 L_8337:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r7 = 1;
     sbpf_st8(r10, -344, 1);
     sbpf_st1(r10, -336, 48);
@@ -14789,7 +14801,7 @@ L_8341:
     budget -= 1;
     goto L_8696;
 L_8342:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st8(r10, -376, r5);
     sbpf_st8(r10, -368, r2);
     sbpf_st8(r10, -352, r6);
@@ -14797,13 +14809,13 @@ L_8342:
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_8347;
 L_8347:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r7;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_8350;
 L_8350:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -384, r1);
@@ -14812,7 +14824,7 @@ L_8350:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_8356;
 L_8356:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r0;
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -14822,11 +14834,11 @@ L_8359:
     if ((int64_t)r7 < 0) goto L_8361;
     goto L_8360;
 L_8360:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -384, r0);
     goto L_8361;
 L_8361:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -14837,11 +14849,11 @@ L_8365:
     if ((int64_t)r0 > 0) goto L_8368;
     goto L_8367;
 L_8367:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r3 = sbpf_ld8(r10, -384);
     goto L_8368;
 L_8368:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r10, -352);
     r2 = sbpf_ld8(r10, -368);
     r1 = 0;
@@ -14853,7 +14865,7 @@ L_8372:
     if (r9 != 355) goto L_9923;
     goto L_8374;
 L_8374:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r8, 90);
     if (r1 == 0) goto L_8378;
     goto L_8376;
@@ -14862,7 +14874,7 @@ L_8376:
     if (r1 == 1) goto L_8978;
     goto L_8377;
 L_8377:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9923;
 L_8378:
     budget -= 2;
@@ -14870,7 +14882,7 @@ L_8378:
     if (r5 < r3) goto L_9227;
     goto L_8380;
 L_8380:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r2 = r2 + (uint64_t)-2;
     r1 = sbpf_ld8(r10, -360);
     sbpf_st1(r8, 88, r1);
@@ -14885,7 +14897,7 @@ L_8387:
     if (r0 == 0) goto L_8885;
     goto L_8389;
 L_8389:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r8, 88);
     SBPF_CALL((sbpf_sel = 11532u, f_7511)(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1;);
     goto L_8391;
@@ -14898,7 +14910,7 @@ L_8391:
     if (r2 == 0) goto L_9923;
     goto L_8396;
 L_8396:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 == 0) goto L_8863;
     goto L_8397;
 L_8397:
@@ -14915,7 +14927,7 @@ L_8397:
     if (r3 == 1) goto L_8863;
     goto L_8407;
 L_8407:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = sbpf_ld8(r6, 24);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -14941,7 +14953,7 @@ L_8417:
     if (r3 == 3) goto L_8863;
     goto L_8427;
 L_8427:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = sbpf_ld8(r6, 40);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -14967,7 +14979,7 @@ L_8437:
     if (r3 == 5) goto L_8863;
     goto L_8447;
 L_8447:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = sbpf_ld8(r6, 56);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -14993,7 +15005,7 @@ L_8457:
     if (r3 == 7) goto L_8863;
     goto L_8467;
 L_8467:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = sbpf_ld8(r6, 72);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -15019,7 +15031,7 @@ L_8477:
     if (r3 == 9) goto L_8863;
     goto L_8487;
 L_8487:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = sbpf_ld8(r6, 88);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -15036,7 +15048,7 @@ L_8497:
     r1 = sbpf_ld8(r6, 96);
     goto L_8854;
 L_8499:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 3;
     goto L_9923;
 L_8501:
@@ -15044,7 +15056,7 @@ L_8501:
     if (r6 == 0) goto L_8535;
     goto L_8502;
 L_8502:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r10;
     r1 = r1 + (uint64_t)-72;
     SBPF_CALL(f_0(r0, r1, r2, r3, r4, 0, 0, 0, r8, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -15054,7 +15066,7 @@ L_8505:
     if (r9 > r7) goto L_8535;
     goto L_8506;
 L_8506:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r0 != 0) goto L_8535;
     goto L_8507;
 L_8507:
@@ -15064,7 +15076,7 @@ L_8507:
     if (r2 > 257) goto L_8535;
     goto L_8510;
 L_8510:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r7 = r10;
     r7 = r7 + (uint64_t)-344;
     r1 = r7;
@@ -15074,14 +15086,14 @@ L_8510:
     SBPF_CALL((sbpf_sel = 12367u, f_12341)(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r2 = x_.r2;);
     goto L_8517;
 L_8517:
-    budget -= 4;
+    budget -= 14;
     r1 = r7;
     r2 = sbpf_ld8(r10, -352);
     r3 = r6;
     r0 = sbpf_sys_memcpy(r1, r2, r3, r4, r5);
     goto L_8521;
 L_8521:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 15;
     r7 = r7 + r6;
     r1 = r7;
     r2 = r8;
@@ -15094,7 +15106,7 @@ L_8526:
     if (r2 == 0) goto L_8535;
     goto L_8528;
 L_8528:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 != 1) goto L_9329;
     goto L_8529;
 L_8529:
@@ -15105,12 +15117,12 @@ L_8529:
     if (r1 == 43) goto L_8535;
     goto L_8533;
 L_8533:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = 1;
     if (r1 != 45) goto L_9517;
     goto L_8535;
 L_8535:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 1;
     r1 = 0;
     goto L_9923;
@@ -15124,7 +15136,7 @@ L_8541:
     r1 = sbpf_ld8(r5, 0);
     goto L_9093;
 L_8543:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = r8;
     if (r8 < 257) goto L_8546;
     goto L_8545;
@@ -15133,7 +15145,7 @@ L_8545:
     r3 = 257;
     goto L_8546;
 L_8546:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 13;
     r9 = sbpf_ld8(r10, -352);
     r1 = r9;
     r0 = sbpf_sys_memcpy(r1, r2, r3, r4, r5);
@@ -15143,12 +15155,12 @@ L_8549:
     if (r8 <= 257) goto L_8552;
     goto L_8550;
 L_8550:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 257;
     sbpf_st1(r10, -80, 64);
     goto L_8552;
 L_8552:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r7 = sbpf_ld8(r10, -344);
     r7 = r7 + r8;
     sbpf_st8(r10, -344, r7);
@@ -15163,7 +15175,7 @@ L_8556:
     if (r1 != 0) goto L_8578;
     goto L_8561;
 L_8561:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_8696;
 L_8562:
     budget -= 2;
@@ -15171,7 +15183,7 @@ L_8562:
     if (r1 == 0) goto L_8696;
     goto L_8564;
 L_8564:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 > 15) goto L_8578;
     goto L_8565;
 L_8565:
@@ -15179,11 +15191,11 @@ L_8565:
     if (r7 == 0) goto L_8695;
     goto L_8566;
 L_8566:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = 8;
     goto L_8567;
 L_8567:
-    budget -= 5;
+    if ((budget -= 5) < 0) goto L_limit;
     r2 = r10;
     r2 = r2 + (uint64_t)-344;
     r2 = r2 + r1;
@@ -15191,21 +15203,21 @@ L_8567:
     if (r2 == 46) goto L_8576;
     goto L_8572;
 L_8572:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = r1;
     r3 = r3 + (uint64_t)-7;
     r1 = r1 + 1;
     if (r3 < r7) goto L_8567;
     goto L_8576;
 L_8576:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 == 46) goto L_8588;
     goto L_8577;
 L_8577:
     budget -= 1;
     goto L_8696;
 L_8578:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = 46;
     r2 = r9;
     r3 = r7;
@@ -15216,7 +15228,7 @@ L_8582:
     if (r0 == 1) goto L_8588;
     goto L_8583;
 L_8583:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_8696;
 L_8584:
     budget -= 4;
@@ -15233,7 +15245,7 @@ L_8588:
     if (r1 == 0) goto L_8644;
     goto L_8592;
 L_8592:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r2 = r10;
     r2 = r2 + (uint64_t)-344;
     r7 = r1;
@@ -15255,7 +15267,7 @@ L_8600:
     if ((int64_t)r4 >= -64) goto L_8622;
     goto L_8608;
 L_8608:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r5 = r5 + r1;
     r3 = sbpf_ld1(r5, 5);
     r3 = r3 << (56 & 63);
@@ -15274,7 +15286,7 @@ L_8613:
     r3 = r0;
     goto L_8629;
 L_8622:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r7 = r7 + 6;
     r4 = r4 & 31;
     r3 = r4;
@@ -15286,7 +15298,7 @@ L_8626:
     r7 = r5;
     goto L_8629;
 L_8629:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = r4 & 63;
     r3 = r3 << (6 & 63);
     r3 = r3 | r4;
@@ -15300,7 +15312,7 @@ L_8632:
     if (r3 == 48) goto L_8588;
     goto L_8637;
 L_8637:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_8644;
 L_8638:
     budget -= 6;
@@ -15318,7 +15330,7 @@ L_8644:
     if (r1 == 0) goto L_8695;
     goto L_8647;
 L_8647:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r2 = r10;
     r2 = r2 + (uint64_t)-344;
     r3 = r1;
@@ -15340,7 +15352,7 @@ L_8655:
     if ((int64_t)r5 >= -64) goto L_8677;
     goto L_8663;
 L_8663:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = r0 + r1;
     r4 = sbpf_ld1(r0, 5);
     r4 = r4 << (56 & 63);
@@ -15359,7 +15371,7 @@ L_8668:
     r4 = r6;
     goto L_8684;
 L_8677:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = r3 + 6;
     r5 = r5 & 31;
     r4 = r5;
@@ -15371,7 +15383,7 @@ L_8681:
     r3 = r0;
     goto L_8684;
 L_8684:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = r5 & 63;
     r4 = r4 << (6 & 63);
     r4 = r4 | r5;
@@ -15387,36 +15399,36 @@ L_8687:
     if (r4 == 46) goto L_8644;
     goto L_8694;
 L_8694:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_8696;
 L_8695:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = 0;
     goto L_8696;
 L_8696:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 103;
     r1 = r9;
     r2 = r7;
-    sbpf_trap(SBPF_HALT_UNKNOWN_SYSCALL, 0xa226d3ebu);
+    r0 = sbpf_sys_set_return_data(r1, r2, r3, r4, r5);
     goto L_8699;
 L_8699:
     budget -= 2;
     r0 = 26;
     goto L_9923;
 L_8701:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -368, r4);
     sbpf_st8(r10, -360, r7);
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_8704;
 L_8704:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_8707;
 L_8707:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -376, r1);
@@ -15425,7 +15437,7 @@ L_8707:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_8713;
 L_8713:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r0;
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -15435,11 +15447,11 @@ L_8716:
     if ((int64_t)r7 < 0) goto L_8718;
     goto L_8717;
 L_8717:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -376, r0);
     goto L_8718;
 L_8718:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -15450,11 +15462,11 @@ L_8722:
     if ((int64_t)r0 > 0) goto L_8725;
     goto L_8724;
 L_8724:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = sbpf_ld8(r10, -376);
     goto L_8725;
 L_8725:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = sbpf_ld8(r10, -360);
     r4 = sbpf_ld8(r10, -368);
     goto L_8727;
@@ -15465,7 +15477,7 @@ L_8727:
     if (r3 != 355) goto L_9227;
     goto L_8730;
 L_8730:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld1(r8, 90);
     if (r3 == 0) goto L_8734;
     goto L_8732;
@@ -15474,7 +15486,7 @@ L_8732:
     if (r3 == 1) goto L_8978;
     goto L_8733;
 L_8733:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9923;
 L_8734:
     budget -= 2;
@@ -15482,7 +15494,7 @@ L_8734:
     if (r4 < r1) goto L_9227;
     goto L_8736;
 L_8736:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r9 = r9 + (uint64_t)-1;
     sbpf_st1(r8, 88, r7);
     sbpf_st1(r8, 89, r9);
@@ -15496,7 +15508,7 @@ L_8742:
     if (r0 == 0) goto L_8885;
     goto L_8744;
 L_8744:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r8, 88);
     SBPF_CALL((sbpf_sel = 11532u, f_7511)(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1;);
     goto L_8746;
@@ -15510,7 +15522,7 @@ L_8746:
     if (r2 == 0) goto L_9923;
     goto L_8752;
 L_8752:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 == 0) goto L_8863;
     goto L_8753;
 L_8753:
@@ -15527,7 +15539,7 @@ L_8753:
     if (r3 == 1) goto L_8863;
     goto L_8763;
 L_8763:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = sbpf_ld8(r4, 16);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -15553,7 +15565,7 @@ L_8773:
     if (r3 == 3) goto L_8863;
     goto L_8783;
 L_8783:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = sbpf_ld8(r4, 32);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -15579,7 +15591,7 @@ L_8793:
     if (r3 == 5) goto L_8863;
     goto L_8803;
 L_8803:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = sbpf_ld8(r4, 48);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -15605,7 +15617,7 @@ L_8813:
     if (r3 == 7) goto L_8863;
     goto L_8823;
 L_8823:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = sbpf_ld8(r4, 64);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -15631,7 +15643,7 @@ L_8833:
     if (r3 == 9) goto L_8863;
     goto L_8843;
 L_8843:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r1 = sbpf_ld8(r4, 80);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -15648,7 +15660,7 @@ L_8853:
     r1 = sbpf_ld8(r4, 88);
     goto L_8854;
 L_8854:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r2 = sbpf_ld8(r1, 8);
     r4 = sbpf_ld8(r1, 16);
     r5 = sbpf_ld8(r1, 24);
@@ -15660,12 +15672,12 @@ L_8854:
     if (r3 != 11) goto L_11519;
     goto L_8863;
 L_8863:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st1(r8, 90, 1);
     r0 = 26;
     goto L_9923;
 L_8866:
-    budget -= 11;
+    budget -= 21;
     sbpf_st8(r10, -368, r5);
     r7 = r2;
     r0 = r0 - r4;
@@ -15679,7 +15691,7 @@ L_8866:
     r0 = sbpf_sys_memset(r1, r2, r3, r4, r5);
     goto L_8877;
 L_8877:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r9;
     r2 = r8;
     if (r2 != 255) goto L_9075;
@@ -15692,14 +15704,14 @@ L_8880:
     if (r1 > 257) goto L_8550;
     goto L_8884;
 L_8884:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_8552;
 L_8885:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0;
     goto L_9923;
 L_8887:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r8, 88);
     if (r1 != 1) goto L_9229;
     goto L_8889;
@@ -15712,7 +15724,7 @@ L_8889:
     if (r5 != r9) goto L_9923;
     goto L_8894;
 L_8894:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r4, 16);
     r9 = sbpf_ld8(r8, 100);
     if (r9 != r5) goto L_9923;
@@ -15724,7 +15736,7 @@ L_8897:
     if (r9 != r5) goto L_9923;
     goto L_8900;
 L_8900:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r4, 32);
     r9 = sbpf_ld8(r8, 116);
     if (r9 != r5) goto L_9923;
@@ -15736,7 +15748,7 @@ L_8903:
     if (r1 != 355) goto L_9640;
     goto L_8906;
 L_8906:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r5 = 0xde8f75eee1f6dd06ull;
     if (r1 == r5) goto L_9628;
@@ -15747,7 +15759,7 @@ L_8910:
     if (r1 != r5) goto L_9640;
     goto L_8913;
 L_8913:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 48);
     r5 = 0xac79ebce46e1cbd9ull;
     if (r1 != r5) goto L_9640;
@@ -15759,7 +15771,7 @@ L_8917:
     if (r1 != r5) goto L_9640;
     goto L_8921;
 L_8921:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 64);
     r5 = 0xa900ff7e85f58c3aull;
     if (r1 != r5) goto L_9640;
@@ -15768,20 +15780,20 @@ L_8925:
     budget -= 1;
     goto L_10394;
 L_8926:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     sbpf_st8(r10, -360, r3);
     sbpf_st8(r10, -352, r6);
     r1 = r2;
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_8930;
 L_8930:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r7;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_8933;
 L_8933:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r0;
     r1 = 0;
     sbpf_st8(r10, -368, r1);
@@ -15790,7 +15802,7 @@ L_8933:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_8939;
 L_8939:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r0;
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -15800,11 +15812,11 @@ L_8942:
     if ((int64_t)r7 < 0) goto L_8944;
     goto L_8943;
 L_8943:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     sbpf_st8(r10, -368, r0);
     goto L_8944;
 L_8944:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -15815,17 +15827,17 @@ L_8948:
     if ((int64_t)r0 > 0) goto L_8951;
     goto L_8950;
 L_8950:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r2 = sbpf_ld8(r10, -368);
     goto L_8951;
 L_8951:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r10, -352);
     r1 = 0;
     r3 = sbpf_ld8(r10, -360);
     goto L_8954;
 L_8954:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r4 = sbpf_ld8(r6, 8);
     r5 = sbpf_ld8(r4, 8);
     r0 = 0x8481abfe57889b06ull;
@@ -15838,7 +15850,7 @@ L_8959:
     if (r5 != r0) goto L_8972;
     goto L_8963;
 L_8963:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r4, 24);
     r0 = 0x553beb1adc39c4daull;
     if (r5 != r0) goto L_8972;
@@ -15851,11 +15863,11 @@ L_8967:
     if (r5 == r0) goto L_8973;
     goto L_8972;
 L_8972:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = 0;
     goto L_8973;
 L_8973:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 3;
     if (r9 != 165) goto L_9923;
     goto L_8975;
@@ -15865,16 +15877,16 @@ L_8975:
     if (r5 > 2) goto L_9923;
     goto L_8977;
 L_8977:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 0) goto L_9224;
     goto L_8978;
 L_8978:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 0;
     r1 = 6;
     goto L_9923;
 L_8981:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r3, 8);
     r0 = 0;
     r5 = sbpf_ld1(r5, 132);
@@ -15889,7 +15901,7 @@ L_8985:
     if (r7 != r8) goto L_9923;
     goto L_8990;
 L_8990:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r5, 16);
     r8 = sbpf_ld8(r4, 128);
     if (r8 != r7) goto L_9923;
@@ -15901,7 +15913,7 @@ L_8993:
     if (r8 != r7) goto L_9923;
     goto L_8996;
 L_8996:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r5, 32);
     r8 = sbpf_ld8(r4, 144);
     if (r8 != r7) goto L_9923;
@@ -15913,7 +15925,7 @@ L_8999:
     if (r1 != 355) goto L_9458;
     goto L_9002;
 L_9002:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 40);
     r0 = 0xde8f75eee1f6dd06ull;
     if (r1 == r0) goto L_9446;
@@ -15924,7 +15936,7 @@ L_9006:
     if (r1 != r0) goto L_9458;
     goto L_9009;
 L_9009:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 48);
     r0 = 0xac79ebce46e1cbd9ull;
     if (r1 != r0) goto L_9458;
@@ -15936,7 +15948,7 @@ L_9013:
     if (r1 != r0) goto L_9458;
     goto L_9017;
 L_9017:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 64);
     r0 = 0xa900ff7e85f58c3aull;
     if (r1 != r0) goto L_9458;
@@ -15945,7 +15957,7 @@ L_9021:
     budget -= 1;
     goto L_10301;
 L_9022:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r7 = sbpf_ld1(r3, 8);
     r0 = 0;
     r1 = 18;
@@ -15959,7 +15971,7 @@ L_9027:
     if (r7 != 1) goto L_9923;
     goto L_9030;
 L_9030:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = 4;
     r8 = sbpf_ld8(r5, 92);
     r7 = sbpf_ld8(r6, 16);
@@ -15973,7 +15985,7 @@ L_9035:
     if (r9 != r8) goto L_9923;
     goto L_9038;
 L_9038:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r7, 24);
     r9 = sbpf_ld8(r5, 108);
     if (r9 != r8) goto L_9923;
@@ -15985,7 +15997,7 @@ L_9041:
     if (r9 != r8) goto L_9923;
     goto L_9044;
 L_9044:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r3, 0);
     r1 = sbpf_ld8(r7, 80);
     if (r1 != 355) goto L_9763;
@@ -15997,7 +16009,7 @@ L_9047:
     if (r1 == r0) goto L_9751;
     goto L_9051;
 L_9051:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x93a165d7e1f6dd06ull;
     if (r1 != r0) goto L_9763;
     goto L_9054;
@@ -16008,7 +16020,7 @@ L_9054:
     if (r1 != r0) goto L_9763;
     goto L_9058;
 L_9058:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 56);
     r0 = 0x91375b5fed85b41cull;
     if (r1 != r0) goto L_9763;
@@ -16020,7 +16032,7 @@ L_9062:
     if (r1 != r0) goto L_9763;
     goto L_9066;
 L_9066:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_10504;
 L_9067:
     budget -= 2;
@@ -16028,16 +16040,16 @@ L_9067:
     if (r0 == 1) goto L_9361;
     goto L_9069;
 L_9069:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     if (r0 == 0) goto L_8308;
     goto L_9071;
 L_9071:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 3;
     goto L_9923;
 L_9073:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 1;
     goto L_9923;
 L_9075:
@@ -16047,11 +16059,11 @@ L_9075:
     if (r3 < r1) goto L_9079;
     goto L_9078;
 L_9078:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r3 = r1;
     goto L_9079;
 L_9079:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 16;
     r9 = sbpf_ld8(r10, -352);
     r1 = r9;
     r1 = r1 + r2;
@@ -16066,19 +16078,19 @@ L_9085:
     if (r1 >= 258) goto L_8550;
     goto L_9088;
 L_9088:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_8552;
 L_9089:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0;
     sbpf_st8(r10, -360, r1);
     goto L_9150;
 L_9092:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = r7;
     goto L_9093;
 L_9093:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = sbpf_ld8(r3, 120);
     if (r5 != r1) goto L_10035;
     goto L_9095;
@@ -16088,7 +16100,7 @@ L_9095:
     r5 = r5 + 120;
     goto L_9097;
 L_9097:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = 4;
     r7 = sbpf_ld8(r4, 16);
     r8 = sbpf_ld8(r5, 8);
@@ -16101,7 +16113,7 @@ L_9101:
     if (r8 != r7) goto L_9923;
     goto L_9104;
 L_9104:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r4, 32);
     r5 = sbpf_ld8(r5, 24);
     if (r5 != r7) goto L_9923;
@@ -16112,7 +16124,7 @@ L_9107:
     if (r1 != 355) goto L_9141;
     goto L_9109;
 L_9109:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r5 = 0xde8f75eee1f6dd06ull;
     if (r1 == r5) goto L_9129;
@@ -16123,7 +16135,7 @@ L_9113:
     if (r1 != r5) goto L_9141;
     goto L_9116;
 L_9116:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 48);
     r5 = 0xac79ebce46e1cbd9ull;
     if (r1 != r5) goto L_9141;
@@ -16135,7 +16147,7 @@ L_9120:
     if (r1 != r5) goto L_9141;
     goto L_9124;
 L_9124:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 64);
     r5 = 0xa900ff7e85f58c3aull;
     if (r1 != r5) goto L_9141;
@@ -16150,7 +16162,7 @@ L_9129:
     if (r1 != r5) goto L_9141;
     goto L_9133;
 L_9133:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r5 = 0x270db9834dfc1ab6ull;
     if (r1 != r5) goto L_9141;
@@ -16162,7 +16174,7 @@ L_9137:
     if (r1 == r5) goto L_10099;
     goto L_9141;
 L_9141:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 1);
     if (r1 == 0) goto L_9441;
     goto L_9143;
@@ -16179,7 +16191,7 @@ L_9147:
     r4 = r7;
     goto L_9150;
 L_9150:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r8 = r6;
     r8 = r8 + 24;
     r7 = sbpf_ld8(r6, 16);
@@ -16193,7 +16205,7 @@ L_9156:
     if (r1 != r9) goto L_9189;
     goto L_9158;
 L_9158:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 16);
     r0 = sbpf_ld8(r3, 172);
     if (r0 != r1) goto L_9189;
@@ -16205,7 +16217,7 @@ L_9161:
     if (r0 != r1) goto L_9189;
     goto L_9164;
 L_9164:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 32);
     r0 = sbpf_ld8(r3, 188);
     if (r0 != r1) goto L_9189;
@@ -16216,7 +16228,7 @@ L_9167:
     if (r1 != 355) goto L_9991;
     goto L_9169;
 L_9169:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 40);
     r5 = 0xde8f75eee1f6dd06ull;
     if (r1 == r5) goto L_9979;
@@ -16227,7 +16239,7 @@ L_9173:
     if (r1 != r5) goto L_9991;
     goto L_9176;
 L_9176:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 48);
     r5 = 0xac79ebce46e1cbd9ull;
     if (r1 != r5) goto L_9991;
@@ -16239,7 +16251,7 @@ L_9180:
     if (r1 != r5) goto L_9991;
     goto L_9184;
 L_9184:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 64);
     r5 = 0xa900ff7e85f58c3aull;
     if (r1 != r5) goto L_9991;
@@ -16248,7 +16260,7 @@ L_9188:
     budget -= 1;
     goto L_10871;
 L_9189:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = 0;
     r1 = 4;
     r5 = sbpf_ld8(r3, 120);
@@ -16261,7 +16273,7 @@ L_9193:
     if (r9 != r5) goto L_9923;
     goto L_9196;
 L_9196:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r7, 24);
     r9 = sbpf_ld8(r3, 136);
     if (r9 != r5) goto L_9923;
@@ -16273,7 +16285,7 @@ L_9199:
     if (r9 != r5) goto L_9923;
     goto L_9202;
 L_9202:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r7, 80);
     if (r1 != 355) goto L_9423;
     goto L_9204;
@@ -16284,7 +16296,7 @@ L_9204:
     if (r1 == r5) goto L_9411;
     goto L_9208;
 L_9208:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r5 = 0x93a165d7e1f6dd06ull;
     if (r1 != r5) goto L_9423;
     goto L_9211;
@@ -16295,7 +16307,7 @@ L_9211:
     if (r1 != r5) goto L_9423;
     goto L_9215;
 L_9215:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 56);
     r5 = 0x91375b5fed85b41cull;
     if (r1 != r5) goto L_9423;
@@ -16307,7 +16319,7 @@ L_9219:
     if (r1 != r5) goto L_9423;
     goto L_9223;
 L_9223:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_10206;
 L_9224:
     budget -= 3;
@@ -16316,7 +16328,7 @@ L_9224:
     if (r1 >= r2) goto L_9301;
     goto L_9227;
 L_9227:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_9923;
 L_9229:
@@ -16325,11 +16337,11 @@ L_9229:
     if (r8 == r1) goto L_9438;
     goto L_9231;
 L_9231:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 15;
     goto L_9923;
 L_9233:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 48);
     r5 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r5) goto L_9640;
@@ -16341,7 +16353,7 @@ L_9237:
     if (r1 != r5) goto L_9640;
     goto L_9241;
 L_9241:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 64);
     r5 = 0xfc8ba1d828f9bdfeull;
     if (r1 != r5) goto L_9640;
@@ -16352,7 +16364,7 @@ L_9245:
     if (r1 != 1) goto L_10396;
     goto L_9247;
 L_9247:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r1 = r2;
     r1 = r1 << (3 & 63);
     r2 = 0;
@@ -16366,7 +16378,7 @@ L_9254:
     r0 = 0;
     goto L_9255;
 L_9255:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st4(r10, -337, 0);
     sbpf_st8(r10, -344, 0);
     if (r2 == 24) goto L_10612;
@@ -16378,11 +16390,11 @@ L_9258:
     if (r1 != 0) goto L_9262;
     goto L_9261;
 L_9261:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = 0;
     goto L_9262;
 L_9262:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 11) goto L_11500;
     goto L_9263;
 L_9263:
@@ -16390,7 +16402,7 @@ L_9263:
     if (r1 == 0) goto L_10610;
     goto L_9264;
 L_9264:
-    if ((budget -= 18) < 0) goto L_limit;
+    budget -= 18;
     r0 = r0 << (3 & 63);
     r5 = r3;
     r5 = r5 + r0;
@@ -16416,7 +16428,7 @@ L_9282:
     if (r1 != r0) goto L_9294;
     goto L_9286;
 L_9286:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 56);
     r0 = 0x270db9834dfc1ab6ull;
     if (r1 != r0) goto L_9294;
@@ -16428,7 +16440,7 @@ L_9290:
     if (r1 == r0) goto L_10113;
     goto L_9294;
 L_9294:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r5, 1);
     if (r1 == 0) goto L_9441;
     goto L_9296;
@@ -16442,7 +16454,7 @@ L_9298:
     r0 = 3;
     goto L_9923;
 L_9301:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r4;
     r6 = r6 + 8;
     r5 = r8;
@@ -16480,7 +16492,7 @@ L_9329:
     if (r1 != 43) goto L_9513;
     goto L_9331;
 L_9331:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r10;
     r6 = r6 + (uint64_t)-343;
     r7 = r2;
@@ -16503,7 +16515,7 @@ L_9342:
     if (r7 == 0) goto L_9526;
     goto L_9343;
 L_9343:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 0;
     r3 = 10;
     r4 = 0;
@@ -16515,11 +16527,11 @@ L_9347:
     if (r1 != 0) goto L_9350;
     goto L_9349;
 L_9349:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r2 = 0;
     goto L_9350;
 L_9350:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld1(r6, 0);
     r3 = r3 + (uint64_t)-48;
     if (r3 > 9) goto L_8535;
@@ -16530,18 +16542,18 @@ L_9353:
     if (r2 != 0) goto L_8535;
     goto L_9355;
 L_9355:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = r0;
     r1 = r1 + r3;
     r2 = 1;
     if (r1 < r0) goto L_9338;
     goto L_9359;
 L_9359:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_9338;
 L_9361:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0;
     if (r7 == 1) goto L_9582;
     goto L_9363;
@@ -16551,7 +16563,7 @@ L_9363:
     if (r7 != 0) goto L_9923;
     goto L_9365;
 L_9365:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 5;
     r7 = sbpf_ld1(r4, 88);
     if (r7 != 1) goto L_9923;
@@ -16569,7 +16581,7 @@ L_9368:
     if (r1 != r0) goto L_10391;
     goto L_9377;
 L_9377:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 16);
     r0 = sbpf_ld8(r4, 100);
     if (r0 != r1) goto L_10391;
@@ -16581,7 +16593,7 @@ L_9380:
     if (r0 != r1) goto L_10391;
     goto L_9383;
 L_9383:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r9 = sbpf_ld8(r6, 32);
     sbpf_st8(r10, -352, r4);
     r7 = sbpf_ld8(r4, 116);
@@ -16595,7 +16607,7 @@ L_9389:
     if (r1 != 355) goto L_9936;
     goto L_9391;
 L_9391:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 40);
     r0 = 0xde8f75eee1f6dd06ull;
     if (r1 == r0) goto L_9924;
@@ -16606,7 +16618,7 @@ L_9395:
     if (r1 != r0) goto L_9936;
     goto L_9398;
 L_9398:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 48);
     r0 = 0xac79ebce46e1cbd9ull;
     if (r1 != r0) goto L_9936;
@@ -16618,7 +16630,7 @@ L_9402:
     if (r1 != r0) goto L_9936;
     goto L_9406;
 L_9406:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 64);
     r0 = 0xa900ff7e85f58c3aull;
     if (r1 != r0) goto L_9936;
@@ -16627,7 +16639,7 @@ L_9410:
     budget -= 1;
     goto L_10755;
 L_9411:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 48);
     r5 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r5) goto L_9423;
@@ -16639,13 +16651,13 @@ L_9415:
     if (r1 != r5) goto L_9423;
     goto L_9419;
 L_9419:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 64);
     r5 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r5) goto L_10206;
     goto L_9423;
 L_9423:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r7, 1);
     if (r1 == 0) goto L_9441;
     goto L_9425;
@@ -16654,7 +16666,7 @@ L_9425:
     if (r4 == 0) goto L_10129;
     goto L_9426;
 L_9426:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -360);
     sbpf_st8(r3, 152, r1);
     r0 = 26;
@@ -16671,7 +16683,7 @@ L_9431:
     sbpf_st8(r1, 72, r2);
     goto L_9923;
 L_9438:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -352, r6);
     r1 = sbpf_ld1(r1, 1);
     if (r1 != 0) goto L_9642;
@@ -16681,7 +16693,7 @@ L_9441:
     r0 = 7;
     goto L_9923;
 L_9443:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 0;
     r1 = 17;
     goto L_9923;
@@ -16692,7 +16704,7 @@ L_9446:
     if (r1 != r0) goto L_9458;
     goto L_9450;
 L_9450:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 56);
     r0 = 0x270db9834dfc1ab6ull;
     if (r1 != r0) goto L_9458;
@@ -16704,7 +16716,7 @@ L_9454:
     if (r1 == r0) goto L_10301;
     goto L_9458;
 L_9458:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r5, 1);
     if (r1 == 0) goto L_10502;
     goto L_9460;
@@ -16713,7 +16725,7 @@ L_9460:
     r1 = sbpf_ld8(r6, 16);
     goto L_9461;
 L_9461:
-    if ((budget -= 12) < 0) goto L_limit;
+    budget -= 12;
     sbpf_st1(r4, 160, 1);
     r2 = sbpf_ld8(r1, 8);
     r5 = sbpf_ld8(r1, 16);
@@ -16733,7 +16745,7 @@ L_9473:
     if (r1 != r2) goto L_10308;
     goto L_9477;
 L_9477:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 48);
     r2 = 0xac79ebce46e1cbd9ull;
     if (r1 != r2) goto L_10308;
@@ -16745,7 +16757,7 @@ L_9481:
     if (r1 != r2) goto L_10308;
     goto L_9485;
 L_9485:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 64);
     r2 = 0xa900ff7e85f58c3aull;
     if (r1 != r2) goto L_10308;
@@ -16757,7 +16769,7 @@ L_9489:
     if (r2 != 82) goto L_9923;
     goto L_9492;
 L_9492:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r4, 133);
     if (r2 != 1) goto L_9923;
     goto L_9494;
@@ -16783,7 +16795,7 @@ L_9494:
     r0 = 26;
     goto L_9923;
 L_9513:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = r10;
     r6 = r6 + (uint64_t)-344;
     r7 = r2;
@@ -16808,19 +16820,19 @@ L_9521:
     if (r7 != 0) goto L_9518;
     goto L_9526;
 L_9526:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 105;
     sbpf_st8(r10, -344, r1);
     r1 = r10;
     r1 = r1 + (uint64_t)-344;
     r2 = 8;
-    sbpf_trap(SBPF_HALT_UNKNOWN_SYSCALL, 0xa226d3ebu);
+    r0 = sbpf_sys_set_return_data(r1, r2, r3, r4, r5);
     goto L_9531;
 L_9531:
     budget -= 2;
     r0 = 26;
     goto L_9923;
 L_9533:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 48);
     r5 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r5) goto L_9640;
@@ -16832,7 +16844,7 @@ L_9537:
     if (r1 != r5) goto L_9640;
     goto L_9541;
 L_9541:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 64);
     r5 = 0xfc8ba1d828f9bdfeull;
     if (r1 != r5) goto L_9640;
@@ -16843,7 +16855,7 @@ L_9545:
     if (r1 != 1) goto L_10396;
     goto L_9547;
 L_9547:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r1 = r2;
     r1 = r1 << (3 & 63);
     r2 = 0;
@@ -16857,7 +16869,7 @@ L_9554:
     r0 = 0;
     goto L_9555;
 L_9555:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st4(r10, -337, 0);
     sbpf_st8(r10, -344, 0);
     if (r2 == 24) goto L_10612;
@@ -16869,11 +16881,11 @@ L_9558:
     if (r1 != 0) goto L_9562;
     goto L_9561;
 L_9561:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = 0;
     goto L_9562;
 L_9562:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 11) goto L_11500;
     goto L_9563;
 L_9563:
@@ -16881,7 +16893,7 @@ L_9563:
     if (r1 == 0) goto L_10610;
     goto L_9564;
 L_9564:
-    if ((budget -= 18) < 0) goto L_limit;
+    budget -= 18;
     r0 = r0 << (3 & 63);
     r5 = r3;
     r5 = r5 + r0;
@@ -16907,7 +16919,7 @@ L_9582:
     if (r7 != 1) goto L_9923;
     goto L_9585;
 L_9585:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     sbpf_st8(r10, -360, r3);
     r8 = r2;
     r3 = r4;
@@ -16925,7 +16937,7 @@ L_9594:
     if (r0 != r1) goto L_10391;
     goto L_9597;
 L_9597:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 24);
     r0 = sbpf_ld8(r4, 154);
     if (r0 != r1) goto L_10391;
@@ -16940,7 +16952,7 @@ L_9600:
     if (r7 != r9) goto L_9923;
     goto L_9606;
 L_9606:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r6, 80);
     if (r1 != 355) goto L_9959;
     goto L_9608;
@@ -16951,7 +16963,7 @@ L_9608:
     if (r1 == r0) goto L_9947;
     goto L_9612;
 L_9612:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x93a165d7e1f6dd06ull;
     if (r1 != r0) goto L_9959;
     goto L_9615;
@@ -16962,7 +16974,7 @@ L_9615:
     if (r1 != r0) goto L_9959;
     goto L_9619;
 L_9619:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 56);
     r0 = 0x91375b5fed85b41cull;
     if (r1 != r0) goto L_9959;
@@ -16974,7 +16986,7 @@ L_9623:
     if (r1 != r0) goto L_9959;
     goto L_9627;
 L_9627:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_10769;
 L_9628:
     budget -= 3;
@@ -16983,7 +16995,7 @@ L_9628:
     if (r1 != r5) goto L_9640;
     goto L_9632;
 L_9632:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r5 = 0x270db9834dfc1ab6ull;
     if (r1 != r5) goto L_9640;
@@ -16995,12 +17007,12 @@ L_9636:
     if (r1 == r5) goto L_10394;
     goto L_9640;
 L_9640:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 1);
     if (r1 == 0) goto L_9441;
     goto L_9642;
 L_9642:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r10;
     r1 = r1 + (uint64_t)-344;
     SBPF_CALL(f_11537(0, r1, 0, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
@@ -17011,12 +17023,12 @@ L_9645:
     if (r1 == 0) goto L_9650;
     goto L_9647;
 L_9647:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld4(r10, -336);
     r0 = sbpf_ld4(r10, -340);
     goto L_9923;
 L_9650:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r7 = r7 + 128;
     r2 = sbpf_ld8(r10, -336);
     r2 = r2 * r7;
@@ -17030,22 +17042,22 @@ L_9657:
     if (r6 != r1) goto L_9662;
     goto L_9660;
 L_9660:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = r2 << (1 & 63);
     goto L_9684;
 L_9662:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r2;
     SBPF_CALL(f_12379(0, r1, r2, r3, r4, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4;);
     goto L_9664;
 L_9664:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = r0;
     SBPF_CALL(f_12475(r0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_9667;
 L_9667:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r0;
     r9 = 0;
     r1 = r6;
@@ -17053,7 +17065,7 @@ L_9667:
     SBPF_CALL(f_12443(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_9672;
 L_9672:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r0;
     r1 = r6;
     SBPF_CALL(f_12728(0, r1, 0, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2;);
@@ -17063,11 +17075,11 @@ L_9675:
     if ((int64_t)r7 < 0) goto L_9677;
     goto L_9676;
 L_9676:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r9 = r0;
     goto L_9677;
 L_9677:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = r6;
     r2 = 0x43efffffffffffffull;
     SBPF_CALL(f_12794(0, r1, r2, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -17078,11 +17090,11 @@ L_9681:
     if ((int64_t)r0 > 0) goto L_9684;
     goto L_9683;
 L_9683:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r2 = r9;
     goto L_9684;
 L_9684:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r3 = sbpf_ld8(r10, -352);
     r1 = 0;
     r4 = sbpf_ld8(r8, 72);
@@ -17100,7 +17112,7 @@ L_9689:
     r0 = 26;
     goto L_9923;
 L_9697:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld1(r4, 217);
     r1 = 221;
     if (r8 == 1) goto L_9701;
@@ -17110,7 +17122,7 @@ L_9700:
     r1 = 120;
     goto L_9701;
 L_9701:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r9 = r4;
     r9 = r9 + 221;
     sbpf_st8(r10, -376, r9);
@@ -17122,7 +17134,7 @@ L_9705:
     r9 = r9 + 120;
     goto L_9707;
 L_9707:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     sbpf_st8(r10, -352, r4);
     r8 = r4;
     r8 = r8 + r1;
@@ -17141,7 +17153,7 @@ L_9717:
     if (r8 != r4) goto L_9923;
     goto L_9720;
 L_9720:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r7, 24);
     r8 = sbpf_ld8(r9, 16);
     if (r8 != r4) goto L_9923;
@@ -17154,7 +17166,7 @@ L_9723:
     if (r8 != r7) goto L_9923;
     goto L_9727;
 L_9727:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r7 = sbpf_ld8(r10, -368);
     r1 = sbpf_ld8(r7, 80);
     r4 = sbpf_ld8(r10, -352);
@@ -17167,7 +17179,7 @@ L_9731:
     if (r1 == r0) goto L_9891;
     goto L_9735;
 L_9735:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x93a165d7e1f6dd06ull;
     if (r1 != r0) goto L_9903;
     goto L_9738;
@@ -17178,7 +17190,7 @@ L_9738:
     if (r1 != r0) goto L_9903;
     goto L_9742;
 L_9742:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 56);
     r0 = 0x91375b5fed85b41cull;
     if (r1 != r0) goto L_9903;
@@ -17190,10 +17202,10 @@ L_9746:
     if (r1 != r0) goto L_9903;
     goto L_9750;
 L_9750:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_10734;
 L_9751:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 48);
     r0 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r0) goto L_9763;
@@ -17205,13 +17217,13 @@ L_9755:
     if (r1 != r0) goto L_9763;
     goto L_9759;
 L_9759:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 64);
     r0 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r0) goto L_10504;
     goto L_9763;
 L_9763:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r7, 1);
     if (r1 == 0) goto L_10502;
     goto L_9765;
@@ -17220,7 +17232,7 @@ L_9765:
     if (r3 == 0) goto L_9781;
     goto L_9766;
 L_9766:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = sbpf_ld8(r5, 124);
     r2 = r1;
     r2 = r2 + r3;
@@ -17233,7 +17245,7 @@ L_9772:
     r6 = 0;
     goto L_9773;
 L_9773:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 14;
     r6 = r6 & 1;
     if (r6 != 0) goto L_9923;
@@ -17246,7 +17258,7 @@ L_9776:
     sbpf_st8(r4, 152, r1);
     goto L_9814;
 L_9781:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = 6;
     r1 = sbpf_ld8(r5, 40);
     r2 = 0x93a165d7e1f6dd06ull;
@@ -17259,7 +17271,7 @@ L_9786:
     if (r1 != r2) goto L_9923;
     goto L_9790;
 L_9790:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r5, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_9923;
@@ -17271,7 +17283,7 @@ L_9794:
     if (r1 != r2) goto L_9923;
     goto L_9798;
 L_9798:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_9923;
@@ -17283,7 +17295,7 @@ L_9802:
     if (r1 != r2) goto L_9923;
     goto L_9806;
 L_9806:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_9923;
@@ -17295,11 +17307,11 @@ L_9810:
     if (r1 != r2) goto L_9923;
     goto L_9814;
 L_9814:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 26;
     goto L_9923;
 L_9816:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r5, 134);
     if (r1 != 1) goto L_9855;
     goto L_9818;
@@ -17311,7 +17323,7 @@ L_9818:
     if (r1 != r0) goto L_10391;
     goto L_9822;
 L_9822:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 16);
     r0 = sbpf_ld8(r5, 146);
     if (r0 != r1) goto L_10391;
@@ -17323,7 +17335,7 @@ L_9825:
     if (r0 != r1) goto L_10391;
     goto L_9828;
 L_9828:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r7 = sbpf_ld8(r4, 32);
     r5 = sbpf_ld8(r5, 162);
     r0 = 0;
@@ -17336,7 +17348,7 @@ L_9833:
     if (r1 != 355) goto L_10030;
     goto L_9835;
 L_9835:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 40);
     r5 = 0xde8f75eee1f6dd06ull;
     if (r1 == r5) goto L_10018;
@@ -17347,7 +17359,7 @@ L_9839:
     if (r1 != r5) goto L_10030;
     goto L_9842;
 L_9842:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 48);
     r5 = 0xac79ebce46e1cbd9ull;
     if (r1 != r5) goto L_10030;
@@ -17359,7 +17371,7 @@ L_9846:
     if (r1 != r5) goto L_10030;
     goto L_9850;
 L_9850:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 64);
     r5 = 0xa900ff7e85f58c3aull;
     if (r1 != r5) goto L_10030;
@@ -17372,7 +17384,7 @@ L_9855:
     r1 = 16;
     goto L_9923;
 L_9857:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 6;
     goto L_9923;
 L_9859:
@@ -17382,7 +17394,7 @@ L_9859:
     if (r8 != r9) goto L_9871;
     goto L_9863;
 L_9863:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r8 = sbpf_ld8(r7, 56);
     r9 = 0x270db9834dfc1ab6ull;
     if (r8 != r9) goto L_9871;
@@ -17394,7 +17406,7 @@ L_9867:
     if (r8 == r9) goto L_10715;
     goto L_9871;
 L_9871:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld1(r7, 1);
     if (r2 == 0) goto L_9441;
     goto L_9873;
@@ -17403,7 +17415,7 @@ L_9873:
     if (r3 == 0) goto L_9923;
     goto L_9874;
 L_9874:
-    if ((budget -= 15) < 0) goto L_limit;
+    budget -= 15;
     r1 = r4;
     r1 = r1 + 120;
     r2 = sbpf_ld8(r3, 0);
@@ -17425,7 +17437,7 @@ L_9889:
     sbpf_st1(r4, 217, 0);
     goto L_9923;
 L_9891:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 48);
     r0 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r0) goto L_9903;
@@ -17437,13 +17449,13 @@ L_9895:
     if (r1 != r0) goto L_9903;
     goto L_9899;
 L_9899:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 64);
     r0 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r0) goto L_10734;
     goto L_9903;
 L_9903:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r7, 1);
     if (r1 == 0) goto L_9441;
     goto L_9905;
@@ -17452,7 +17464,7 @@ L_9905:
     if (r3 == 0) goto L_10752;
     goto L_9906;
 L_9906:
-    if ((budget -= 12) < 0) goto L_limit;
+    budget -= 12;
     sbpf_st1(r4, 217, 1);
     r1 = sbpf_ld8(r3, 0);
     r2 = sbpf_ld8(r3, 8);
@@ -17466,7 +17478,7 @@ L_9906:
     r0 = 26;
     goto L_9923;
 L_9918:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 < 9) goto L_9923;
     goto L_9919;
 L_9919:
@@ -17474,12 +17486,12 @@ L_9919:
     if (r5 != 1) goto L_9923;
     goto L_9920;
 L_9920:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = sbpf_ld8(r3, 1);
     if (r2 > 2) goto L_7813;
     goto L_9922;
 L_9922:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r0 = 10;
     goto L_9923;
 L_9923:
@@ -17492,7 +17504,7 @@ L_9924:
     if (r1 != r0) goto L_9936;
     goto L_9928;
 L_9928:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 56);
     r0 = 0x270db9834dfc1ab6ull;
     if (r1 != r0) goto L_9936;
@@ -17504,7 +17516,7 @@ L_9932:
     if (r1 == r0) goto L_10755;
     goto L_9936;
 L_9936:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r6, 1);
     if (r1 == 0) goto L_9441;
     goto L_9938;
@@ -17514,18 +17526,18 @@ L_9938:
     if (r7 == 0) goto L_9943;
     goto L_9940;
 L_9940:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r10, -352);
     sbpf_st1(r1, 88, 1);
     goto L_9965;
 L_9943:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -352);
     sbpf_st1(r1, 88, 0);
     r0 = 26;
     goto L_9923;
 L_9947:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 48);
     r0 = 0xdacd6ce4bc5d4218ull;
     if (r1 != r0) goto L_9959;
@@ -17537,13 +17549,13 @@ L_9951:
     if (r1 != r0) goto L_9959;
     goto L_9955;
 L_9955:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r6, 64);
     r0 = 0xfc8ba1d828f9bdfeull;
     if (r1 == r0) goto L_10769;
     goto L_9959;
 L_9959:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r6, 1);
     if (r1 == 0) goto L_9441;
     goto L_9961;
@@ -17553,7 +17565,7 @@ L_9961:
     if (r7 == 0) goto L_9975;
     goto L_9963;
 L_9963:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r10, -352);
     sbpf_st1(r1, 134, 1);
     goto L_9965;
@@ -17570,7 +17582,7 @@ L_9965:
     r0 = 26;
     goto L_9923;
 L_9975:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -352);
     sbpf_st1(r1, 134, 0);
     r0 = 26;
@@ -17582,7 +17594,7 @@ L_9979:
     if (r1 != r5) goto L_9991;
     goto L_9983;
 L_9983:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r7, 56);
     r5 = 0x270db9834dfc1ab6ull;
     if (r1 != r5) goto L_9991;
@@ -17594,24 +17606,24 @@ L_9987:
     if (r1 == r5) goto L_10871;
     goto L_9991;
 L_9991:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r7, 1);
     if (r1 == 0) goto L_9441;
     goto L_9993;
 L_9993:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld8(r3, 209);
     if (r1 < r4) goto L_7826;
     goto L_9995;
 L_9995:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = r1;
     r2 = r2 - r4;
     sbpf_st8(r3, 209, r2);
     if (r1 != r4) goto L_9425;
     goto L_9999;
 L_9999:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     sbpf_st1(r3, 160, 0);
     goto L_9425;
 L_10001:
@@ -17621,7 +17633,7 @@ L_10001:
     if (r1 != r5) goto L_10013;
     goto L_10005;
 L_10005:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r5 = 0x270db9834dfc1ab6ull;
     if (r1 != r5) goto L_10013;
@@ -17633,7 +17645,7 @@ L_10009:
     if (r1 == r5) goto L_10966;
     goto L_10013;
 L_10013:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 1);
     if (r1 == 0) goto L_9441;
     goto L_10015;
@@ -17649,7 +17661,7 @@ L_10018:
     if (r1 != r5) goto L_10030;
     goto L_10022;
 L_10022:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r4, 56);
     r5 = 0x270db9834dfc1ab6ull;
     if (r1 != r5) goto L_10030;
@@ -17661,7 +17673,7 @@ L_10026:
     if (r1 == r5) goto L_10980;
     goto L_10030;
 L_10030:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 1);
     if (r1 == 0) goto L_9441;
     goto L_10032;
@@ -17671,11 +17683,11 @@ L_10032:
     r0 = 26;
     goto L_9923;
 L_10035:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 4;
     goto L_9923;
 L_10037:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0x0000000100019c18ull;
     SBPF_CALL(f_11560(0, r1, 0, 0, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_10040;
@@ -17708,7 +17720,7 @@ L_10056:
     sbpf_st8(r10, -376, r2);
     goto L_10060;
 L_10060:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r2 = sbpf_ld8(r10, -368);
     goto L_10061;
 L_10061:
@@ -17734,7 +17746,7 @@ L_10070:
     if (r2 != r9) goto L_10060;
     goto L_10074;
 L_10074:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -360);
     r2 = sbpf_ld8(r2, 24);
     r9 = sbpf_ld8(r5, 16);
@@ -17748,7 +17760,7 @@ L_10078:
     if (r5 != r2) goto L_10060;
     goto L_10082;
 L_10082:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 10) goto L_11505;
     goto L_10083;
 L_10083:
@@ -17760,30 +17772,30 @@ L_10083:
     if (r2 != 0) goto L_10060;
     goto L_10088;
 L_10088:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r10, -360);
     r2 = sbpf_ld1(r2, 1);
     if (r2 != 0) goto L_10056;
     goto L_10091;
 L_10091:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_10092:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 1;
     r2 = sbpf_ld8(r10, -384);
     if (r3 != r2) goto L_10040;
     goto L_10095;
 L_10095:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_10040;
 L_10097:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 10;
     goto L_9923;
 L_10099:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 90);
     if (r1 != 1) goto L_10396;
     goto L_10101;
@@ -17798,17 +17810,17 @@ L_10101:
     if (r2 != 16) goto L_10310;
     goto L_10108;
 L_10108:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r4, 88);
     r2 = sbpf_ld8(r10, -368);
     r2 = r2 & 255;
     if (r2 >= r1) goto L_9143;
     goto L_10112;
 L_10112:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_10113:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -352, r6);
     r1 = sbpf_ld1(r5, 90);
     if (r1 != 1) goto L_10396;
@@ -17824,18 +17836,18 @@ L_10116:
     if (r2 != 24) goto L_10403;
     goto L_10123;
 L_10123:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r5, 88);
     r2 = sbpf_ld8(r10, -384);
     r2 = r2 & 255;
     if (r2 < r1) goto L_9441;
     goto L_10127;
 L_10127:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = sbpf_ld8(r10, -352);
     goto L_9296;
 L_10129:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 40);
     r2 = 0x93a165d7e1f6dd06ull;
     if (r1 != r2) goto L_11323;
@@ -17847,7 +17859,7 @@ L_10133:
     if (r1 != r2) goto L_11323;
     goto L_10137;
 L_10137:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r3, 56);
     r2 = 0x91375b5fed85b41cull;
     if (r1 != r2) goto L_11323;
@@ -17859,7 +17871,7 @@ L_10141:
     if (r1 != r2) goto L_11323;
     goto L_10145;
 L_10145:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 26;
     goto L_9923;
 L_10147:
@@ -17904,21 +17916,21 @@ L_10170:
     if (r9 != r2) goto L_10165;
     goto L_10175;
 L_10175:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -368);
     r9 = sbpf_ld8(r2, 16);
     r2 = sbpf_ld8(r5, 8);
     if (r2 != r9) goto L_10165;
     goto L_10179;
 L_10179:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -368);
     r2 = sbpf_ld8(r2, 24);
     r9 = sbpf_ld8(r5, 16);
     if (r9 != r2) goto L_10165;
     goto L_10183;
 L_10183:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -368);
     r2 = sbpf_ld8(r2, 32);
     r5 = sbpf_ld8(r5, 24);
@@ -17929,7 +17941,7 @@ L_10187:
     if (r1 > 10) goto L_11505;
     goto L_10188;
 L_10188:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r5 = r10;
     r5 = r5 + (uint64_t)-344;
     r5 = r5 + r1;
@@ -17937,26 +17949,26 @@ L_10188:
     if (r2 != 0) goto L_10165;
     goto L_10193;
 L_10193:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r10, -368);
     r2 = sbpf_ld1(r2, 1);
     if (r2 == 0) goto L_9441;
     goto L_10196;
 L_10196:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r5, 0, 1);
     r2 = sbpf_ld8(r10, -376);
     r2 = r2 + 1;
     sbpf_st8(r10, -376, r2);
     goto L_10165;
 L_10201:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 1;
     r2 = sbpf_ld8(r10, -384);
     if (r3 != r2) goto L_10149;
     goto L_10204;
 L_10204:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_10149;
 L_10206:
@@ -17966,7 +17978,7 @@ L_10206:
     if (r1 != 1) goto L_10396;
     goto L_10209;
 L_10209:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r1 = r2;
     r1 = r1 << (3 & 63);
     r2 = 0;
@@ -17980,7 +17992,7 @@ L_10216:
     r6 = 0;
     goto L_10217;
 L_10217:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st4(r10, -337, 0);
     sbpf_st8(r10, -344, 0);
     if (r2 == 24) goto L_10709;
@@ -17992,11 +18004,11 @@ L_10220:
     if (r1 != 0) goto L_10224;
     goto L_10223;
 L_10223:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r5 = 0;
     goto L_10224;
 L_10224:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 11) goto L_11500;
     goto L_10225;
 L_10225:
@@ -18004,7 +18016,7 @@ L_10225:
     if (r1 == 0) goto L_10707;
     goto L_10226;
 L_10226:
-    if ((budget -= 18) < 0) goto L_limit;
+    budget -= 18;
     r6 = r6 << (3 & 63);
     r0 = r8;
     r0 = r0 + r6;
@@ -18061,21 +18073,21 @@ L_10265:
     if (r5 != r0) goto L_10260;
     goto L_10270;
 L_10270:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r5 = sbpf_ld8(r10, -376);
     r5 = sbpf_ld8(r5, 16);
     r0 = sbpf_ld8(r6, 8);
     if (r0 != r5) goto L_10260;
     goto L_10274;
 L_10274:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r5 = sbpf_ld8(r10, -376);
     r5 = sbpf_ld8(r5, 24);
     r0 = sbpf_ld8(r6, 16);
     if (r0 != r5) goto L_10260;
     goto L_10278;
 L_10278:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r5 = sbpf_ld8(r10, -376);
     r5 = sbpf_ld8(r5, 32);
     r0 = sbpf_ld8(r6, 24);
@@ -18086,7 +18098,7 @@ L_10282:
     if (r1 > 10) goto L_11505;
     goto L_10283;
 L_10283:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = r10;
     r0 = r0 + (uint64_t)-344;
     r0 = r0 + r1;
@@ -18094,30 +18106,30 @@ L_10283:
     if (r5 != 0) goto L_10260;
     goto L_10288;
 L_10288:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r10, -376);
     r5 = sbpf_ld1(r5, 1);
     if (r5 == 0) goto L_9441;
     goto L_10291;
 L_10291:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r0, 0, 1);
     r5 = sbpf_ld8(r10, -384);
     r5 = r5 + 1;
     sbpf_st8(r10, -384, r5);
     goto L_10260;
 L_10296:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 1;
     r2 = sbpf_ld8(r10, -392);
     if (r8 != r2) goto L_10244;
     goto L_10299;
 L_10299:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_10244;
 L_10301:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -352, r6);
     r1 = sbpf_ld1(r5, 90);
     if (r1 == 1) goto L_10491;
@@ -18127,16 +18139,16 @@ L_10304:
     if (r1 != 0) goto L_10400;
     goto L_10305;
 L_10305:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 9;
     r1 = 0;
     goto L_9923;
 L_10308:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 6;
     goto L_9923;
 L_10310:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r4, 89);
     r5 = 1;
     sbpf_st8(r10, -376, r2);
@@ -18147,7 +18159,7 @@ L_10314:
     r5 = 0;
     goto L_10315;
 L_10315:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -376);
     if (r2 > 11) goto L_11499;
     goto L_10317;
@@ -18214,19 +18226,19 @@ L_10359:
     if (r0 != r8) goto L_10354;
     goto L_10363;
 L_10363:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r9, 16);
     r7 = sbpf_ld8(r1, 8);
     if (r7 != r0) goto L_10354;
     goto L_10366;
 L_10366:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r9, 24);
     r7 = sbpf_ld8(r1, 16);
     if (r7 != r0) goto L_10354;
     goto L_10369;
 L_10369:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r9, 32);
     r1 = sbpf_ld8(r1, 24);
     if (r1 != r0) goto L_10354;
@@ -18236,7 +18248,7 @@ L_10372:
     if (r2 > 10) goto L_11504;
     goto L_10373;
 L_10373:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = r10;
     r1 = r1 + (uint64_t)-344;
     r1 = r1 + r2;
@@ -18244,40 +18256,40 @@ L_10373:
     if (r0 != 0) goto L_10354;
     goto L_10378;
 L_10378:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld1(r9, 1);
     if (r0 == 0) goto L_9441;
     goto L_10380;
 L_10380:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r1, 0, 1);
     r1 = sbpf_ld8(r10, -368);
     r1 = r1 + 1;
     sbpf_st8(r10, -368, r1);
     goto L_10354;
 L_10385:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = 1;
     r2 = sbpf_ld8(r10, -360);
     r5 = sbpf_ld8(r10, -352);
     if (r5 != r2) goto L_10337;
     goto L_10389;
 L_10389:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_10337;
 L_10391:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 0;
     r1 = 4;
     goto L_9923;
 L_10394:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 90);
     if (r1 == 1) goto L_10518;
     goto L_10396;
 L_10396:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 != 0) goto L_10400;
     goto L_10397;
 L_10397:
@@ -18286,12 +18298,12 @@ L_10397:
     r1 = 0;
     goto L_9923;
 L_10400:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = 3;
     r1 = 0;
     goto L_9923;
 L_10403:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r5, 89);
     r0 = 1;
     sbpf_st8(r10, -392, r2);
@@ -18302,7 +18314,7 @@ L_10407:
     r0 = 0;
     goto L_10408;
 L_10408:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -392);
     if (r2 > 11) goto L_11494;
     goto L_10410;
@@ -18364,7 +18376,7 @@ L_10450:
     sbpf_st8(r10, -384, r1);
     goto L_10454;
 L_10454:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = r9;
     r1 = r1 + 32;
     r2 = r2 + 1;
@@ -18386,7 +18398,7 @@ L_10463:
     if (r6 != r1) goto L_10454;
     goto L_10467;
 L_10467:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -360);
     r1 = sbpf_ld8(r1, 24);
     r6 = sbpf_ld8(r8, 16);
@@ -18400,7 +18412,7 @@ L_10471:
     if (r6 != r1) goto L_10454;
     goto L_10475;
 L_10475:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_11504;
     goto L_10476;
 L_10476:
@@ -18412,23 +18424,23 @@ L_10476:
     if (r6 != 0) goto L_10454;
     goto L_10481;
 L_10481:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r10, -360);
     r6 = sbpf_ld1(r6, 1);
     if (r6 != 0) goto L_10450;
     goto L_10484;
 L_10484:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_10485:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 1;
     r1 = sbpf_ld8(r10, -376);
     r0 = sbpf_ld8(r10, -368);
     if (r0 != r1) goto L_10432;
     goto L_10489;
 L_10489:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_10432;
 L_10491:
@@ -18442,7 +18454,7 @@ L_10491:
     if (r2 != 32) goto L_10617;
     goto L_10498;
 L_10498:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r5, 88);
     r2 = sbpf_ld8(r10, -384);
     r2 = r2 & 255;
@@ -18453,7 +18465,7 @@ L_10502:
     r0 = 7;
     goto L_9923;
 L_10504:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r7, 90);
     if (r1 != 1) goto L_10304;
     goto L_10506;
@@ -18468,14 +18480,14 @@ L_10506:
     if (r2 != 24) goto L_10783;
     goto L_10513;
 L_10513:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r7, 88);
     r2 = sbpf_ld8(r10, -384);
     r2 = r2 & 255;
     if (r2 >= r1) goto L_9765;
     goto L_10517;
 L_10517:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_10502;
 L_10518:
     budget -= 7;
@@ -18488,11 +18500,11 @@ L_10518:
     if (r1 != 24) goto L_10526;
     goto L_10525;
 L_10525:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r0 = 0;
     goto L_10526;
 L_10526:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st4(r10, -337, 0);
     sbpf_st8(r10, -344, 0);
     if (r2 == 24) goto L_10612;
@@ -18504,11 +18516,11 @@ L_10529:
     if (r1 != 0) goto L_10533;
     goto L_10532;
 L_10532:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = 0;
     goto L_10533;
 L_10533:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 11) goto L_11500;
     goto L_10534;
 L_10534:
@@ -18516,7 +18528,7 @@ L_10534:
     if (r1 == 0) goto L_10610;
     goto L_10535;
 L_10535:
-    if ((budget -= 18) < 0) goto L_limit;
+    budget -= 18;
     r0 = r0 << (3 & 63);
     r5 = r3;
     r5 = r5 + r0;
@@ -18573,21 +18585,21 @@ L_10574:
     if (r9 != r2) goto L_10569;
     goto L_10579;
 L_10579:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -368);
     r9 = sbpf_ld8(r2, 16);
     r2 = sbpf_ld8(r5, 8);
     if (r2 != r9) goto L_10569;
     goto L_10583;
 L_10583:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -368);
     r2 = sbpf_ld8(r2, 24);
     r9 = sbpf_ld8(r5, 16);
     if (r9 != r2) goto L_10569;
     goto L_10587;
 L_10587:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -368);
     r2 = sbpf_ld8(r2, 32);
     r5 = sbpf_ld8(r5, 24);
@@ -18598,7 +18610,7 @@ L_10591:
     if (r1 > 10) goto L_11505;
     goto L_10592;
 L_10592:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r5 = r10;
     r5 = r5 + (uint64_t)-344;
     r5 = r5 + r1;
@@ -18606,45 +18618,45 @@ L_10592:
     if (r2 != 0) goto L_10569;
     goto L_10597;
 L_10597:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = sbpf_ld8(r10, -368);
     r2 = sbpf_ld1(r2, 1);
     if (r2 == 0) goto L_9441;
     goto L_10600;
 L_10600:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r5, 0, 1);
     r2 = sbpf_ld8(r10, -376);
     r2 = r2 + 1;
     sbpf_st8(r10, -376, r2);
     goto L_10569;
 L_10605:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 1;
     r2 = sbpf_ld8(r10, -384);
     if (r3 != r2) goto L_10553;
     goto L_10608;
 L_10608:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_10553;
 L_10610:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     sbpf_st8(r10, -376, r1);
     goto L_10612;
 L_10612:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r4, 88);
     r2 = sbpf_ld8(r10, -376);
     r2 = r2 & 255;
     if (r2 >= r1) goto L_9642;
     goto L_10616;
 L_10616:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_10617:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r5, 89);
     r0 = 1;
     sbpf_st8(r10, -392, r2);
@@ -18655,7 +18667,7 @@ L_10621:
     r0 = 0;
     goto L_10622;
 L_10622:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -392);
     if (r2 > 11) goto L_11494;
     goto L_10624;
@@ -18725,21 +18737,21 @@ L_10669:
     if (r1 != r0) goto L_10664;
     goto L_10673;
 L_10673:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -360);
     r1 = sbpf_ld8(r1, 16);
     r6 = sbpf_ld8(r8, 8);
     if (r6 != r1) goto L_10664;
     goto L_10677;
 L_10677:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -360);
     r1 = sbpf_ld8(r1, 24);
     r6 = sbpf_ld8(r8, 16);
     if (r6 != r1) goto L_10664;
     goto L_10681;
 L_10681:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -360);
     r1 = sbpf_ld8(r1, 32);
     r6 = sbpf_ld8(r8, 24);
@@ -18750,7 +18762,7 @@ L_10685:
     if (r2 > 10) goto L_11504;
     goto L_10686;
 L_10686:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = r10;
     r1 = r1 + (uint64_t)-344;
     r1 = r1 + r2;
@@ -18758,51 +18770,51 @@ L_10686:
     if (r6 != 0) goto L_10664;
     goto L_10691;
 L_10691:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r10, -360);
     r6 = sbpf_ld1(r6, 1);
     if (r6 == 0) goto L_10502;
     goto L_10694;
 L_10694:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r1, 0, 1);
     r1 = sbpf_ld8(r10, -384);
     r1 = r1 + 1;
     sbpf_st8(r10, -384, r1);
     goto L_10664;
 L_10699:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = 1;
     r1 = sbpf_ld8(r10, -376);
     r0 = sbpf_ld8(r10, -368);
     if (r0 != r1) goto L_10646;
     goto L_10703;
 L_10703:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0;
     goto L_10646;
 L_10705:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = sbpf_ld8(r10, -352);
     goto L_9460;
 L_10707:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     sbpf_st8(r10, -384, r1);
     goto L_10709;
 L_10709:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r7, 88);
     r2 = sbpf_ld8(r10, -384);
     r2 = r2 & 255;
     if (r2 < r1) goto L_9441;
     goto L_10713;
 L_10713:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = sbpf_ld8(r10, -352);
     goto L_9425;
 L_10715:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st8(r10, -360, r3);
     r1 = sbpf_ld1(r7, 90);
     if (r1 != 1) goto L_10396;
@@ -18818,7 +18830,7 @@ L_10718:
     if (r2 != 16) goto L_10994;
     goto L_10725;
 L_10725:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r7, 88);
     r2 = sbpf_ld8(r10, -376);
     r2 = r2 & 255;
@@ -18832,7 +18844,7 @@ L_10729:
     if (r3 != 0) goto L_9874;
     goto L_10733;
 L_10733:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9923;
 L_10734:
     budget -= 3;
@@ -18841,7 +18853,7 @@ L_10734:
     if (r1 != 1) goto L_10396;
     goto L_10737;
 L_10737:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r1 = 0;
     sbpf_st8(r10, -392, r1);
     r2 = r2 << (3 & 63);
@@ -18851,7 +18863,7 @@ L_10737:
     if (r2 != 16) goto L_11075;
     goto L_10744;
 L_10744:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -368);
     r1 = sbpf_ld1(r1, 88);
     r8 = sbpf_ld8(r10, -392);
@@ -18865,12 +18877,12 @@ L_10749:
     if (r3 != 0) goto L_9906;
     goto L_10752;
 L_10752:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st1(r4, 217, 0);
     r0 = 26;
     goto L_9923;
 L_10755:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r6, 90);
     if (r1 != 1) goto L_10396;
     goto L_10757;
@@ -18885,14 +18897,14 @@ L_10757:
     if (r8 != 16) goto L_11153;
     goto L_10764;
 L_10764:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r6, 88);
     r2 = sbpf_ld8(r10, -392);
     r2 = r2 & 255;
     if (r2 >= r1) goto L_9938;
     goto L_10768;
 L_10768:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_10769:
     budget -= 2;
@@ -18900,7 +18912,7 @@ L_10769:
     if (r1 != 1) goto L_10396;
     goto L_10771;
 L_10771:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r1 = 0;
     sbpf_st8(r10, -392, r1);
     r8 = r8 << (3 & 63);
@@ -18910,17 +18922,17 @@ L_10771:
     if (r8 != 16) goto L_11238;
     goto L_10778;
 L_10778:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r6, 88);
     r2 = sbpf_ld8(r10, -392);
     r2 = r2 & 255;
     if (r2 >= r1) goto L_9961;
     goto L_10782;
 L_10782:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_10783:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r7, 89);
     r0 = 1;
     sbpf_st8(r10, -392, r2);
@@ -18931,7 +18943,7 @@ L_10787:
     r0 = 0;
     goto L_10788;
 L_10788:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -392);
     if (r2 > 11) goto L_11494;
     goto L_10790;
@@ -19001,21 +19013,21 @@ L_10834:
     if (r8 != r6) goto L_10829;
     goto L_10839;
 L_10839:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r10, -360);
     r8 = sbpf_ld8(r6, 16);
     r6 = sbpf_ld8(r9, 8);
     if (r6 != r8) goto L_10829;
     goto L_10843;
 L_10843:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r10, -360);
     r6 = sbpf_ld8(r6, 24);
     r8 = sbpf_ld8(r9, 16);
     if (r8 != r6) goto L_10829;
     goto L_10847;
 L_10847:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = sbpf_ld8(r10, -360);
     r6 = sbpf_ld8(r6, 32);
     r8 = sbpf_ld8(r9, 24);
@@ -19026,7 +19038,7 @@ L_10851:
     if (r2 > 10) goto L_11504;
     goto L_10852;
 L_10852:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r8 = r10;
     r8 = r8 + (uint64_t)-344;
     r8 = r8 + r2;
@@ -19034,31 +19046,31 @@ L_10852:
     if (r6 != 0) goto L_10829;
     goto L_10857;
 L_10857:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = sbpf_ld8(r10, -360);
     r6 = sbpf_ld1(r6, 1);
     if (r6 == 0) goto L_10502;
     goto L_10860;
 L_10860:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r8, 0, 1);
     r6 = sbpf_ld8(r10, -384);
     r6 = r6 + 1;
     sbpf_st8(r10, -384, r6);
     goto L_10829;
 L_10865:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = 1;
     r2 = sbpf_ld8(r10, -376);
     r0 = sbpf_ld8(r10, -368);
     if (r0 != r2) goto L_10810;
     goto L_10869;
 L_10869:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_10810;
 L_10871:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r7, 90);
     if (r1 != 1) goto L_10396;
     goto L_10873;
@@ -19073,11 +19085,11 @@ L_10873:
     if (r1 != 24) goto L_10881;
     goto L_10880;
 L_10880:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r9 = 0;
     goto L_10881;
 L_10881:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     sbpf_st4(r10, -337, 0);
     sbpf_st8(r10, -344, 0);
     if (r2 == 24) goto L_11489;
@@ -19089,11 +19101,11 @@ L_10884:
     if (r1 != 0) goto L_10888;
     goto L_10887;
 L_10887:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r5 = 0;
     goto L_10888;
 L_10888:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r1 > 11) goto L_11500;
     goto L_10889;
 L_10889:
@@ -19101,7 +19113,7 @@ L_10889:
     if (r1 == 0) goto L_11487;
     goto L_10890;
 L_10890:
-    if ((budget -= 18) < 0) goto L_limit;
+    budget -= 18;
     r9 = r9 << (3 & 63);
     r0 = r8;
     r0 = r0 + r9;
@@ -19150,7 +19162,7 @@ L_10925:
     sbpf_st8(r10, -384, r2);
     goto L_10929;
 L_10929:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r2 = sbpf_ld8(r10, -352);
     r2 = r2 + 32;
     r1 = r1 + 1;
@@ -19158,7 +19170,7 @@ L_10929:
     if (r0 == 32) goto L_10961;
     goto L_10934;
 L_10934:
-    budget -= 5;
+    if ((budget -= 5) < 0) goto L_limit;
     r9 = sbpf_ld8(r10, -352);
     sbpf_st8(r10, -352, r2);
     r2 = sbpf_ld8(r9, 0);
@@ -19166,7 +19178,7 @@ L_10934:
     if (r2 != r5) goto L_10929;
     goto L_10939;
 L_10939:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -376);
     r2 = sbpf_ld8(r2, 16);
     r5 = sbpf_ld8(r9, 8);
@@ -19180,7 +19192,7 @@ L_10943:
     if (r5 != r2) goto L_10929;
     goto L_10947;
 L_10947:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld8(r10, -376);
     r2 = sbpf_ld8(r2, 32);
     r5 = sbpf_ld8(r9, 24);
@@ -19191,7 +19203,7 @@ L_10951:
     if (r1 > 10) goto L_11505;
     goto L_10952;
 L_10952:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r2 = r10;
     r2 = r2 + (uint64_t)-344;
     r2 = r2 + r1;
@@ -19199,26 +19211,26 @@ L_10952:
     if (r5 != 0) goto L_10929;
     goto L_10957;
 L_10957:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = sbpf_ld8(r10, -376);
     r5 = sbpf_ld1(r5, 1);
     if (r5 != 0) goto L_10925;
     goto L_10960;
 L_10960:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_10961:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 1;
     r2 = sbpf_ld8(r10, -392);
     if (r8 != r2) goto L_10908;
     goto L_10964;
 L_10964:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_10908;
 L_10966:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 90);
     if (r1 != 1) goto L_10396;
     goto L_10968;
@@ -19233,17 +19245,17 @@ L_10968:
     if (r2 != 24) goto L_11325;
     goto L_10975;
 L_10975:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r4, 88);
     r2 = sbpf_ld8(r10, -368);
     r2 = r2 & 255;
     if (r2 >= r1) goto L_10015;
     goto L_10979;
 L_10979:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_10980:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = sbpf_ld1(r4, 90);
     if (r1 != 1) goto L_10396;
     goto L_10982;
@@ -19258,17 +19270,17 @@ L_10982:
     if (r2 != 24) goto L_11406;
     goto L_10989;
 L_10989:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r4, 88);
     r2 = sbpf_ld8(r10, -368);
     r2 = r2 & 255;
     if (r2 >= r1) goto L_10032;
     goto L_10993;
 L_10993:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_10994:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r7, 89);
     r3 = 1;
     sbpf_st8(r10, -384, r2);
@@ -19279,7 +19291,7 @@ L_10998:
     r3 = 0;
     goto L_10999;
 L_10999:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -384);
     if (r2 > 11) goto L_11514;
     goto L_11001;
@@ -19343,21 +19355,21 @@ L_11040:
     if (r6 != r9) goto L_11035;
     goto L_11044;
 L_11044:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = sbpf_ld8(r10, -352);
     r6 = sbpf_ld8(r3, 16);
     r3 = sbpf_ld8(r1, 8);
     if (r3 != r6) goto L_11035;
     goto L_11048;
 L_11048:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = sbpf_ld8(r10, -352);
     r3 = sbpf_ld8(r3, 24);
     r6 = sbpf_ld8(r1, 16);
     if (r6 != r3) goto L_11035;
     goto L_11052;
 L_11052:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = sbpf_ld8(r10, -352);
     r3 = sbpf_ld8(r3, 32);
     r1 = sbpf_ld8(r1, 24);
@@ -19368,7 +19380,7 @@ L_11056:
     if (r2 > 10) goto L_11504;
     goto L_11057;
 L_11057:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = r10;
     r1 = r1 + (uint64_t)-344;
     r1 = r1 + r2;
@@ -19376,26 +19388,26 @@ L_11057:
     if (r3 != 0) goto L_11035;
     goto L_11062;
 L_11062:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r10, -352);
     r3 = sbpf_ld1(r3, 1);
     if (r3 == 0) goto L_9441;
     goto L_11065;
 L_11065:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r1, 0, 1);
     r1 = sbpf_ld8(r10, -376);
     r1 = r1 + 1;
     sbpf_st8(r10, -376, r1);
     goto L_11035;
 L_11070:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 1;
     r2 = sbpf_ld8(r10, -368);
     if (r5 != r2) goto L_11018;
     goto L_11073;
 L_11073:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_11018;
 L_11075:
@@ -19407,11 +19419,11 @@ L_11075:
     if (r3 != 0) goto L_11081;
     goto L_11080;
 L_11080:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r2 = 0;
     goto L_11081;
 L_11081:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = sbpf_ld8(r10, -400);
     if (r3 > 11) goto L_11509;
     goto L_11083;
@@ -19467,7 +19479,7 @@ L_11117:
     sbpf_st8(r10, -392, r1);
     goto L_11121;
 L_11121:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = r3;
     r1 = r1 + 32;
     r2 = r2 + 1;
@@ -19488,7 +19500,7 @@ L_11130:
     if (r7 != r1) goto L_11121;
     goto L_11133;
 L_11133:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = sbpf_ld8(r8, 24);
     r7 = sbpf_ld8(r9, 16);
     if (r7 != r1) goto L_11121;
@@ -19500,7 +19512,7 @@ L_11136:
     if (r7 != r1) goto L_11121;
     goto L_11139;
 L_11139:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_11504;
     goto L_11140;
 L_11140:
@@ -19512,25 +19524,25 @@ L_11140:
     if (r7 != 0) goto L_11121;
     goto L_11145;
 L_11145:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = sbpf_ld1(r8, 1);
     if (r7 != 0) goto L_11117;
     goto L_11147;
 L_11147:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_11148:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 1;
     r2 = sbpf_ld8(r10, -384);
     if (r5 != r2) goto L_11100;
     goto L_11151;
 L_11151:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_11100;
 L_11153:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r0 = sbpf_ld1(r6, 89);
     r7 = 1;
     sbpf_st8(r10, -400, r0);
@@ -19541,7 +19553,7 @@ L_11157:
     r7 = 0;
     goto L_11158;
 L_11158:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld8(r10, -400);
     if (r0 > 11) goto L_11509;
     goto L_11160;
@@ -19600,7 +19612,7 @@ L_11197:
     sbpf_st8(r10, -392, r0);
     goto L_11201;
 L_11201:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r9 = r8;
     r9 = r9 + 32;
     r2 = r2 + 1;
@@ -19623,7 +19635,7 @@ L_11211:
     if (r9 != r7) goto L_11201;
     goto L_11215;
 L_11215:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r7 = sbpf_ld8(r10, -376);
     r7 = sbpf_ld8(r7, 24);
     r9 = sbpf_ld8(r0, 16);
@@ -19637,7 +19649,7 @@ L_11219:
     if (r0 != r7) goto L_11201;
     goto L_11223;
 L_11223:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_11504;
     goto L_11224;
 L_11224:
@@ -19649,22 +19661,22 @@ L_11224:
     if (r7 != 0) goto L_11201;
     goto L_11229;
 L_11229:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r10, -376);
     r7 = sbpf_ld1(r7, 1);
     if (r7 != 0) goto L_11197;
     goto L_11232;
 L_11232:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_11233:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 1;
     r2 = sbpf_ld8(r10, -384);
     if (r5 != r2) goto L_11178;
     goto L_11236;
 L_11236:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_11178;
 L_11238:
@@ -19675,11 +19687,11 @@ L_11238:
     if (r0 != 0) goto L_11243;
     goto L_11242;
 L_11242:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = 0;
     goto L_11243;
 L_11243:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld8(r10, -400);
     if (r0 > 11) goto L_11509;
     goto L_11245;
@@ -19747,21 +19759,21 @@ L_11287:
     if (r7 != r9) goto L_11282;
     goto L_11292;
 L_11292:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r7 = sbpf_ld8(r10, -376);
     r7 = sbpf_ld8(r7, 16);
     r9 = sbpf_ld8(r0, 8);
     if (r9 != r7) goto L_11282;
     goto L_11296;
 L_11296:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r7 = sbpf_ld8(r10, -376);
     r7 = sbpf_ld8(r7, 24);
     r9 = sbpf_ld8(r0, 16);
     if (r9 != r7) goto L_11282;
     goto L_11300;
 L_11300:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r7 = sbpf_ld8(r10, -376);
     r7 = sbpf_ld8(r7, 32);
     r0 = sbpf_ld8(r0, 24);
@@ -19772,7 +19784,7 @@ L_11304:
     if (r2 > 10) goto L_11504;
     goto L_11305;
 L_11305:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = r10;
     r0 = r0 + (uint64_t)-344;
     r0 = r0 + r2;
@@ -19780,34 +19792,34 @@ L_11305:
     if (r7 != 0) goto L_11282;
     goto L_11310;
 L_11310:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = sbpf_ld8(r10, -376);
     r7 = sbpf_ld1(r7, 1);
     if (r7 == 0) goto L_9441;
     goto L_11313;
 L_11313:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st1(r0, 0, 1);
     r0 = sbpf_ld8(r10, -392);
     r0 = r0 + 1;
     sbpf_st8(r10, -392, r0);
     goto L_11282;
 L_11318:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 1;
     r2 = sbpf_ld8(r10, -384);
     if (r5 != r2) goto L_11263;
     goto L_11321;
 L_11321:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_11263;
 L_11323:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 6;
     goto L_9923;
 L_11325:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r4, 89);
     r5 = 1;
     sbpf_st8(r10, -376, r2);
@@ -19818,7 +19830,7 @@ L_11329:
     r5 = 0;
     goto L_11330;
 L_11330:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -376);
     if (r2 > 11) goto L_11499;
     goto L_11332;
@@ -19877,7 +19889,7 @@ L_11369:
     sbpf_st8(r10, -368, r1);
     goto L_11373;
 L_11373:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = r6;
     r0 = r0 + 32;
     r2 = r2 + 1;
@@ -19898,7 +19910,7 @@ L_11382:
     if (r7 != r0) goto L_11373;
     goto L_11385;
 L_11385:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r9, 24);
     r7 = sbpf_ld8(r1, 16);
     if (r7 != r0) goto L_11373;
@@ -19910,7 +19922,7 @@ L_11388:
     if (r1 != r0) goto L_11373;
     goto L_11391;
 L_11391:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_11504;
     goto L_11392;
 L_11392:
@@ -19922,26 +19934,26 @@ L_11392:
     if (r0 != 0) goto L_11373;
     goto L_11397;
 L_11397:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld1(r9, 1);
     if (r0 != 0) goto L_11369;
     goto L_11399;
 L_11399:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_11400:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = 1;
     r2 = sbpf_ld8(r10, -360);
     r5 = sbpf_ld8(r10, -352);
     if (r5 != r2) goto L_11352;
     goto L_11404;
 L_11404:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_11352;
 L_11406:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = sbpf_ld1(r4, 89);
     r5 = 1;
     sbpf_st8(r10, -376, r2);
@@ -19952,7 +19964,7 @@ L_11410:
     r5 = 0;
     goto L_11411;
 L_11411:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -376);
     if (r2 > 11) goto L_11499;
     goto L_11413;
@@ -20011,7 +20023,7 @@ L_11450:
     sbpf_st8(r10, -368, r1);
     goto L_11454;
 L_11454:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r0 = r6;
     r0 = r0 + 32;
     r2 = r2 + 1;
@@ -20032,7 +20044,7 @@ L_11463:
     if (r7 != r0) goto L_11454;
     goto L_11466;
 L_11466:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = sbpf_ld8(r9, 24);
     r7 = sbpf_ld8(r1, 16);
     if (r7 != r0) goto L_11454;
@@ -20044,7 +20056,7 @@ L_11469:
     if (r1 != r0) goto L_11454;
     goto L_11472;
 L_11472:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r2 > 10) goto L_11504;
     goto L_11473;
 L_11473:
@@ -20056,41 +20068,41 @@ L_11473:
     if (r0 != 0) goto L_11454;
     goto L_11478;
 L_11478:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = sbpf_ld1(r9, 1);
     if (r0 != 0) goto L_11450;
     goto L_11480;
 L_11480:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_11481:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = 1;
     r2 = sbpf_ld8(r10, -360);
     r5 = sbpf_ld8(r10, -352);
     if (r5 != r2) goto L_11433;
     goto L_11485;
 L_11485:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     goto L_11433;
 L_11487:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0;
     sbpf_st8(r10, -384, r1);
     goto L_11489;
 L_11489:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld1(r7, 88);
     r2 = sbpf_ld8(r10, -384);
     r2 = r2 & 255;
     if (r2 >= r1) goto L_9993;
     goto L_11493;
 L_11493:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_9441;
 L_11494:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -392);
     r2 = 11;
     r3 = 0x0000000100019be8ull;
@@ -20101,44 +20113,44 @@ L_11499:
     r1 = sbpf_ld8(r10, -376);
     goto L_11500;
 L_11500:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = 11;
     r3 = 0x0000000100019be8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_11504;
 L_11504:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = r2;
     goto L_11505;
 L_11505:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = 11;
     r3 = 0x0000000100019c00ull;
     SBPF_CALL((sbpf_sel = 11585u, f_11560)(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_11509;
 L_11509:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -400);
     r2 = 11;
     r3 = 0x0000000100019be8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_11514;
 L_11514:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -384);
     r2 = 11;
     r3 = 0x0000000100019be8ull;
     SBPF_CALL(f_11887(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_11519;
 L_11519:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = 11;
     r2 = 11;
     r3 = 0x0000000100019bd0ull;
     SBPF_CALL((sbpf_sel = 11585u, f_11560)(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_11524;
 L_11524:
-    budget -= 7;
+    if ((budget -= 7) < 0) goto L_limit;
     r2 = sbpf_ld8(r1, 8);
     r4 = sbpf_ld4(r2, 20);
     r3 = sbpf_ld4(r2, 16);
@@ -20167,9 +20179,10 @@ L_limit:
 }
 
 SBPF_FN f_11537(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_11537:
-    budget -= 10;
+    if ((budget -= 120) < 0) goto L_limit;
     r6 = r1;
     sbpf_st4(r10, -4, 0);
     sbpf_st4(r10, -7, 0);
@@ -20179,10 +20192,10 @@ L_11537:
     r1 = 0x00000001000193d8ull;
     r3 = 0;
     r4 = 17;
-    sbpf_trap(SBPF_HALT_UNKNOWN_SYSCALL, 0x13c1b505u);
+    r0 = sbpf_sys_get_sysvar(r1, r2, r3, r4, r5);
     goto L_11548;
 L_11548:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r0 == 0) goto L_11552;
     goto L_11549;
 L_11549:
@@ -20209,7 +20222,8 @@ L_limit:
 }
 
 SBPF_FN f_11560(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
     uint32_t sel = sbpf_sel;
     sbpf_sel = 0;
     switch (sel) {
@@ -20277,12 +20291,12 @@ L_11584:
     SBPF_CALL((sbpf_sel = 11566u, f_11560)(0, r1, r2, r3, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_11609;
 L_11609:
-    budget -= 2;
+    if ((budget -= 2) < 0) goto L_limit;
     r6 = sbpf_ld8(r5, -4088);
     if (r2 == 0) goto L_11618;
     goto L_11611;
 L_11611:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r7 = 1114112;
     r0 = sbpf_ld4(r1, 16);
     r2 = r0;
@@ -20294,7 +20308,7 @@ L_11616:
     r9 = r6;
     goto L_11624;
 L_11618:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = 45;
     r0 = sbpf_ld4(r1, 16);
     goto L_11622;
@@ -20303,12 +20317,12 @@ L_11621:
     r7 = 43;
     goto L_11622;
 L_11622:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r9 = r6;
     r9 = r9 + 1;
     goto L_11624;
 L_11624:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r8 = sbpf_ld8(r5, -4096);
     r2 = r0;
     r2 = r2 & 8388608;
@@ -20326,7 +20340,7 @@ L_11630:
     if (r7 < r3) goto L_11684;
     goto L_11636;
 L_11636:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r9 = r8;
     r8 = sbpf_ld8(r1, 8);
     r7 = sbpf_ld8(r1, 0);
@@ -20343,7 +20357,7 @@ L_11645:
     if (r0 != 0) goto L_11799;
     goto L_11647;
 L_11647:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r4 = sbpf_ld8(r8, 24);
     r1 = r7;
     r2 = r9;
@@ -20361,7 +20375,7 @@ L_11654:
     if (r4 >= 32) goto L_11673;
     goto L_11657;
 L_11657:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = 0;
     if (r4 == 0) goto L_11679;
     goto L_11659;
@@ -20386,11 +20400,11 @@ L_11666:
     if ((int64_t)r4 > -65) goto L_11662;
     goto L_11671;
 L_11671:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = 0;
     goto L_11662;
 L_11673:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = r3;
     r2 = r4;
     sbpf_st8(r10, -8, r0);
@@ -20402,7 +20416,7 @@ L_11677:
     r0 = sbpf_ld8(r10, -8);
     goto L_11679;
 L_11679:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r7 = r7 + r9;
     r1 = sbpf_ld8(r10, -48);
     r3 = sbpf_ld2(r1, 20);
@@ -20410,7 +20424,7 @@ L_11679:
     if (r7 >= r3) goto L_11636;
     goto L_11684;
 L_11684:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = r0;
     r2 = r2 & 16777216;
     sbpf_st8(r10, -64, r8);
@@ -20425,7 +20439,7 @@ L_11688:
     if ((int64_t)r2 > 1) goto L_11731;
     goto L_11693;
 L_11693:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 0;
     if (r2 == 0) goto L_11736;
     goto L_11695;
@@ -20434,7 +20448,7 @@ L_11695:
     r6 = r3;
     goto L_11736;
 L_11697:
-    if ((budget -= 17) < 0) goto L_limit;
+    budget -= 17;
     sbpf_st8(r10, -56, r3);
     r2 = sbpf_ld8(r1, 16);
     r3 = 0x000000009fe00000ull;
@@ -20459,27 +20473,27 @@ L_11715:
     if (r0 != 0) goto L_11799;
     goto L_11717;
 L_11717:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r8 = sbpf_ld8(r10, -56);
     r8 = r8 - r7;
     r7 = 0;
     r8 = r8 & 65535;
     goto L_11721;
 L_11721:
-    budget -= 3;
+    if ((budget -= 3) < 0) goto L_limit;
     r1 = r7;
     r1 = r1 & 65535;
     if (r1 >= r8) goto L_11789;
     goto L_11724;
 L_11724:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = sbpf_ld8(r9, 32);
     r1 = sbpf_ld8(r10, -8);
     r2 = 48;
     SBPF_CALLX(r3, (r0, r1, r2, r3, r4, r5, r6, r7, r8, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_11728;
 L_11728:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r7 = r7 + 1;
     if (r0 == 0) goto L_11721;
     goto L_11730;
@@ -20487,7 +20501,7 @@ L_11730:
     budget -= 1;
     goto L_11799;
 L_11731:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = r3;
     if (r2 != 2) goto L_11736;
     goto L_11733;
@@ -20498,7 +20512,7 @@ L_11733:
     r6 = r6 >> (1 & 63);
     goto L_11736;
 L_11736:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     sbpf_st8(r10, -56, r3);
     r0 = r0 & 2097151;
     sbpf_st8(r10, -8, r0);
@@ -20509,20 +20523,20 @@ L_11736:
     r6 = r6 & 65535;
     goto L_11744;
 L_11744:
-    budget -= 3;
+    if ((budget -= 3) < 0) goto L_limit;
     r1 = r8;
     r1 = r1 & 65535;
     if (r1 >= r6) goto L_11755;
     goto L_11747;
 L_11747:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = sbpf_ld8(r7, 32);
     r1 = r9;
     r2 = sbpf_ld8(r10, -8);
     SBPF_CALLX(r3, (r0, r1, r2, r3, r4, r5, r6, r7, r8, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_11751;
 L_11751:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = r8 + 1;
     if (r0 == 0) goto L_11744;
     goto L_11753;
@@ -20531,7 +20545,7 @@ L_11753:
     r6 = 1;
     goto L_11799;
 L_11755:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r1 = r9;
     r2 = r7;
     r3 = sbpf_ld8(r10, -32);
@@ -20545,7 +20559,7 @@ L_11761:
     if (r0 != 0) goto L_11799;
     goto L_11763;
 L_11763:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r4 = sbpf_ld8(r7, 24);
     r1 = r9;
     r2 = sbpf_ld8(r10, -64);
@@ -20558,7 +20572,7 @@ L_11768:
     if (r0 != 0) goto L_11799;
     goto L_11770;
 L_11770:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r1 = sbpf_ld8(r10, -48);
     r3 = r3 - r1;
     r8 = 0;
@@ -20566,29 +20580,29 @@ L_11770:
     sbpf_st8(r10, -56, r3);
     goto L_11775;
 L_11775:
-    budget -= 4;
+    if ((budget -= 4) < 0) goto L_limit;
     r1 = r8;
     r1 = r1 & 65535;
     r6 = 1;
     if (r1 < r3) goto L_11780;
     goto L_11779;
 L_11779:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r6 = 0;
     goto L_11780;
 L_11780:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = sbpf_ld8(r10, -8);
     if (r1 >= r3) goto L_11799;
     goto L_11782;
 L_11782:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r7, 32);
     r1 = r9;
     SBPF_CALLX(r3, (r0, r1, r2, r3, r4, r5, r6, r7, r8, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_11785;
 L_11785:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = sbpf_ld8(r10, -56);
     r8 = r8 + 1;
     if (r0 == 0) goto L_11775;
@@ -20597,7 +20611,7 @@ L_11788:
     budget -= 1;
     goto L_11799;
 L_11789:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r4 = sbpf_ld8(r9, 24);
     r1 = sbpf_ld8(r10, -8);
     r2 = sbpf_ld8(r10, -64);
@@ -20609,7 +20623,7 @@ L_11794:
     if (r0 != 0) goto L_11799;
     goto L_11795;
 L_11795:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = sbpf_ld8(r10, -48);
     r2 = sbpf_ld8(r10, -72);
     sbpf_st8(r1, 16, r2);
@@ -20626,9 +20640,10 @@ L_limit:
 }
 
 SBPF_FN f_11802(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_11802:
-    budget -= 7;
+    if ((budget -= 7) < 0) goto L_limit;
     r6 = r5;
     r7 = r4;
     r8 = r2;
@@ -20638,7 +20653,7 @@ L_11802:
     if (r2 == 1114112) goto L_11817;
     goto L_11809;
 L_11809:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r4 = sbpf_ld8(r8, 32);
     r9 = r1;
     r2 = r3;
@@ -20652,11 +20667,11 @@ L_11813:
     if (r2 != 0) goto L_11824;
     goto L_11817;
 L_11817:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r7 == 0) goto L_11823;
     goto L_11818;
 L_11818:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r4 = sbpf_ld8(r8, 24);
     r2 = r7;
     r3 = r6;
@@ -20678,9 +20693,10 @@ L_limit:
 }
 
 SBPF_FN f_11825(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_11825:
-    budget -= 7;
+    if ((budget -= 7) < 0) goto L_limit;
     r4 = r1;
     r1 = 0;
     r0 = r2;
@@ -20690,7 +20706,7 @@ L_11825:
     if (r0 == r2) goto L_11844;
     goto L_11832;
 L_11832:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r0 = r0 - r2;
     r5 = r3;
     if (r3 < r0) goto L_11836;
@@ -20700,18 +20716,18 @@ L_11835:
     r5 = r0;
     goto L_11836;
 L_11836:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 0) goto L_11844;
     goto L_11837;
 L_11837:
-    budget -= 4;
+    if ((budget -= 4) < 0) goto L_limit;
     r0 = r2;
     r0 = r0 + r1;
     r0 = sbpf_ld1(r0, 0);
     if (r0 == r4) goto L_11885;
     goto L_11841;
 L_11841:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = r1 + 1;
     if (r1 < r5) goto L_11837;
     goto L_11843;
@@ -20720,7 +20736,7 @@ L_11843:
     r1 = r5;
     goto L_11844;
 L_11844:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = r3;
     r5 = r5 + (uint64_t)-16;
     if (r1 > r5) goto L_11872;
@@ -20756,7 +20772,7 @@ L_11870:
     if (r1 <= r5) goto L_11853;
     goto L_11872;
 L_11872:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 == r1) goto L_11882;
     goto L_11873;
 L_11873:
@@ -20778,7 +20794,7 @@ L_11880:
     if (r5 < r3) goto L_11876;
     goto L_11882;
 L_11882:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0;
     goto L_11886;
 L_11884:
@@ -20786,7 +20802,7 @@ L_11884:
     r1 = r1 + r5;
     goto L_11885;
 L_11885:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r0 = 1;
     goto L_11886;
 L_11886:
@@ -20798,7 +20814,8 @@ L_limit:
 }
 
 SBPF_FN f_11887(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
     uint32_t sel = sbpf_sel;
     sbpf_sel = 0;
     switch (sel) {
@@ -20809,7 +20826,7 @@ L_11887:
     SBPF_CALL(f_12341(0, r1, r2, r3, r4, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_11888;
 L_11888:
-    budget -= 7;
+    if ((budget -= 7) < 0) goto L_limit;
     r0 = r2;
     sbpf_st8(r10, -8, r1);
     r1 = r3;
@@ -20819,7 +20836,7 @@ L_11888:
     if (r1 > r3) goto L_11899;
     goto L_11895;
 L_11895:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = 0;
     if (r4 == 0) goto L_11900;
     goto L_11897;
@@ -20828,10 +20845,10 @@ L_11897:
     if (r3 != 0) goto L_11902;
     goto L_11898;
 L_11898:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_12043;
 L_11899:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 != 0) goto L_11897;
     goto L_11900;
 L_11900:
@@ -20840,7 +20857,7 @@ L_11900:
     if (r3 == 0) goto L_12043;
     goto L_11902;
 L_11902:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r1 = r0;
     r1 = r1 + 7;
     r1 = r1 & (uint64_t)-8;
@@ -20873,7 +20890,7 @@ L_11922:
     if (r6 == 0) goto L_11947;
     goto L_11926;
 L_11926:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = r4 + 1;
     goto L_11967;
 L_11928:
@@ -20885,7 +20902,7 @@ L_11928:
     if (r6 == 4) goto L_11982;
     goto L_11934;
 L_11934:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r6 == 3) goto L_11969;
     goto L_11935;
 L_11935:
@@ -20893,13 +20910,13 @@ L_11935:
     if (r6 != 2) goto L_12049;
     goto L_11936;
 L_11936:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = r4;
     r9 = r9 + 1;
     if (r9 >= r3) goto L_12051;
     goto L_11939;
 L_11939:
-    if ((budget -= 7) < 0) goto L_limit;
+    budget -= 7;
     r6 = r0;
     r6 = r6 + r9;
     r6 = sbpf_ld1(r6, 0);
@@ -20912,11 +20929,11 @@ L_11946:
     budget -= 1;
     goto L_12052;
 L_11947:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 >= r5) goto L_11957;
     goto L_11948;
 L_11948:
-    budget -= 7;
+    if ((budget -= 7) < 0) goto L_limit;
     r6 = r0;
     r6 = r6 + r4;
     r7 = sbpf_ld8(r6, 0);
@@ -20926,16 +20943,16 @@ L_11948:
     if (r6 != 0) goto L_11957;
     goto L_11955;
 L_11955:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = r4 + 16;
     if (r4 < r5) goto L_11948;
     goto L_11957;
 L_11957:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 >= r3) goto L_11967;
     goto L_11958;
 L_11958:
-    budget -= 6;
+    if ((budget -= 6) < 0) goto L_limit;
     r6 = r0;
     r6 = r6 + r4;
     r6 = sbpf_ld1(r6, 0);
@@ -20944,7 +20961,7 @@ L_11958:
     if ((int64_t)r6 < 0) goto L_11967;
     goto L_11964;
 L_11964:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r4 = r4 + 1;
     if (r4 < r3) goto L_11958;
     goto L_11966;
@@ -20952,7 +20969,7 @@ L_11966:
     budget -= 1;
     goto L_12043;
 L_11967:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 < r3) goto L_11915;
     goto L_11968;
 L_11968:
@@ -20966,7 +20983,7 @@ L_11969:
     if (r6 >= r3) goto L_12052;
     goto L_11973;
 L_11973:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r2 = r0;
     r2 = r2 + r6;
     r6 = sbpf_ld1(r2, 0);
@@ -20979,14 +20996,14 @@ L_11979:
     if (r9 != 237) goto L_12002;
     goto L_11980;
 L_11980:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r6 <= -97) goto L_12009;
     goto L_11981;
 L_11981:
     budget -= 1;
     goto L_12049;
 L_11982:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r8 = 0;
     r6 = r4;
     r6 = r6 + 1;
@@ -21002,7 +21019,7 @@ L_11986:
     if (r9 == 240) goto L_11998;
     goto L_11992;
 L_11992:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r9 != 244) goto L_12019;
     goto L_11993;
 L_11993:
@@ -21010,7 +21027,7 @@ L_11993:
     if ((int64_t)r6 <= -113) goto L_12023;
     goto L_11994;
 L_11994:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_12049;
 L_11995:
     budget -= 2;
@@ -21018,10 +21035,10 @@ L_11995:
     if (r6 == (uint64_t)-96) goto L_12009;
     goto L_11997;
 L_11997:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_12049;
 L_11998:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = r6 + 112;
     r6 = r6 & 255;
     if (r6 < 48) goto L_12023;
@@ -21030,7 +21047,7 @@ L_12001:
     budget -= 1;
     goto L_12049;
 L_12002:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r2 = r9;
     r2 = r2 + 31;
     r2 = r2 & 255;
@@ -21042,17 +21059,17 @@ L_12006:
     if (r9 != 238) goto L_12049;
     goto L_12008;
 L_12008:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r6 >= -64) goto L_12049;
     goto L_12009;
 L_12009:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = r4;
     r9 = r9 + 2;
     if (r9 >= r3) goto L_12052;
     goto L_12012;
 L_12012:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r2 = r0;
     r2 = r2 + r9;
     r2 = sbpf_ld1(r2, 0);
@@ -21070,11 +21087,11 @@ L_12019:
     if (r9 > 2) goto L_12049;
     goto L_12022;
 L_12022:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if ((int64_t)r6 >= -64) goto L_12049;
     goto L_12023;
 L_12023:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r6 = r4;
     r6 = r6 + 2;
     if (r6 >= r3) goto L_12052;
@@ -21089,13 +21106,13 @@ L_12026:
     if ((int64_t)r2 > -65) goto L_12048;
     goto L_12032;
 L_12032:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = r4;
     r9 = r9 + 3;
     if (r9 >= r3) goto L_12052;
     goto L_12035;
 L_12035:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r2 = r0;
     r2 = r2 + r9;
     r2 = sbpf_ld1(r2, 0);
@@ -21108,18 +21125,18 @@ L_12041:
     r7 = 3;
     goto L_12049;
 L_12043:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r2 = sbpf_ld8(r10, -8);
     sbpf_st8(r2, 16, r3);
     sbpf_st8(r2, 8, r0);
     r1 = 0;
     goto L_12057;
 L_12048:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r7 = 2;
     goto L_12049;
 L_12049:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 1;
     goto L_12052;
 L_12051:
@@ -21127,7 +21144,7 @@ L_12051:
     r8 = 0;
     goto L_12052;
 L_12052:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r2 = sbpf_ld8(r10, -8);
     sbpf_st1(r2, 17, r7);
     sbpf_st1(r2, 16, r8);
@@ -21144,9 +21161,10 @@ L_limit:
 }
 
 SBPF_FN f_12059(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12059:
-    budget -= 6;
+    if ((budget -= 6) < 0) goto L_limit;
     r7 = r1;
     r7 = r7 + 7;
     r7 = r7 & (uint64_t)-8;
@@ -21155,7 +21173,7 @@ L_12059:
     if (r2 >= r3) goto L_12079;
     goto L_12065;
 L_12065:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0;
     if (r2 != 0) goto L_12072;
     goto L_12067;
@@ -21178,11 +21196,11 @@ L_12072:
     if ((int64_t)r4 > -65) goto L_12068;
     goto L_12077;
 L_12077:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = 0;
     goto L_12068;
 L_12079:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = r2;
     r5 = r5 - r3;
     if (r5 < 8) goto L_12065;
@@ -21197,7 +21215,7 @@ L_12082:
     if (r7 != r1) goto L_12186;
     goto L_12088;
 L_12088:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = sbpf_ld8(r10, -8);
     r1 = r1 + r4;
     if (r2 == 0) goto L_12108;
@@ -21226,11 +21244,11 @@ L_12101:
     if ((int64_t)r7 > -65) goto L_12097;
     goto L_12106;
 L_12106:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = 0;
     goto L_12097;
 L_12108:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r5 = r5 >> (3 & 63);
     r0 = r0 + r3;
     r9 = 0x0101010101010101ull;
@@ -21270,11 +21288,11 @@ L_12138:
     if (r3 < 192) goto L_12141;
     goto L_12140;
 L_12140:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r1 = 192;
     goto L_12141;
 L_12141:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     sbpf_st8(r10, -8, r1);
     r5 = r1;
     r5 = r5 << (3 & 63);
@@ -21327,10 +21345,10 @@ L_12151:
     if (r2 != r1) goto L_12151;
     goto L_12185;
 L_12185:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_12113;
 L_12186:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r6 = r1;
     r6 = r6 - r7;
     r7 = r1;
@@ -21351,7 +21369,7 @@ L_12193:
     if ((int64_t)r4 <= -65) goto L_12202;
     goto L_12199;
 L_12199:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r6 = r6 + 1;
     if (r6 == 0) goto L_12190;
     goto L_12201;
@@ -21359,17 +21377,17 @@ L_12201:
     budget -= 1;
     goto L_12205;
 L_12202:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r9 = 0;
     r6 = r6 + 1;
     if (r6 == 0) goto L_12190;
     goto L_12205;
 L_12205:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r8 = 0;
     goto L_12190;
 L_12207:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r8 = sbpf_ld8(r10, -16);
     r2 = r2 & 252;
     r2 = r2 << (3 & 63);
@@ -21380,7 +21398,7 @@ L_12211:
     r3 = 192;
     goto L_12212;
 L_12212:
-    if ((budget -= 6) < 0) goto L_limit;
+    budget -= 6;
     r6 = r8;
     r6 = r6 + r2;
     r2 = 0;
@@ -21425,7 +21443,8 @@ L_limit:
 }
 
 SBPF_FN f_12244(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12244:
     if ((budget -= 6) < 0) goto L_limit;
     r6 = r2;
@@ -21436,7 +21455,7 @@ L_12244:
     SBPF_CALL(f_12259(0, r1, r2, r3, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_12250;
 L_12250:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     sbpf_st8(r10, -4088, r1);
     sbpf_st8(r10, -4096, r0);
     r5 = r10;
@@ -21455,9 +21474,10 @@ L_limit:
 }
 
 SBPF_FN f_12259(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12259:
-    budget -= 5;
+    if ((budget -= 5) < 0) goto L_limit;
     r0 = r2;
     r4 = r1;
     sbpf_st8(r10, -8, r3);
@@ -21465,7 +21485,7 @@ L_12259:
     if (r1 < 1000) goto L_12301;
     goto L_12264;
 L_12264:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r5 = r0;
     r5 = r5 + (uint64_t)-2;
     r2 = sbpf_ld8(r10, -8);
@@ -21506,7 +21526,7 @@ L_12268:
     if (r6 > 9999999) goto L_12268;
     goto L_12301;
 L_12301:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r4 <= 9) goto L_12324;
     goto L_12302;
 L_12302:
@@ -21533,7 +21553,7 @@ L_12302:
     if (r1 != 0) goto L_12326;
     goto L_12323;
 L_12323:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_12327;
 L_12324:
     budget -= 2;
@@ -21541,11 +21561,11 @@ L_12324:
     if (r1 == 0) goto L_12327;
     goto L_12326;
 L_12326:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 0) goto L_12337;
     goto L_12327;
 L_12327:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r5 = r5 << (1 & 63);
     r5 = r5 & 30;
     r1 = 0x00000001000199cdull;
@@ -21568,7 +21588,8 @@ L_limit:
 }
 
 SBPF_FN f_12341(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
     uint32_t sel = sbpf_sel;
     sbpf_sel = 0;
     switch (sel) {
@@ -21601,7 +21622,7 @@ L_12341:
     SBPF_CALL((sbpf_sel = 11566u, f_11560)(0, r1, r2, r3, 0, r5, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
     goto L_12366;
 L_12366:
-    budget -= 3;
+    if ((budget -= 13) < 0) goto L_limit;
     r6 = r1;
     r2 = r2 & 255;
     r0 = sbpf_sys_memset(r1, r2, r3, r4, r5);
@@ -21616,9 +21637,10 @@ L_limit:
 }
 
 SBPF_FN f_12371(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12371:
-    budget -= 4;
+    if ((budget -= 14) < 0) goto L_limit;
     sbpf_st4(r10, -4, 0);
     r4 = r10;
     r4 = r4 + (uint64_t)-4;
@@ -21636,13 +21658,14 @@ L_limit:
 }
 
 SBPF_FN f_12379(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12379:
-    budget -= 1;
+    if ((budget -= 1) < 0) goto L_limit;
     if (r1 == 0) goto L_12441;
     goto L_12380;
 L_12380:
-    if ((budget -= 56) < 0) goto L_limit;
+    budget -= 56;
     r3 = r1;
     r3 = r3 >> (1 & 63);
     r2 = r1;
@@ -21700,7 +21723,7 @@ L_12380:
     r0 = r0 + r1;
     goto L_12442;
 L_12441:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r0 = 0;
     goto L_12442;
 L_12442:
@@ -21712,9 +21735,10 @@ L_limit:
 }
 
 SBPF_FN f_12443(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12443:
-    budget -= 6;
+    if ((budget -= 6) < 0) goto L_limit;
     r3 = 3;
     r0 = 0x7fffffffffffffffull;
     r4 = r1;
@@ -21723,7 +21747,7 @@ L_12443:
     if (r4 > r6) goto L_12469;
     goto L_12451;
 L_12451:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = r2;
     r5 = r5 & r0;
     if (r5 > r6) goto L_12469;
@@ -21734,7 +21758,7 @@ L_12454:
     if (r5 == 0) goto L_12462;
     goto L_12456;
 L_12456:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = r2;
     r3 = r3 & r1;
     if ((int64_t)r3 <= -1) goto L_12464;
@@ -21745,10 +21769,10 @@ L_12459:
     if ((int64_t)r1 >= (int64_t)r2) goto L_12466;
     goto L_12461;
 L_12461:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_12469;
 L_12462:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = 1;
     goto L_12469;
 L_12464:
@@ -21757,7 +21781,7 @@ L_12464:
     if ((int64_t)r1 > (int64_t)r2) goto L_12469;
     goto L_12466;
 L_12466:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = 1;
     if (r1 == r2) goto L_12469;
     goto L_12468;
@@ -21778,7 +21802,8 @@ L_limit:
 }
 
 SBPF_FN f_12475(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12475:
     if ((budget -= 1) < 0) goto L_limit;
     SBPF_CALL(f_12477(0, r1, r2, 0, 0, 0, 0, 0, 0, 0, r10 + SBPF_STACK_FRAME), r0 = x_.r0; r1 = x_.r1; r2 = x_.r2; r3 = x_.r3; r4 = x_.r4; r5 = x_.r5;);
@@ -21792,9 +21817,10 @@ L_limit:
 }
 
 SBPF_FN f_12477(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12477:
-    budget -= 19;
+    if ((budget -= 19) < 0) goto L_limit;
     r0 = r1;
     r6 = r2;
     r6 = r6 ^ r0;
@@ -21816,7 +21842,7 @@ L_12477:
     if (r4 < (uint64_t)-2046) goto L_12541;
     goto L_12498;
 L_12498:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r4 = r7;
     r4 = r4 + (uint64_t)-2047;
     if (r4 < (uint64_t)-2046) goto L_12541;
@@ -21827,7 +21853,7 @@ L_12501:
     r6 = 0;
     goto L_12503;
 L_12503:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r1 = r1 << (11 & 63);
     r2 = 0x8000000000000000ull;
     r1 = r1 | r2;
@@ -21846,7 +21872,7 @@ L_12513:
     if (r2 != 0) goto L_12552;
     goto L_12518;
 L_12518:
-    if ((budget -= 8) < 0) goto L_limit;
+    budget -= 8;
     r1 = r1 << (1 & 63);
     r2 = r0;
     r2 = r2 >> (63 & 63);
@@ -21861,7 +21887,7 @@ L_12526:
     if ((int64_t)r7 < 1) goto L_12576;
     goto L_12527;
 L_12527:
-    if ((budget -= 9) < 0) goto L_limit;
+    budget -= 9;
     r2 = 0x000fffffffffffffull;
     r1 = r1 & r2;
     r7 = r7 << (52 & 63);
@@ -21878,7 +21904,7 @@ L_12538:
     r0 = r0 + 1;
     goto L_12611;
 L_12541:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r9 = 0x7fffffffffffffffull;
     r5 = r0;
     r5 = r5 & r9;
@@ -21891,7 +21917,7 @@ L_12548:
     r0 = r0 | r1;
     goto L_12611;
 L_12552:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r7 = r7 + (uint64_t)-1022;
     r5 = sbpf_ld8(r10, -8);
     if ((int64_t)r7 <= 2046) goto L_12526;
@@ -21909,12 +21935,12 @@ L_12560:
     if (r0 <= r4) goto L_12567;
     goto L_12563;
 L_12563:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r1 = 0x0008000000000000ull;
     r2 = r2 | r1;
     goto L_12610;
 L_12567:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x7ff0000000000000ull;
     if (r5 != r2) goto L_12582;
     goto L_12570;
@@ -21923,7 +21949,7 @@ L_12570:
     if (r0 == 0) goto L_12584;
     goto L_12571;
 L_12571:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r1 = 0x7ff0000000000000ull;
     r6 = r6 | r1;
     goto L_12574;
@@ -21932,7 +21958,7 @@ L_12574:
     r0 = r6;
     goto L_12611;
 L_12576:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r3 = 1;
     r2 = 1;
     r2 = r2 - r7;
@@ -21947,11 +21973,11 @@ L_12582:
     if (r0 != r2) goto L_12612;
     goto L_12583;
 L_12583:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 != 0) goto L_12571;
     goto L_12584;
 L_12584:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r0 = 0x7ff8000000000000ull;
     goto L_12611;
 L_12587:
@@ -21964,11 +21990,11 @@ L_12587:
     if (r4 != 0) goto L_12594;
     goto L_12593;
 L_12593:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r3 = 0;
     goto L_12594;
 L_12594:
-    if ((budget -= 10) < 0) goto L_limit;
+    budget -= 10;
     r0 = r0 >> (r2 & 63);
     r4 = r1;
     r4 = r4 << (r7 & 63);
@@ -21985,24 +22011,24 @@ L_12605:
     if (r0 != r3) goto L_12610;
     goto L_12606;
 L_12606:
-    if ((budget -= 4) < 0) goto L_limit;
+    budget -= 4;
     r1 = r1 & 1;
     r0 = r2;
     r0 = r0 + r1;
     goto L_12611;
 L_12610:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r0 = r2;
     goto L_12611;
 L_12611:
     if ((budget -= 1) < 0) goto L_limit;
     SBPF_RETURN();
 L_12612:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r5 == 0) goto L_12574;
     goto L_12613;
 L_12613:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r0 == 0) goto L_12574;
     goto L_12614;
 L_12614:
@@ -22012,7 +22038,7 @@ L_12614:
     if (r5 >= r2) goto L_12669;
     goto L_12618;
 L_12618:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     if (r3 == 0) goto L_12663;
     goto L_12619;
 L_12619:
@@ -22062,7 +22088,7 @@ L_12663:
     r5 = 64;
     goto L_12664;
 L_12664:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r9 = 12;
     r9 = r9 - r5;
     r5 = r5 + 53;
@@ -22070,7 +22096,7 @@ L_12664:
     r3 = r3 << (r5 & 63);
     goto L_12669;
 L_12669:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r2 = 0x000fffffffffffffull;
     sbpf_st8(r10, -8, r6);
     if (r0 > r2) goto L_12718;
@@ -22080,7 +22106,7 @@ L_12673:
     if (r1 == 0) goto L_12720;
     goto L_12674;
 L_12674:
-    if ((budget -= 40) < 0) goto L_limit;
+    budget -= 40;
     r4 = r1;
     r4 = r4 >> (1 & 63);
     r2 = r1;
@@ -22126,7 +22152,7 @@ L_12718:
     r6 = r9;
     goto L_12503;
 L_12720:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r4 = 64;
     goto L_12721;
 L_12721:
@@ -22144,15 +22170,16 @@ L_limit:
 }
 
 SBPF_FN f_12728(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12728:
-    budget -= 3;
+    if ((budget -= 3) < 0) goto L_limit;
     r0 = 0;
     r2 = 0x3ff0000000000000ull;
     if (r1 < r2) goto L_12750;
     goto L_12732;
 L_12732:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r2 = 0x43f0000000000000ull;
     if (r1 >= r2) goto L_12746;
     goto L_12735;
@@ -22174,7 +22201,7 @@ L_12746:
     if (r1 >= r2) goto L_12750;
     goto L_12749;
 L_12749:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r0 = (uint64_t)-1;
     goto L_12750;
 L_12750:
@@ -22186,9 +22213,10 @@ L_limit:
 }
 
 SBPF_FN f_12751(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12751:
-    budget -= 21;
+    if ((budget -= 21) < 0) goto L_limit;
     sbpf_st8(r10, -16, r2);
     r2 = r1;
     r2 = r2 << (32 & 63);
@@ -22212,11 +22240,11 @@ L_12751:
     if (r9 < r6) goto L_12773;
     goto L_12772;
 L_12772:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     r8 = 0;
     goto L_12773;
 L_12773:
-    if ((budget -= 5) < 0) goto L_limit;
+    budget -= 5;
     r6 = r9;
     r6 = r6 << (32 & 63);
     r7 = r0;
@@ -22250,9 +22278,10 @@ L_limit:
 }
 
 SBPF_FN f_12794(uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4, uint64_t r5, uint64_t r6, uint64_t r7, uint64_t r8, uint64_t r9, uint64_t r10) {
-    int32_t budget = (int32_t)sbpf_budget;
+    SBPF_ENTER();
+    int32_t budget = sbpf_budget;
 L_12794:
-    budget -= 6;
+    if ((budget -= 6) < 0) goto L_limit;
     r3 = 3;
     r0 = 0x7fffffffffffffffull;
     r4 = r1;
@@ -22261,7 +22290,7 @@ L_12794:
     if (r4 > r6) goto L_12820;
     goto L_12802;
 L_12802:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r5 = r2;
     r5 = r5 & r0;
     if (r5 > r6) goto L_12820;
@@ -22272,7 +22301,7 @@ L_12805:
     if (r5 == 0) goto L_12813;
     goto L_12807;
 L_12807:
-    if ((budget -= 3) < 0) goto L_limit;
+    budget -= 3;
     r3 = r2;
     r3 = r3 & r1;
     if ((int64_t)r3 <= -1) goto L_12815;
@@ -22283,10 +22312,10 @@ L_12810:
     if ((int64_t)r1 >= (int64_t)r2) goto L_12817;
     goto L_12812;
 L_12812:
-    if ((budget -= 1) < 0) goto L_limit;
+    budget -= 1;
     goto L_12820;
 L_12813:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = 1;
     goto L_12820;
 L_12815:
@@ -22295,7 +22324,7 @@ L_12815:
     if ((int64_t)r1 > (int64_t)r2) goto L_12820;
     goto L_12817;
 L_12817:
-    if ((budget -= 2) < 0) goto L_limit;
+    budget -= 2;
     r3 = 1;
     if (r1 == r2) goto L_12820;
     goto L_12819;
@@ -22360,12 +22389,134 @@ static uint64_t sbpf_entry_fn(uint64_t r1, uint64_t r2, uint64_t r3, uint64_t r4
 /* Runs the program over the regions the caller put in `sbpf_r`, after `sbpf_rt_reset`. Returns an
  * SBPF_HALT_* code (`sbpf_halt_arg` holds its payload); SBPF_HALT_EXIT sets `*r0`. */
 uint32_t sbpf_entry(uint64_t *r0) {
-    sbpf_depth = 0;
+    sbpf_depth = (uint32_t)-1;
     sbpf_sel = 0;
-    return sbpf_rt_enter(sbpf_entry_fn, SBPF_REGION_INPUT, 0, 0, 0, 0, r0);
+    return sbpf_rt_settle(sbpf_rt_enter(sbpf_entry_fn, SBPF_REGION_INPUT, 0, 0, 0, 0, r0));
 }
 
-/* The ELF guard (sbpf2rv::shim::view_digest): the digest of the loaded program (text, rodata,
-   addresses, entry) this file was translated from. The shim hashes the program it loads from the
-   public tape the same way and refuses any other (BadElf). */
-const uint32_t sbpf_view_digest[8] = {0x7c0a4e22u, 0xac285c6fu, 0x916349d2u, 0xb9ed5195u, 0xc3583450u, 0x80be55f0u, 0x705d3d83u, 0xc17b8ddfu};
+/* sbpf_core::baked::Baked: text_va, then the virtual address of the read-only data below. */
+const uint64_t sbpf_baked[2] = {0x0000000100000120ull, 0x00000001000191f0ull};
+/* The program's read-only data (sbpf_core::baked::baked_rodata): 2848 byte(s). 4-aligned, so the
+   loader writes it a word at a time. */
+const uint32_t sbpf_rodata_len = 2848;
+__attribute__((aligned(4))) const uint8_t sbpf_rodata[2848] = {
+    47, 104, 111, 109, 101, 47, 114, 117, 110, 110, 101, 114, 47, 119, 111, 114, 107, 47, 112, 108, 97, 116, 102, 111,
+    114, 109, 45, 116, 111, 111, 108, 115, 47, 112, 108, 97, 116, 102, 111, 114, 109, 45, 116, 111, 111, 108, 115, 47,
+    111, 117, 116, 47, 114, 117, 115, 116, 47, 108, 105, 98, 114, 97, 114, 121, 47, 99, 111, 114, 101, 47, 115, 114,
+    99, 47, 115, 116, 114, 47, 112, 97, 116, 116, 101, 114, 110, 46, 114, 115, 0, 112, 105, 110, 111, 99, 99, 104,
+    105, 111, 47, 112, 114, 111, 103, 114, 97, 109, 47, 115, 114, 99, 47, 112, 114, 111, 99, 101, 115, 115, 111, 114,
+    47, 109, 111, 100, 46, 114, 115, 0, 112, 105, 110, 111, 99, 99, 104, 105, 111, 47, 112, 114, 111, 103, 114, 97,
+    109, 47, 115, 114, 99, 47, 112, 114, 111, 99, 101, 115, 115, 111, 114, 47, 115, 104, 97, 114, 101, 100, 47, 105,
+    110, 105, 116, 105, 97, 108, 105, 122, 101, 95, 109, 117, 108, 116, 105, 115, 105, 103, 46, 114, 115, 0, 69, 114,
+    114, 111, 114, 58, 32, 85, 110, 107, 110, 111, 119, 110, 69, 114, 114, 111, 114, 58, 32, 73, 110, 118, 97, 108,
+    105, 100, 65, 114, 103, 117, 109, 101, 110, 116, 69, 114, 114, 111, 114, 58, 32, 73, 110, 118, 97, 108, 105, 100,
+    73, 110, 115, 116, 114, 117, 99, 116, 105, 111, 110, 68, 97, 116, 97, 69, 114, 114, 111, 114, 58, 32, 73, 110,
+    118, 97, 108, 105, 100, 65, 99, 99, 111, 117, 110, 116, 68, 97, 116, 97, 69, 114, 114, 111, 114, 58, 32, 65,
+    99, 99, 111, 117, 110, 116, 68, 97, 116, 97, 84, 111, 111, 83, 109, 97, 108, 108, 69, 114, 114, 111, 114, 58,
+    32, 73, 110, 115, 117, 102, 102, 105, 99, 105, 101, 110, 116, 70, 117, 110, 100, 115, 69, 114, 114, 111, 114, 58,
+    32, 73, 110, 99, 111, 114, 114, 101, 99, 116, 80, 114, 111, 103, 114, 97, 109, 73, 100, 69, 114, 114, 111, 114,
+    58, 32, 77, 105, 115, 115, 105, 110, 103, 82, 101, 113, 117, 105, 114, 101, 100, 83, 105, 103, 110, 97, 116, 117,
+    114, 101, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 69, 114, 114, 111, 114, 58, 32, 65,
+    99, 99, 111, 117, 110, 116, 65, 108, 114, 101, 97, 100, 121, 73, 110, 105, 116, 105, 97, 108, 105, 122, 101, 100,
+    105, 110, 100, 101, 120, 32, 111, 117, 116, 32, 111, 102, 32, 98, 111, 117, 110, 100, 115, 58, 32, 116, 104, 101,
+    32, 108, 101, 110, 32, 105, 115, 32, 6, 167, 213, 23, 25, 44, 92, 81, 33, 140, 201, 76, 61, 74, 241, 127,
+    88, 218, 238, 8, 155, 161, 253, 68, 227, 219, 217, 138, 0, 0, 0, 0, 69, 114, 114, 111, 114, 58, 32, 85,
+    110, 105, 110, 105, 116, 105, 97, 108, 105, 122, 101, 100, 65, 99, 99, 111, 117, 110, 116, 69, 114, 114, 111, 114,
+    58, 32, 78, 111, 116, 69, 110, 111, 117, 103, 104, 65, 99, 99, 111, 117, 110, 116, 75, 101, 121, 115, 69, 114,
+    114, 111, 114, 58, 32, 65, 99, 99, 111, 117, 110, 116, 66, 111, 114, 114, 111, 119, 70, 97, 105, 108, 101, 100,
+    69, 114, 114, 111, 114, 58, 32, 77, 97, 120, 83, 101, 101, 100, 76, 101, 110, 103, 116, 104, 69, 120, 99, 101,
+    101, 100, 101, 100, 69, 114, 114, 111, 114, 58, 32, 73, 110, 118, 97, 108, 105, 100, 83, 101, 101, 100, 115, 69,
+    114, 114, 111, 114, 58, 32, 66, 111, 114, 115, 104, 73, 111, 69, 114, 114, 111, 114, 69, 114, 114, 111, 114, 58,
+    32, 65, 99, 99, 111, 117, 110, 116, 78, 111, 116, 82, 101, 110, 116, 69, 120, 101, 109, 112, 116, 69, 114, 114,
+    111, 114, 58, 32, 85, 110, 115, 117, 112, 112, 111, 114, 116, 101, 100, 83, 121, 115, 118, 97, 114, 69, 114, 114,
+    111, 114, 58, 32, 73, 108, 108, 101, 103, 97, 108, 79, 119, 110, 101, 114, 69, 114, 114, 111, 114, 58, 32, 77,
+    97, 120, 65, 99, 99, 111, 117, 110, 116, 115, 68, 97, 116, 97, 65, 108, 108, 111, 99, 97, 116, 105, 111, 110,
+    115, 69, 120, 99, 101, 101, 100, 101, 100, 69, 114, 114, 111, 114, 58, 32, 73, 110, 118, 97, 108, 105, 100, 82,
+    101, 97, 108, 108, 111, 99, 69, 114, 114, 111, 114, 58, 32, 77, 97, 120, 73, 110, 115, 116, 114, 117, 99, 116,
+    105, 111, 110, 84, 114, 97, 99, 101, 76, 101, 110, 103, 116, 104, 69, 120, 99, 101, 101, 100, 101, 100, 69, 114,
+    114, 111, 114, 58, 32, 66, 117, 105, 108, 116, 105, 110, 80, 114, 111, 103, 114, 97, 109, 115, 77, 117, 115, 116,
+    67, 111, 110, 115, 117, 109, 101, 67, 111, 109, 112, 117, 116, 101, 85, 110, 105, 116, 115, 69, 114, 114, 111, 114,
+    58, 32, 73, 110, 118, 97, 108, 105, 100, 65, 99, 99, 111, 117, 110, 116, 79, 119, 110, 101, 114, 69, 114, 114,
+    111, 114, 58, 32, 65, 114, 105, 116, 104, 109, 101, 116, 105, 99, 79, 118, 101, 114, 102, 108, 111, 119, 0, 0,
+    69, 114, 114, 111, 114, 58, 32, 73, 109, 109, 117, 116, 97, 98, 108, 101, 114, 97, 110, 103, 101, 32, 101, 110,
+    100, 32, 105, 110, 100, 101, 120, 32, 69, 114, 114, 111, 114, 58, 32, 73, 110, 99, 111, 114, 114, 101, 99, 116,
+    65, 117, 116, 104, 111, 114, 105, 116, 121, 69, 114, 114, 111, 114, 58, 32, 76, 97, 109, 112, 111, 114, 116, 32,
+    98, 97, 108, 97, 110, 99, 101, 32, 98, 101, 108, 111, 119, 32, 114, 101, 110, 116, 45, 101, 120, 101, 109, 112,
+    116, 32, 116, 104, 114, 101, 115, 104, 111, 108, 100, 69, 114, 114, 111, 114, 58, 32, 105, 110, 115, 117, 102, 102,
+    105, 99, 105, 101, 110, 116, 32, 102, 117, 110, 100, 115, 69, 114, 114, 111, 114, 58, 32, 73, 110, 118, 97, 108,
+    105, 100, 32, 77, 105, 110, 116, 69, 114, 114, 111, 114, 58, 32, 65, 99, 99, 111, 117, 110, 116, 32, 110, 111,
+    116, 32, 97, 115, 115, 111, 99, 105, 97, 116, 101, 100, 32, 119, 105, 116, 104, 32, 116, 104, 105, 115, 32, 77,
+    105, 110, 116, 69, 114, 114, 111, 114, 58, 32, 111, 119, 110, 101, 114, 32, 100, 111, 101, 115, 32, 110, 111, 116,
+    32, 109, 97, 116, 99, 104, 69, 114, 114, 111, 114, 58, 32, 116, 104, 101, 32, 116, 111, 116, 97, 108, 32, 115,
+    117, 112, 112, 108, 121, 32, 111, 102, 32, 116, 104, 105, 115, 32, 116, 111, 107, 101, 110, 32, 105, 115, 32, 102,
+    105, 120, 101, 100, 69, 114, 114, 111, 114, 58, 32, 97, 99, 99, 111, 117, 110, 116, 32, 111, 114, 32, 116, 111,
+    107, 101, 110, 32, 97, 108, 114, 101, 97, 100, 121, 32, 105, 110, 32, 117, 115, 101, 69, 114, 114, 111, 114, 58,
+    32, 73, 110, 118, 97, 108, 105, 100, 32, 110, 117, 109, 98, 101, 114, 32, 111, 102, 32, 112, 114, 111, 118, 105,
+    100, 101, 100, 32, 115, 105, 103, 110, 101, 114, 115, 69, 114, 114, 111, 114, 58, 32, 73, 110, 118, 97, 108, 105,
+    100, 32, 110, 117, 109, 98, 101, 114, 32, 111, 102, 32, 114, 101, 113, 117, 105, 114, 101, 100, 32, 115, 105, 103,
+    110, 101, 114, 115, 69, 114, 114, 111, 114, 58, 32, 83, 116, 97, 116, 101, 32, 105, 115, 32, 117, 110, 105, 110,
+    105, 116, 105, 97, 108, 105, 122, 101, 100, 69, 114, 114, 111, 114, 58, 32, 73, 110, 115, 116, 114, 117, 99, 116,
+    105, 111, 110, 32, 100, 111, 101, 115, 32, 110, 111, 116, 32, 115, 117, 112, 112, 111, 114, 116, 32, 110, 97, 116,
+    105, 118, 101, 32, 116, 111, 107, 101, 110, 115, 69, 114, 114, 111, 114, 58, 32, 78, 111, 110, 45, 110, 97, 116,
+    105, 118, 101, 32, 97, 99, 99, 111, 117, 110, 116, 32, 99, 97, 110, 32, 111, 110, 108, 121, 32, 98, 101, 32,
+    99, 108, 111, 115, 101, 100, 32, 105, 102, 32, 105, 116, 115, 32, 98, 97, 108, 97, 110, 99, 101, 32, 105, 115,
+    32, 122, 101, 114, 111, 69, 114, 114, 111, 114, 58, 32, 73, 110, 118, 97, 108, 105, 100, 32, 105, 110, 115, 116,
+    114, 117, 99, 116, 105, 111, 110, 69, 114, 114, 111, 114, 58, 32, 73, 110, 118, 97, 108, 105, 100, 32, 97, 99,
+    99, 111, 117, 110, 116, 32, 115, 116, 97, 116, 101, 32, 102, 111, 114, 32, 111, 112, 101, 114, 97, 116, 105, 111,
+    110, 69, 114, 114, 111, 114, 58, 32, 79, 112, 101, 114, 97, 116, 105, 111, 110, 32, 111, 118, 101, 114, 102, 108,
+    111, 119, 101, 100, 69, 114, 114, 111, 114, 58, 32, 65, 99, 99, 111, 117, 110, 116, 32, 100, 111, 101, 115, 32,
+    110, 111, 116, 32, 115, 117, 112, 112, 111, 114, 116, 32, 115, 112, 101, 99, 105, 102, 105, 101, 100, 32, 97, 117,
+    116, 104, 111, 114, 105, 116, 121, 32, 116, 121, 112, 101, 69, 114, 114, 111, 114, 58, 32, 84, 104, 105, 115, 32,
+    116, 111, 107, 101, 110, 32, 109, 105, 110, 116, 32, 99, 97, 110, 110, 111, 116, 32, 102, 114, 101, 101, 122, 101,
+    32, 97, 99, 99, 111, 117, 110, 116, 115, 69, 114, 114, 111, 114, 58, 32, 65, 99, 99, 111, 117, 110, 116, 32,
+    105, 115, 32, 102, 114, 111, 122, 101, 110, 69, 114, 114, 111, 114, 58, 32, 100, 101, 99, 105, 109, 97, 108, 115,
+    32, 100, 105, 102, 102, 101, 114, 101, 110, 116, 32, 102, 114, 111, 109, 32, 116, 104, 101, 32, 77, 105, 110, 116,
+    32, 100, 101, 99, 105, 109, 97, 108, 115, 69, 114, 114, 111, 114, 58, 32, 73, 110, 115, 116, 114, 117, 99, 116,
+    105, 111, 110, 32, 100, 111, 101, 115, 32, 110, 111, 116, 32, 115, 117, 112, 112, 111, 114, 116, 32, 110, 111, 110,
+    45, 110, 97, 116, 105, 118, 101, 32, 116, 111, 107, 101, 110, 115, 0, 0, 50, 0, 0, 0, 0, 0, 0, 0,
+    25, 0, 0, 0, 0, 0, 0, 0, 19, 0, 0, 0, 0, 0, 0, 0, 44, 0, 0, 0, 0, 0, 0, 0,
+    27, 0, 0, 0, 0, 0, 0, 0, 46, 0, 0, 0, 0, 0, 0, 0, 38, 0, 0, 0, 0, 0, 0, 0,
+    41, 0, 0, 0, 0, 0, 0, 0, 41, 0, 0, 0, 0, 0, 0, 0, 29, 0, 0, 0, 0, 0, 0, 0,
+    49, 0, 0, 0, 0, 0, 0, 0, 67, 0, 0, 0, 0, 0, 0, 0, 26, 0, 0, 0, 0, 0, 0, 0,
+    42, 0, 0, 0, 0, 0, 0, 0, 27, 0, 0, 0, 0, 0, 0, 0, 56, 0, 0, 0, 0, 0, 0, 0,
+    45, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 0, 0, 0, 0,
+    53, 0, 0, 0, 0, 0, 0, 0, 99, 97, 108, 108, 101, 100, 32, 96, 79, 112, 116, 105, 111, 110, 58, 58,
+    117, 110, 119, 114, 97, 112, 40, 41, 96, 32, 111, 110, 32, 97, 32, 96, 78, 111, 110, 101, 96, 32, 118, 97,
+    108, 117, 101, 32, 98, 117, 116, 32, 116, 104, 101, 32, 105, 110, 100, 101, 120, 32, 105, 115, 32, 48, 48, 48,
+    49, 48, 50, 48, 51, 48, 52, 48, 53, 48, 54, 48, 55, 48, 56, 48, 57, 49, 48, 49, 49, 49, 50, 49,
+    51, 49, 52, 49, 53, 49, 54, 49, 55, 49, 56, 49, 57, 50, 48, 50, 49, 50, 50, 50, 51, 50, 52, 50,
+    53, 50, 54, 50, 55, 50, 56, 50, 57, 51, 48, 51, 49, 51, 50, 51, 51, 51, 52, 51, 53, 51, 54, 51,
+    55, 51, 56, 51, 57, 52, 48, 52, 49, 52, 50, 52, 51, 52, 52, 52, 53, 52, 54, 52, 55, 52, 56, 52,
+    57, 53, 48, 53, 49, 53, 50, 53, 51, 53, 52, 53, 53, 53, 54, 53, 55, 53, 56, 53, 57, 54, 48, 54,
+    49, 54, 50, 54, 51, 54, 52, 54, 53, 54, 54, 54, 55, 54, 56, 54, 57, 55, 48, 55, 49, 55, 50, 55,
+    51, 55, 52, 55, 53, 55, 54, 55, 55, 55, 56, 55, 57, 56, 48, 56, 49, 56, 50, 56, 51, 56, 52, 56,
+    53, 56, 54, 56, 55, 56, 56, 56, 57, 57, 48, 57, 49, 57, 50, 57, 51, 57, 52, 57, 53, 57, 54, 57,
+    55, 57, 56, 57, 57, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 111, 117,
+    116, 32, 111, 102, 32, 114, 97, 110, 103, 101, 32, 102, 111, 114, 32, 115, 108, 105, 99, 101, 32, 111, 102, 32,
+    108, 101, 110, 103, 116, 104, 32, 0, 240, 145, 1, 0, 1, 0, 0, 0, 89, 0, 0, 0, 0, 0, 0, 0,
+    206, 1, 0, 0, 55, 0, 0, 0, 112, 146, 1, 0, 1, 0, 0, 0, 62, 0, 0, 0, 0, 0, 0, 0,
+    71, 0, 0, 0, 9, 0, 0, 0, 73, 146, 1, 0, 1, 0, 0, 0, 39, 0, 0, 0, 0, 0, 0, 0,
+    133, 0, 0, 0, 52, 0, 0, 0, 73, 146, 1, 0, 1, 0, 0, 0, 39, 0, 0, 0, 0, 0, 0, 0,
+    134, 0, 0, 0, 53, 0, 0, 0, 73, 146, 1, 0, 1, 0, 0, 0, 39, 0, 0, 0, 0, 0, 0, 0,
+    162, 0, 0, 0, 35, 0, 0, 0, 209, 149, 1, 0, 1, 0, 0, 0, 3, 150, 1, 0, 1, 0, 0, 0,
+    28, 150, 1, 0, 1, 0, 0, 0, 47, 150, 1, 0, 1, 0, 0, 0, 91, 150, 1, 0, 1, 0, 0, 0,
+    118, 150, 1, 0, 1, 0, 0, 0, 164, 150, 1, 0, 1, 0, 0, 0, 202, 150, 1, 0, 1, 0, 0, 0,
+    243, 150, 1, 0, 1, 0, 0, 0, 28, 151, 1, 0, 1, 0, 0, 0, 57, 151, 1, 0, 1, 0, 0, 0,
+    106, 151, 1, 0, 1, 0, 0, 0, 173, 151, 1, 0, 1, 0, 0, 0, 199, 151, 1, 0, 1, 0, 0, 0,
+    241, 151, 1, 0, 1, 0, 0, 0, 12, 152, 1, 0, 1, 0, 0, 0, 68, 152, 1, 0, 1, 0, 0, 0,
+    113, 152, 1, 0, 1, 0, 0, 0, 137, 152, 1, 0, 1, 0, 0, 0, 185, 152, 1, 0, 1, 0, 0, 0,
+    184, 147, 1, 0, 1, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 187, 153, 1, 0, 1, 0, 0, 0,
+    18, 0, 0, 0, 0, 0, 0, 0, 168, 149, 1, 0, 1, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0,
+    149, 155, 1, 0, 1, 0, 0, 0, 34, 0, 0, 0, 0, 0, 0, 0,
+};

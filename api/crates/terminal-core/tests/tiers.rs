@@ -6,13 +6,14 @@ use terminal_core::tiers::{capacities, cycles_total, pick, rows};
 use terminal_core::trace::{summarize, trapped};
 
 #[test]
-fn erc20_transfer_lands_in_tier_18_like_rand_guest_run() {
+fn erc20_transfer_lands_in_tier_16_like_rand_guest_run() {
     let program = Program::from_flat_image(&fixtures::bytes("erc20.image.bin")).unwrap();
     let inputs = fixtures::words("erc20-transfer.words");
     let exec = execute(&program, &inputs, &[], 1 << 20).unwrap();
     let r = rows(&program, inputs.len(), 0, &exec);
-    assert_eq!(r.cpu, 66_235);
-    // Every row count web/lib/zkvm.ts shows for the ERC-20 sample (circuits 85b6f46).
+    assert_eq!(r.cpu, 59_949);
+    // Every row count web/lib/zkvm.ts shows for the ERC-20 sample (circuits 41d64acd, constraint
+    // set 11: ZKVM-117's harness savings took the transfer from tier 18 to 16).
     assert_eq!(
         (
             r.alu,
@@ -21,7 +22,7 @@ fn erc20_transfer_lands_in_tier_18_like_rand_guest_run() {
             r.keccak_permutations,
             r.digest_rows
         ),
-        (73_159, 216_916, 3_908, 17, 3_155)
+        (64_423, 190_956, 3_758, 10, 2_355)
     );
     assert_eq!(
         r.digest_rows,
@@ -33,8 +34,8 @@ fn erc20_transfer_lands_in_tier_18_like_rand_guest_run() {
     assert!(r.alu > 0 && r.poseidon2_permutations >= r.digest_rows);
     assert_eq!(
         pick(&r, cycles_total(&r)),
-        Some(18),
-        "run-transfer.txt says tier 18"
+        Some(16),
+        "rand-guest run says tier 16"
     );
     let caps = capacities(&r, cycles_total(&r));
     assert_eq!(
@@ -43,14 +44,14 @@ fn erc20_transfer_lands_in_tier_18_like_rand_guest_run() {
     );
     assert_eq!(
         caps.iter().map(|c| c.fits).collect::<Vec<_>>(),
-        vec![false, false, false, false, true, true]
+        vec![false, false, false, true, true, true]
     );
-    let t18 = &caps[4];
-    assert_eq!(t18.cpu, 1 << 18);
-    assert_eq!(t18.alu, 1 << 19);
-    assert_eq!(t18.poseidon2_permutations, (1 << 20) / 32);
-    assert_eq!(t18.memory_min, 1 << 20);
-    assert_eq!(t18.memory_max, 1 << 24);
+    let t16 = &caps[3];
+    assert_eq!(t16.cpu, 1 << 16);
+    assert_eq!(t16.alu, 1 << 17);
+    assert_eq!(t16.poseidon2_permutations, (1 << 18) / 32);
+    assert_eq!(t16.memory_min, 1 << 18);
+    assert_eq!(t16.memory_max, 1 << 24);
 }
 
 #[test]
@@ -60,8 +61,9 @@ fn spl_transfer_lands_in_tier_20() {
     let inputs = fixtures::words("spl-transfer.input");
     let exec = execute(&program, &inputs, &public, 1 << 20).unwrap();
     let r = rows(&program, inputs.len(), public.len(), &exec);
-    assert_eq!(r.cpu, 765_851);
-    // Every row count web/lib/zkvm.ts shows for the SPL sample (circuits 85b6f46).
+    assert_eq!(r.cpu, 250_171);
+    // Every row count web/lib/zkvm.ts shows for the SPL sample (circuits 41d64acd, constraint
+    // set 11: the image carries the program, ZKVM-117, so no ELF is read and hashed at run time).
     assert_eq!(
         (
             r.alu,
@@ -70,12 +72,12 @@ fn spl_transfer_lands_in_tier_20() {
             r.keccak_permutations,
             r.digest_rows
         ),
-        (887_100, 2_365_304, 32_288, 0, 25_678)
+        (279_807, 790_159, 18_619, 0, 18_612)
     );
     assert_eq!(r.sha256_compressions, 30);
     assert_eq!(pick(&r, cycles_total(&r)), Some(20));
     let s = summarize("r1", &program, inputs.len(), public.len(), &exec, vec![]);
-    assert_eq!(s.cycles, 765_851);
+    assert_eq!(s.cycles, 250_171);
     assert_eq!(s.tier, Some(20));
     assert_eq!(s.status, exec.outputs[0]);
     assert_eq!(s.outputs, exec.outputs);

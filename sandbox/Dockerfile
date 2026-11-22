@@ -30,21 +30,24 @@ RUN cd /opt/solana-template && HOME=/opt/sbf-home cargo vendor /opt/solana-vendo
     && test -f /tmp/warm/program.so && rm -rf /tmp/warm target
 
 # circuits at the pinned revision; rand-guest built once; the shim crates' registry warmed by
-# translating and building the two reference programs, whose hc must equal the published ones.
+# translating and building the two reference programs, whose hc must equal the published ones
+# (constraint set 11: evm2rv/README.md and sbpf2rv/tests/parity.rs at 41d64acd).
 COPY circuits /circuits
-# rand-guest and evm2rv build --locked: their lockfiles are complete at this pin (85b6f46). sbpf2rv's
+# rand-guest and evm2rv build --locked: their lockfiles are complete at this pin (41d64acd). sbpf2rv's
 # is not: it omits three edges of the rand_zkvm path crate (chacha20, rand_core, dilithium-core).
 # Cargo adds those and changes no version; the hc pins below catch any drift.
 RUN cd /circuits/rand-guest && cargo build --release --locked && install -m 0755 target/release/rand-guest /usr/local/bin/rand-guest \
  && cd /circuits/evm2rv && cargo build --release --locked && cd /circuits/sbpf2rv && cargo build --release
 # The shim builds use their own CARGO_HOME so only their registry ships to run time.
+# --allow-panic: both shims link core's panic machinery through the ABI harness, which rand-guest
+# rejects since ZKVM-106 (a panic halts with out[7] = 0xdeadbeef, which a run's outputs show).
 RUN set -e; export CARGO_HOME=/opt/shim-cargo; mkdir -p /circuits/jobs/warm; \
     /circuits/evm2rv/target/release/evm2rv /circuits/guests-compiled/evm/contracts/erc20.runtime.hex --out /circuits/jobs/warm/erc20 --chain-id 13; \
-    rand-guest build /circuits/jobs/warm/erc20 --max-words 65535 | tee /tmp/erc20.txt; \
-    grep -q "hc a0feae92a7311c9562495717100eb7aea71270a38ed435d06dc31387e0ea8ff6" /tmp/erc20.txt; \
+    rand-guest build /circuits/jobs/warm/erc20 --max-words 65535 --allow-panic | tee /tmp/erc20.txt; \
+    grep -q "hc fd8dd3afdd785a991993c0f17dcca9a7c2c4b4c3bf213e2354d9aa1ffbf6e400" /tmp/erc20.txt; \
     /circuits/sbpf2rv/target/release/sbpf2rv /circuits/guests-compiled/sbpf/programs/spl_token.so --out /circuits/jobs/warm/spl --name spl-token; \
-    rand-guest build /circuits/jobs/warm/spl --max-words 65535 | tee /tmp/spl.txt; \
-    grep -q "hc 8ca905ae3c62f503de7de86829040f323e098b53dba5fffe09b42f1aad16758b" /tmp/spl.txt; \
+    rand-guest build /circuits/jobs/warm/spl --max-words 65535 --allow-panic | tee /tmp/spl.txt; \
+    grep -q "hc 77919dab5ec22e58729064e0711fbf57dc040785eb0612a73e6ad0c4370a42b7" /tmp/spl.txt; \
     rm -rf /circuits/jobs/warm /circuits/*/target; \
     cp -r /opt/shim-cargo/registry /opt/shim-cargo-registry
 

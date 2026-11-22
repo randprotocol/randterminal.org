@@ -1221,11 +1221,13 @@ L_1223: /* [0x04c7, 0x04d3) min_depth 2, max_growth 3, static gas 35 */
     evm_halt(EVM_HALT_STOP, 0);
 }
 
-/* The code guard (evm2rv::guard::code_digest): the digest of the bytecode this file was translated
-   from. Before any of the code above runs, the shim hashes the input vector's code the same way and
-   refuses any other (OutOfBounds, status 2, gas_used 0). */
+/* The code guard (evm2rv::guard::code_digest): d[0..8] is the digest of the bytecode this file was
+   translated from. Before any of the code above runs, the shim hashes the input vector's code the same
+   way and refuses any other (OutOfBounds, status 2, gas_used 0). d[8..16] is keccak256 of that bytecode
+   as EVM_OUT's eight words: once the guard has passed, the harness publishes it without hashing the
+   code again. */
 const uint32_t *evm_code_digest(void);
 const uint32_t *evm_code_digest(void) {
-    static const uint32_t d[8] = {0xf679280fu, 0x86c10e83u, 0x7e8f1f39u, 0xa2377de3u, 0x8a2e282fu, 0xc54cad42u, 0xddfaf009u, 0x7d28a8afu};
+    static const uint32_t d[16] = {0x336bce82u, 0xe6e5609fu, 0xb3bb5d6fu, 0x28793323u, 0xc56b73fbu, 0x620c1d9eu, 0xa00000bcu, 0x1784bf11u, 0x39308d3au, 0x70a6b3a9u, 0x1c06bb8eu, 0x99f56ddbu, 0x9aef9595u, 0xc9fd6679u, 0x2ecc05fau, 0xe02125a1u};
     return d;
 }

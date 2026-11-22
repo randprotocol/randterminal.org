@@ -6,7 +6,7 @@ use rand_zkvm::evm::{
     abi_call, erc20_transfer, mapping_slot, mapping_slot2, slot_index, ALICE, BOB,
 };
 use terminal_core::evm_call::{
-    build, encode_calldata, erc20_transfer_form, parse_u256, u256_hex, TraceHost,
+    build, encode_calldata, erc20_transfer_form, parse_u256, u256_hex, TraceHost, MAX_WITNESSES,
 };
 use terminal_core::views::{EvmCallForm, StorageSeed};
 
@@ -153,7 +153,8 @@ fn a_revert_is_not_an_error() {
 
 #[test]
 fn witness_cap_is_an_error() {
-    // 17 constant SLOADs (slots 0..=16) cannot be satisfied in 16 witnesses.
+    // 17 constant SLOADs (slots 0..=16): discovery guesses constants below 16 only, so slot 16
+    // is past what it can witness (the cap itself, 32, is many_mapping_reads_say_more_than_the_witness_cap's).
     let mut code = Vec::new();
     for s in 0u8..=16 {
         code.extend_from_slice(&[0x60, s, 0x54, 0x50]);
@@ -248,29 +249,30 @@ fn a_seed_given_twice_is_an_error() {
 }
 
 #[test]
-fn seeds_sharing_a_leaf_index_are_an_error() {
-    // Birthday search for two small slots with the same 32-bit leaf index (~2^16 hashes).
-    let mut seen = std::collections::HashMap::new();
-    let (a, b) = (0u32..)
-        .find_map(|n| {
-            seen.insert(slot_index(&U256::from_u32(n)), n)
-                .map(|m| (m, n))
-        })
-        .unwrap();
+fn small_slots_no_longer_share_a_leaf_index() {
+    // Constraint set 11 (circuits ZKVM-105, storage layout 2): a leaf position is the top 64 bits
+    // of keccak256(slot), not 32, so the ~2^16-hash birthday search that found two small slots on
+    // one leaf now needs ~2^32, and `build`'s "shares a leaf position" refusal cannot be reached
+    // from a test. Two to the seventeen small slots all land on distinct leaves, and seeding the
+    // first two together is accepted.
+    let mut seen = std::collections::HashSet::new();
+    for n in 0u32..1 << 17 {
+        assert!(
+            seen.insert(slot_index(&U256::from_u32(n))),
+            "slot {n} shares a leaf"
+        );
+    }
     let seeds = vec![
         StorageSeed::Slot {
-            slot: a.to_string(),
+            slot: "0".into(),
             value: "1".into(),
         },
         StorageSeed::Slot {
-            slot: b.to_string(),
+            slot: "1".into(),
             value: "1".into(),
         },
     ];
-    let e = build(&[0x00], &empty_form(seeds))
-        .err()
-        .expect("leaf collision");
-    assert!(e.contains("leaf position"), "{e}");
+    assert!(build(&[0x00], &empty_form(seeds)).is_ok());
 }
 
 #[test]
@@ -319,10 +321,12 @@ fn an_unidentifiable_slot_is_named_as_such() {
 }
 
 #[test]
-fn many_mapping_reads_say_more_than_16() {
-    // 17 distinct mapping reads keccak256(i ‖ 0), i = 0..=16: every witness comes from a hash.
+fn many_mapping_reads_say_more_than_the_witness_cap() {
+    // MAX_WITNESSES + 1 distinct mapping reads keccak256(i ‖ 0): every witness comes from a hash.
+    // The cap is 32 since constraint set 11 (circuits ZKVM-105; 16 before).
+    assert_eq!(MAX_WITNESSES, 32);
     let mut code = Vec::new();
-    for i in 0u8..=16 {
+    for i in 0..=MAX_WITNESSES as u8 {
         // PUSH1 i PUSH1 0 MSTORE  PUSH1 0 PUSH1 32 MSTORE  PUSH1 64 PUSH1 0 SHA3  SLOAD POP
         code.extend_from_slice(&[
             0x60, i, 0x60, 0, 0x52, 0x60, 0, 0x60, 32, 0x52, 0x60, 64, 0x60, 0, 0x20, 0x54, 0x50,
@@ -331,8 +335,8 @@ fn many_mapping_reads_say_more_than_16() {
     code.push(0x00);
     let mut form = empty_form(vec![]);
     form.gas_limit = 1_000_000;
-    let e = build(&code, &form).err().expect("17 mapping slots");
-    assert!(e.contains("more than 16"), "{e}");
+    let e = build(&code, &form).err().expect("33 mapping slots");
+    assert!(e.contains("more than 32"), "{e}");
 }
 
 #[test]
@@ -372,7 +376,7 @@ fn bump_calldata(data: &[u8]) -> Vec<u8> {
 }
 
 /// circuits' Cancun fixture (solc 0.8.37 `--evm-version cancun`) runs to completion on the zkVM
-/// image the terminal builds for it (`cancun.image.bin`: evm2rv at chain 20, stage 2), through
+/// image the terminal builds for it (`cancun.image.bin`: evm2rv at chain 22, stage 2, constraint set 11), through
 /// TSTORE/TLOAD (the transient reentrancy lock) and MCOPY (`bytes.concat`), and the image agrees
 /// with the EVM interpreter.
 #[test]
