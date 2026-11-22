@@ -19,7 +19,8 @@ so hold no other secrets on it.
 5. `deploy/deploy.sh <ip>` from a clean checkout with the submodule. The first deploy builds the sandbox image
    (30-40 minutes on a 4 vCPU droplet); later deploys rebuild it only when the circuits revision or anything under `sandbox/` changes.
    It ends with the api health check and a web check on the box; then
-   `curl -fsS https://randterminal.org/api/v1/health`.
+   `curl -fsS https://randterminal.org/api/v1/health` (its `chain_id` and
+   `constraint_set` must match the fleet; the monorepo site-sync check FAILs otherwise).
 
 nginx sets `X-Forwarded-For` to the single `$remote_addr` hop; the api (`TRUST_PROXY=true`) rate-limits on the
 last hop.

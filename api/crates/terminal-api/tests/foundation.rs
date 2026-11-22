@@ -38,6 +38,20 @@ async fn health_names_the_sandbox_and_circuits() {
     );
 }
 
+/// /health names the chain a job's CHAINID defaults to and the constraint set the vendored
+/// circuits prove under; the monorepo's site-sync check compares both with the fleet.
+#[tokio::test]
+async fn health_names_the_chain_and_the_constraint_set() {
+    let (s, _, v) = call(
+        &app(ApiConfig::default()),
+        json_req("GET", "/api/v1/health", None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["chain_id"], terminal_core::views::default_chain_id());
+    assert_eq!(v["constraint_set"], rand_zkvm::machine::CONSTRAINT_SET);
+}
+
 #[tokio::test]
 async fn unknown_routes_are_json_404s() {
     let (s, _, v) = call(

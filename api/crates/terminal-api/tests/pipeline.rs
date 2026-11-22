@@ -80,7 +80,8 @@ async fn solidity_runs_every_stage() {
     );
     let t: TranspileView = serde_json::from_value(s.stage_view(&id, "transpile").unwrap()).unwrap();
     assert!(
-        t.c_source.contains("CHAINID 20"),
+        t.c_source
+            .contains(&format!("CHAINID {}", default_chain_id())),
         "the default chain id reached the transpiler"
     );
     let i: ImageView = serde_json::from_value(s.stage_view(&id, "image").unwrap()).unwrap();

@@ -4,7 +4,7 @@ use terminal_core::views::*;
 #[test]
 fn new_job_without_options_gets_defaults() {
     let j: NewJob = serde_json::from_str(r#"{"lang":"solidity","files":[]}"#).unwrap();
-    assert_eq!((j.options.chain_id, j.options.stage), (20, 2));
+    assert_eq!((j.options.chain_id, j.options.stage), (22, 2));
     assert!(j.options.contract.is_none());
 }
 
@@ -13,9 +13,17 @@ fn empty_and_default_options_agree() {
     let e: JobOptions = serde_json::from_str("{}").unwrap();
     let d = JobOptions::default();
     for o in [e, d] {
-        assert_eq!((o.chain_id, o.stage), (20, 2));
+        assert_eq!((o.chain_id, o.stage), (22, 2));
         assert!(o.contract.is_none());
     }
+}
+
+/// The fleet chain. This moves at every chain cut, together with the monorepo's site-sync check
+/// (scripts/site-sync-check), which compares randterminal.org's /health `chain_id` with the
+/// reference node's: a cut that forgets this constant shows there as a FAIL.
+#[test]
+fn the_default_chain_id_is_the_fleet_chain() {
+    assert_eq!(default_chain_id(), 22);
 }
 
 #[test]
