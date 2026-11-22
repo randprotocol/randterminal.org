@@ -85,7 +85,7 @@ async fn solidity_runs_every_stage() {
         "the default chain id reached the transpiler"
     );
     let i: ImageView = serde_json::from_value(s.stage_view(&id, "image").unwrap()).unwrap();
-    assert_eq!(i.words, 11_686);
+    assert_eq!(i.words, 7_965);
     assert!(i.source_map.is_none());
     assert!(i.source_map_note.unwrap().contains("-g"));
     assert!(v
@@ -150,7 +150,7 @@ async fn solana_elf_skips_the_compiler() {
         "the SPL Token fixture scans to 30 functions (terminal-core asserts > 20)"
     );
     let i: ImageView = serde_json::from_value(s.stage_view(&id, "image").unwrap()).unwrap();
-    assert_eq!(i.words, 65_096);
+    assert_eq!(i.words, 63_968);
 }
 
 #[tokio::test]
@@ -575,7 +575,7 @@ async fn a_rejected_image_is_built_and_shown_as_not_fitting() {
     let v = wait_finished(&s, &id).await;
     assert_eq!(v.build.status, StageStatus::Done, "{v:?}");
     let i: ImageView = serde_json::from_value(s.stage_view(&id, "image").unwrap()).unwrap();
-    assert_eq!((i.words, i.cap_words, i.fits), (11_686, 1000, false));
+    assert_eq!((i.words, i.cap_words, i.fits), (7_965, 1000, false));
     assert!(!i.findings.is_empty(), "the cap finding is listed");
 }
 

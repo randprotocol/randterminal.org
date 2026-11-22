@@ -103,16 +103,19 @@ fn hand_assembled_guests_round_trip() {
 }
 
 #[test]
-fn erc20_transfer_crosses_both_checkpoint_sizes() {
-    let program = Program::from_flat_image(&fixtures::bytes("erc20.image.bin")).unwrap();
-    let inputs = fixtures::words("erc20-transfer.words");
-    let exec = execute(&program, &inputs, &[], 1 << 18).unwrap();
-    assert_eq!(exec.cycles(), 66_235);
+fn spl_transfer_crosses_both_checkpoint_sizes() {
+    // The SPL transfer: since constraint set 11 the ERC-20 transfer (59 949 cycles) no longer
+    // reaches MEM_CKPT.
+    let program = Program::from_flat_image(&fixtures::bytes("spl.image.bin")).unwrap();
+    let inputs = fixtures::words("spl-transfer.input");
+    let public = fixtures::words("spl-transfer.public");
+    let exec = execute(&program, &inputs, &public, 1 << 18).unwrap();
+    assert_eq!(exec.cycles(), 250_171);
     assert!(exec.cycles() as u32 > MEM_CKPT && exec.cycles() as u32 > REG_CKPT);
     let dir = tempfile::tempdir().unwrap();
     let total = trace::write(dir.path(), &exec).unwrap();
     let t = Trace::open(dir.path()).unwrap();
-    let samples = (0..total).step_by(997).chain([
+    let samples = (0..total).step_by(3_989).chain([
         REG_CKPT - 1,
         REG_CKPT,
         REG_CKPT + 1,

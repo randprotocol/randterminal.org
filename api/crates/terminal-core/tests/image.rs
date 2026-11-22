@@ -15,19 +15,19 @@ fn erc20_image_view_matches_rand_guest_info() {
     let bytes = fixtures::bytes("erc20.image.bin");
     let info = fixtures::text("erc20.info.txt");
     let v = view(&bytes, 65_535, &[], None, "contract.c").unwrap();
-    assert_eq!(v.words, 11_686);
-    assert_eq!(v.text_words, 11_147);
-    assert_eq!(v.data_words, 408);
-    assert_eq!(v.prologue_words, 539);
-    assert_eq!(v.base_pc, 0xf794);
+    assert_eq!(v.words, 7_965);
+    assert_eq!(v.text_words, 7_310);
+    assert_eq!(v.data_words, 495);
+    assert_eq!(v.prologue_words, 655);
+    assert_eq!(v.base_pc, 0xf5c4);
     assert_eq!(v.text_base, 0x10000);
     assert_eq!(v.hc, info_field(&info, "hc "));
     assert_eq!(v.program_id, info_field(&info, "program id "));
     assert!(v.fits);
     assert_eq!(v.cap_words, 65_535);
-    assert_eq!(v.disasm.len(), 11_686);
-    assert_eq!(v.disasm[0].pc, 0xf794);
-    assert_eq!(v.disasm[539].pc, 0x10000);
+    assert_eq!(v.disasm.len(), 7_965);
+    assert_eq!(v.disasm[0].pc, 0xf5c4);
+    assert_eq!(v.disasm[655].pc, 0x10000);
     assert!(v.disasm.iter().all(|d| !d.text.is_empty()));
     assert!(v.disasm.iter().any(|d| d.ecall.as_deref() == Some("HALT")));
     assert!(v.source_map.is_none());
@@ -52,7 +52,7 @@ fn spl_image_view() {
     let bytes = fixtures::bytes("spl.image.bin");
     let info = fixtures::text("spl.info.txt");
     let v = view(&bytes, 65_535, &[], None, "program.c").unwrap();
-    assert_eq!(v.words, 65_096);
+    assert_eq!(v.words, 63_968);
     assert_eq!(v.hc, info_field(&info, "hc "));
 }
 
