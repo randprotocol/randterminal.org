@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ERC20_CYCLES, FRI, SAMPLES, STEPS, autoNext, fittingTier, friFolds, largestLogHeight, nextPow2, registersAfter, stepBy, tableBars, transitionResiduals } from '@/lib/zkvm';
+import { ERC20_CYCLES, FRI, SAMPLES, STEPS, autoNext, fittingTier, friFolds, largestLogHeight, nextPow2, poseidon2LogHeight, registersAfter, stepBy, tableBars, transitionResiduals } from '@/lib/zkvm';
 
 describe('the walkthrough steps', () => {
   it('runs source to verifier, ten steps', () => {
@@ -18,7 +18,7 @@ describe('the walkthrough steps', () => {
   });
   it('each step names what the program is there', () => {
     const s = SAMPLES.erc20;
-    expect(STEPS.map((x) => x.token(s))).toEqual(['ERC20.sol', '1 296 bytes', '1 231 lines of C', '11 686 words', '66 235 cycles', 'tier 18', 'every row checked', 'Merkle roots', '7 folds', 'accept']);
+    expect(STEPS.map((x) => x.token(s))).toEqual(['ERC20.sol', '1 296 bytes', '1 233 lines of C', '7 965 words', '59 949 cycles', 'tier 16', 'every row checked', 'Merkle roots', '6 folds', 'accept']);
   });
 });
 
@@ -31,25 +31,34 @@ describe('tiers and tables', () => {
     expect(fittingTier(2 ** 20, 0)).toBeNull();
   });
   it('pads every table to its tier height', () => {
-    const bars = tableBars(SAMPLES.erc20.rows, 18);
+    const bars = tableBars(SAMPLES.erc20.rows, 16);
     expect(bars.map((b) => [b.name, b.used, b.height])).toEqual([
-      ['CPU', 69390, 262144], ['ALU', 73159, 524288], ['Memory', 216916, 1048576], ['Poseidon2', 3908 * 32, 1048576],
+      ['CPU', 62304, 65536], ['ALU', 64423, 131072], ['Memory', 190956, 262144], ['Poseidon2', 3758 * 32, 262144],
     ]);
     expect(bars.every((b) => b.used <= b.height)).toBe(true);
-    // SPL's memory outgrows the floor of 2^22 only if it passes it: 2 365 304 rows pad to 2^22.
+    // SPL's memory outgrows the floor of 2^22 only if it passes it: 790 159 rows pad to the floor.
     expect(tableBars(SAMPLES.spl.rows, 20)[2]!.height).toBe(2 ** 22);
     expect(nextPow2(1)).toBe(1);
-    expect(nextPow2(216916)).toBe(262144);
+    expect(nextPow2(190956)).toBe(262144);
+  });
+  it('declares the smallest admitted Poseidon2 height (constraint set 11)', () => {
+    // Admitted at tier t: 2^8, 2^10, …, 2^(t+2). SPL's 18 619 permutations (595 808 rows) take 2^20 at tier 20, not 2^22.
+    expect(poseidon2LogHeight(20, SAMPLES.spl.rows.poseidon2_permutations)).toBe(20);
+    expect(tableBars(SAMPLES.spl.rows, 20)[3]!.height).toBe(2 ** 20);
+    // 120 256 rows: 2^17 would hold them but is not admitted, so 2^18.
+    expect(poseidon2LogHeight(16, 3758)).toBe(18);
+    expect(poseidon2LogHeight(10, 0)).toBe(8);
+    expect(poseidon2LogHeight(10, 2 ** 12 / 32 + 1)).toBeNull();
   });
 });
 
 describe('FRI', () => {
   it('folds the largest low-degree extension by eight until the final polynomial is left', () => {
-    expect(FRI).toMatchObject({ logBlowup: 3, maxLogArity: 3, queries: 80, powBits: 20 });
-    expect(largestLogHeight(SAMPLES.erc20)).toBe(20);
-    expect(friFolds(20)).toEqual([23, 20, 17, 14, 11, 8, 5, 3]);
-    expect(friFolds(22)).toEqual([25, 22, 19, 16, 13, 10, 7, 4, 3]);
-    expect(friFolds(0)).toEqual([3]);
+    expect(FRI).toMatchObject({ logBlowup: 2, maxLogArity: 3, queries: 92, powBits: 24 });
+    expect(largestLogHeight(SAMPLES.erc20)).toBe(18);
+    expect(friFolds(18)).toEqual([20, 17, 14, 11, 8, 5, 2]);
+    expect(friFolds(22)).toEqual([24, 21, 18, 15, 12, 9, 6, 3, 2]);
+    expect(friFolds(0)).toEqual([2]);
   });
 });
 
@@ -66,7 +75,7 @@ describe('the transition constraint on the recorded rows', () => {
   });
   it('the register file follows the recorded writes', () => {
     const r = registersAfter(ERC20_CYCLES, 10);
-    expect(r.slice(0, 8)).toEqual([0, 0, 0, 0, 0, 90024, 110124, 0]);
+    expect(r.slice(0, 8)).toEqual([0, 0, 0, 0, 0, 76300, 94776, 0]);
     expect(registersAfter(ERC20_CYCLES, 0).every((x) => x === 0)).toBe(true);
   });
 });

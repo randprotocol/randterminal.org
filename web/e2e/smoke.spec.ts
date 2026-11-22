@@ -13,7 +13,7 @@ test('Compile waits for a sample on its way: the sample is what gets built, and 
   await page.keyboard.press('ControlOrMeta+Enter');
   await page.getByRole('button', { name: 'Compile & Run' }).click();
   expect((await job).postDataJSON().files[0].name).toBe('ERC20.sol');
-  await expect(page.locator('#panel-stage').getByText('11 686 words')).toBeVisible();
+  await expect(page.locator('#panel-stage').getByText('7 965 words')).toBeVisible();
 });
 
 test('ERC-20: sample → five stages → a stepped run → the tables', async ({ page }) => {
@@ -21,7 +21,7 @@ test('ERC-20: sample → five stages → a stepped run → the tables', async ({
   await page.getByRole('button', { name: /ERC-20 token/ }).click();
   await expect(page.getByLabel('source editor')).toContainText('contract ERC20');
   await page.getByRole('button', { name: 'Compile & Run' }).click();
-  await expect(page.locator('#panel-stage').getByText('11 686 words')).toBeVisible();
+  await expect(page.locator('#panel-stage').getByText('7 965 words')).toBeVisible();
   await stage(page, /Compile/).click();
   await expect(page.locator('#panel-stage').getByText('1 296 bytes', { exact: false })).toBeVisible();
   await stage(page, /Transpile/).click();
@@ -29,10 +29,10 @@ test('ERC-20: sample → five stages → a stepped run → the tables', async ({
   await stage(page, /Run on zkVM/).click();
   await page.getByRole('button', { name: 'Run on the zkVM' }).click();
   await expect(page.getByText('success')).toBeVisible();
-  await expect(page.getByLabel('pipeline').getByText(/needs tier 18/)).toBeVisible();
+  await expect(page.getByLabel('pipeline').getByText(/needs tier 16/)).toBeVisible();
   await expect(page.locator('#panel-stage').getByText('Proof tier')).toBeVisible();
-  await expect(page.locator('#panel-stage').getByText('66 235', { exact: true })).toBeVisible();
-  await expect(page.getByLabel('pipeline').getByText('66 235')).toBeVisible();
+  await expect(page.locator('#panel-stage').getByText('59 949', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('pipeline').getByText('59 949')).toBeVisible();
   // Keys are handled on the focused debugger, not on window.
   await page.getByLabel('debugger').focus();
   const state1 = page.waitForResponse((r) => /\/runs\/[^/]+\/state\?at=1$/.test(r.url()) && r.status() === 200);
@@ -43,7 +43,7 @@ test('ERC-20: sample → five stages → a stepped run → the tables', async ({
   await expect(page.getByLabel('registers')).toBeVisible();
   await expect(page.getByRole('alert').filter({ hasText: 'Could not load' })).toHaveCount(0);
   await page.getByRole('tab', { name: 'STARK tables' }).click();
-  await expect(page.locator('#panel-stage').getByText(/needs tier 18/)).toBeVisible();
+  await expect(page.locator('#panel-stage').getByText(/needs tier 16/)).toBeVisible();
 });
 
 test('the EVM fork: picked beside the language, sent with the job, remembered, shown in the compile facts', async ({ page }) => {
@@ -109,7 +109,7 @@ test('/zkvm: linked from the terminal, steps through the pipeline, and fits a ph
   await expect(page.getByRole('status')).toContainText('no proof can be made');
   await stages.filter({ hasText: 'Trace tables' }).click();
   await page.getByRole('radio', { name: 'SPL Token transfer' }).click();
-  await expect(page.getByText('765 851', { exact: false }).first()).toBeVisible();
+  await expect(page.getByText('250 171', { exact: false }).first()).toBeVisible();
   await expect(page.locator('.zk-tiers li[data-pick]')).toContainText('20');
   await page.getByRole('button', { name: 'Play' }).click();
   await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
