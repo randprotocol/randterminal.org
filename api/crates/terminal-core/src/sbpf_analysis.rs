@@ -23,7 +23,6 @@ pub struct Analysis {
     pub compile: SbpfCompileView,
     pub transpile: TranspileView,
     pub program_c: String,
-    pub digest: [u32; 8],
 }
 
 fn term_text(t: &Term) -> String {
@@ -197,8 +196,9 @@ pub fn analyse(elf: &[u8]) -> Result<Analysis, SbpfError> {
     let s = scan::try_scan(&p).map_err(|e| SbpfError::TooMuchWork(e.to_string()))?;
     let compile = compile_view(elf.len(), &p, &s);
     let emitted = emit::emit_program(&p, &s);
-    let digest = shim::view_digest(&p);
-    let program_c = format!("{}{}", emitted.c, shim::view_digest_c(&digest));
+    // Constraint set 11 (circuits ZKVM-117): the image carries the program itself (its read-only
+    // data and addresses, `sbpf_core::baked`) instead of guarding an ELF on the public tape.
+    let program_c = format!("{}{}", emitted.c, shim::baked_c(&p, false));
     let op_map = sbpf_labels(&program_c);
     let transpile = TranspileView {
         warnings: compile.warnings.clone(),
@@ -217,6 +217,5 @@ pub fn analyse(elf: &[u8]) -> Result<Analysis, SbpfError> {
         compile,
         transpile,
         program_c,
-        digest,
     })
 }

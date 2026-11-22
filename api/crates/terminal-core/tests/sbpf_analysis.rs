@@ -51,9 +51,9 @@ fn spl_token_analyses() {
     assert!(t.graph.nodes.iter().all(|n| n.function.is_some()));
     assert_eq!(t.op_map, sbpf_labels(&t.c_source));
     assert!(t.op_map.len() >= 1000);
-    assert!(a
-        .program_c
-        .ends_with(&sbpf2rv::shim::view_digest_c(&a.digest)));
+    let mut elf = fixtures::bytes("spl_token.so");
+    let p = sbpf_core::elf::load(&mut elf).unwrap();
+    assert!(a.program_c.ends_with(&sbpf2rv::shim::baked_c(&p, false)));
     assert!(t.c_source.contains("sbpf_entry"));
 }
 
