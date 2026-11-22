@@ -55,7 +55,7 @@ impl Default for JobOptions {
     }
 }
 pub fn default_chain_id() -> u64 {
-    20
+    22
 }
 pub fn default_stage() -> u8 {
     2
