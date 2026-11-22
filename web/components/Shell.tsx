@@ -52,13 +52,16 @@ const clampW = (w: number) => Math.max(MIN_W, Math.min(w, maxStage()));
 const saveW = (m: Mode, w: number) => { try { localStorage.setItem(WIDTH_KEY[m], String(w)); } catch { /* ignore */ } };
 const modeOf = (s: Stage): Mode => (s === 'run' || s === 'transpile' ? 'wide' : 'reading');
 
+/** The fleet's chain, as terminal-core's `default_chain_id()`: CHAINID's value unless the job names another. */
+const DEFAULT_CHAIN_ID = 22;
+
 export function Shell() {
   const [lang, setLang] = useState<Lang>('solidity');
   const [files, setFiles] = useState<Record<string, string>>(STARTER.solidity);
   const [active, setActive] = useState('Contract.sol');
   // A bundled Solana program is run by its sample id; there is no upload.
   const [program, setProgram] = useState<{ id: string; title: string } | null>(null);
-  const [options, setOptions] = useState<JobOptions>({ chain_id: 20, stage: 2 });
+  const [options, setOptions] = useState<JobOptions>({ chain_id: DEFAULT_CHAIN_ID, stage: 2 });
   // The fork lives apart from the options: it outlives samples and language switches, for the session.
   const [fork, setForkState] = useState<EvmVersion>('shanghai');
   useEffect(() => { setForkState(loadFork()); }, []);
@@ -139,7 +142,7 @@ export function Shell() {
 
   const load = (s: SampleView) => {
     setLang(s.meta.lang);
-    setOptions(s.meta.options ?? { chain_id: 20, stage: 2 });
+    setOptions(s.meta.options ?? { chain_id: DEFAULT_CHAIN_ID, stage: 2 });
     if (isEvmVersion(s.meta.options?.evm_version)) setFork(s.meta.options.evm_version);
     setDefaultCall(s.meta.default_call ?? null);
     if (s.meta.lang === 'solana-elf') { setFiles({}); setProgram({ id: s.meta.id, title: s.meta.title }); setActive(''); }
